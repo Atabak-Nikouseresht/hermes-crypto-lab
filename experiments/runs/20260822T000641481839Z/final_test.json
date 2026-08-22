@@ -1,0 +1,73 @@
+{
+  "benchmark_metrics": {
+    "BTC Buy and Hold": {
+      "cagr": -0.19192754163365688,
+      "calmar": -0.36232045189323236,
+      "cvar_95": 0.051275695504716653,
+      "ending_equity": 1439.1948077842583,
+      "max_drawdown": 0.5297176591351062,
+      "recovery_duration_days": 318,
+      "sharpe": -0.27209525523004413,
+      "sortino": -0.38358976868323824,
+      "total_fees": 1.998001998001998,
+      "turnover": 1.132313188736645,
+      "volatility": 0.4348450845491756
+    },
+    "Equal Weight": {
+      "cagr": -0.06476967119020216,
+      "calmar": -0.1309107386224837,
+      "cvar_95": 0.054584586932898714,
+      "ending_equity": 1803.5325594257456,
+      "max_drawdown": 0.4947620941700047,
+      "recovery_duration_days": 316,
+      "sharpe": 0.06666702093237864,
+      "sortino": 0.09255743376229236,
+      "total_fees": 1.9980019980019983,
+      "turnover": 0.9946362855121067,
+      "volatility": 0.43768389754617937
+    }
+  },
+  "candidate_id": "mw120_sw00_ma150_n2_r07_v30",
+  "comparisons": {
+    "BTC Buy and Hold": {
+      "cagr_difference": 0.19114531859059414,
+      "ending_equity_difference": 558.3899703489767,
+      "max_drawdown_difference": -0.32175154099526837,
+      "sharpe_difference": 0.39440400986312635
+    },
+    "Equal Weight": {
+      "cagr_difference": 0.06398744814713941,
+      "ending_equity_difference": 194.05221870748937,
+      "max_drawdown_difference": -0.28679597603016693,
+      "sharpe_difference": 0.05564173370070358
+    }
+  },
+  "event": "candidate_evaluation",
+  "metrics": {
+    "cagr": -0.0007822230430627464,
+    "calmar": -0.0037613003986388515,
+    "cvar_95": 0.03389196783323939,
+    "ending_equity": 1997.584778133235,
+    "max_drawdown": 0.20796611813983779,
+    "recovery_duration_days": 316,
+    "sharpe": 0.12230875463308222,
+    "sortino": 0.1702844227679144,
+    "total_fees": 36.119701763547155,
+    "turnover": 17.85912334817641,
+    "volatility": 0.2503012619619425
+  },
+  "parameters": {
+    "momentum_window": 120,
+    "rebalance_days": 7,
+    "selected_assets": 2,
+    "skip_window": 0,
+    "trend_filter": 150,
+    "volatility_window": 30
+  },
+  "penalized_score": -0.2659198045651237,
+  "period": {
+    "end": "2026-08-20T00:00:00+00:00",
+    "start": "2025-02-02T00:00:00+00:00"
+  },
+  "stage": "final_test"
+}

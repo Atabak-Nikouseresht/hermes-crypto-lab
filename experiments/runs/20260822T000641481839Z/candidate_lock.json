@@ -1,0 +1,19 @@
+{
+  "candidate_id": "mw120_sw00_ma150_n2_r07_v30",
+  "instability_penalty": 0.2656410362728389,
+  "lock_score": 0.7983203266338645,
+  "parameters": {
+    "momentum_window": 120,
+    "rebalance_days": 7,
+    "selected_assets": 2,
+    "skip_window": 0,
+    "trend_filter": 150,
+    "volatility_window": 30
+  },
+  "region_dispersion": 0.2271802731271097,
+  "region_median": 1.3722716641666015,
+  "selection_score": 1.3565881498839736,
+  "validation_score": 1.1684178855066638,
+  "walk_forward_dispersion": 0.4670838773077108,
+  "walk_forward_median": 0.7896701637709447
+}

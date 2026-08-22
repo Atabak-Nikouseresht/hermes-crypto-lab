@@ -1,0 +1,70 @@
+# Research backtest configuration. Parameters are fixed; optimization is disabled.
+research_only: true
+strategy_enabled: true
+optimization_enabled: false
+experiment_manager_enabled: true
+live_trading_enabled: false
+
+backtest:
+  initial_cash: 2000.0
+  accounting_currency: USDT
+  capital_reference: EUR_2000_equivalent
+  fee_rate: 0.001
+  slippage_rate: 0.0005
+
+strategy:
+  momentum_short_days: 30
+  momentum_long_days: 90
+  momentum_skip_days: 7
+  btc_moving_average_days: 200
+  volatility_days: 30
+  annualization_days: 365
+  max_assets: 2
+  asset_caps:
+    BTC/USDT: 0.70
+    ETH/USDT: 0.60
+    BNB/USDT: 0.40
+    XRP/USDT: 0.40
+    TRX/USDT: 0.40
+  altcoins:
+    - BNB/USDT
+    - XRP/USDT
+    - TRX/USDT
+  max_altcoin_weight: 0.60
+
+# Controlled grid consumed only by run_experiments.py. The baseline
+# run_backtest.py continues to use the fixed values under `strategy`.
+parameter_grid:
+  momentum_window: [60, 90, 120]
+  skip_window: [0, 7]
+  trend_filter: [150, 200]
+  selected_assets: [1, 2]
+  rebalance_days: [7, 14]
+  volatility_window: [30, 60]
+
+experiment:
+  train_fraction: 0.60
+  validation_fraction: 0.20
+  finalist_count: 5
+  walk_forward_folds: 3
+
+paper_trading:
+  enabled: true
+  default_dry_run: true
+  database_path: database/paper_trading.duckdb
+  reports_dir: reports/paper
+  exchange: binance
+  initial_cash: 2000.0
+  accounting_currency: USDT
+  locked_candidate_id: mw120_sw00_ma150_n2_r07_v30
+  locked_from_experiment: 20260822T000641481839Z
+  fee_rate: 0.001
+  minimum_spread_rate: 0.0002
+  slippage_rate: 0.0005
+  schedule_weekday: 0       # Monday, UTC
+  schedule_hour: 0
+  schedule_minute: 5
+  schedule_window_minutes: 30
+  max_data_staleness_minutes: 120
+  max_quote_staleness_minutes: 5
+  lookback_days: 260

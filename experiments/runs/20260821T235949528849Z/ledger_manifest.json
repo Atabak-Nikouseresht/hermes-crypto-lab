@@ -1,0 +1,7 @@
+{
+  "final_hash": "550c941eaff6de255a0ce2ca577b83323308000bd5d50d7900eaa0eca8995a08",
+  "ledger": "experiment_ledger.jsonl",
+  "read_only_after_finalize": true,
+  "record_count": 124,
+  "verified_before_finalize": true
+}

@@ -1,0 +1,13 @@
+.venv/
+.env
+__pycache__/
+.pytest_cache/
+*.py[cod]
+logs/*.log
+database/*.duckdb
+data/raw/**/*.json
+data/processed/*.parquet
+reports/data_quality_*.json
+reports/data_quality_*.md
+reports/backtest_*/
+reports/paper/

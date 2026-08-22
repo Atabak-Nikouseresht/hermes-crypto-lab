@@ -1,0 +1,8 @@
+ccxt>=4.4,<5
+numpy>=2.0,<3
+pandas>=2.2,<3
+pyarrow>=17,<22
+duckdb>=1.1,<2
+PyYAML>=6.0,<7
+python-dotenv>=1.0,<2
+pytest>=8.3,<9

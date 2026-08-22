@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import datetime, timezone
+import logging
+from pathlib import Path
+from typing import Any
+
+import ccxt
+
+from src.config import Settings, load_assets, load_settings
+from src.database import (
+    finish_run,
+    initialize_database,
+    record_dataset_metadata,
+    start_run,
+)
+from src.download_data import create_exchange, download_daily_ohlcv
+from src.logging_config import configure_logging
+from src.report import write_quality_report
+from src.storage import save_clean_parquet, save_raw_json
+from src.validate_data import clean_ohlcv, rows_to_frame, validate_ohlcv
+
+LOGGER = logging.getLogger(__name__)
+Downloader = Callable[..., list[list[float]]]
+
+
+def _safe_symbol(symbol: str) -> str:
+    return symbol.replace("/", "_").replace(":", "_")
+
+
+def run_pipeline(
+    *,
+    settings: Settings,
+    assets: list[str],
+    downloader: Downloader = download_daily_ohlcv,
+    exchange: ccxt.Exchange | object | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    initialize_database(settings.database_path)
+    start_run(settings.database_path, run_id)
+    market = exchange or create_exchange(settings.exchange, settings.request_timeout_ms)
+    results: list[dict[str, Any]] = []
+
+    try:
+        for symbol in assets:
+            rows = downloader(
+                market,
+                symbol,
+                since_iso=settings.since,
+                timeframe=settings.timeframe,
+                limit=settings.fetch_limit,
+                max_retries=settings.max_retries,
+                backoff_base_seconds=settings.backoff_base_seconds,
+            )
+            if not rows:
+                raise RuntimeError(f"No finalized OHLCV rows returned for {symbol}")
+
+            filename = f"{_safe_symbol(symbol)}_{settings.timeframe}"
+            raw_path = settings.raw_dir / run_id / f"{filename}.json"
+            parquet_path = settings.processed_dir / f"{filename}.parquet"
+            save_raw_json(rows, raw_path)
+
+            normalized = rows_to_frame(rows)
+            quality = validate_ohlcv(normalized)
+            cleaned = clean_ohlcv(normalized)
+            save_clean_parquet(cleaned, parquet_path)
+            start_utc = cleaned["timestamp"].min().isoformat() if not cleaned.empty else None
+            end_utc = cleaned["timestamp"].max().isoformat() if not cleaned.empty else None
+            quality_payload = {
+                **quality.summary,
+                "missing_date_values_utc": quality.missing_dates,
+            }
+            result = {
+                "symbol": symbol,
+                "raw_rows": len(rows),
+                "clean_rows": len(cleaned),
+                "start_utc": start_utc,
+                "end_utc": end_utc,
+                "quality": quality_payload,
+            }
+            results.append(result)
+            record_dataset_metadata(
+                settings.database_path,
+                run_id=run_id,
+                symbol=symbol,
+                timeframe=settings.timeframe,
+                raw_path=str(raw_path.relative_to(settings.project_root)),
+                parquet_path=str(parquet_path.relative_to(settings.project_root)),
+                raw_rows=len(rows),
+                clean_rows=len(cleaned),
+                start_utc=start_utc,
+                end_utc=end_utc,
+                quality_summary=quality_payload,
+            )
+            LOGGER.info(
+                "Stored %s: raw=%d clean=%d quality=%s",
+                symbol,
+                len(rows),
+                len(cleaned),
+                quality.summary,
+            )
+
+        markdown_path, json_path = write_quality_report(results, settings.reports_dir, run_id)
+        finish_run(settings.database_path, run_id, "completed")
+        LOGGER.info("Pipeline completed; report=%s", markdown_path)
+        return {
+            "run_id": run_id,
+            "datasets": results,
+            "markdown_report": str(markdown_path),
+            "json_report": str(json_path),
+        }
+    except Exception as error:
+        finish_run(settings.database_path, run_id, "failed", str(error))
+        LOGGER.exception("Pipeline failed")
+        raise
+    finally:
+        close = getattr(market, "close", None)
+        if callable(close):
+            close()
+
+
+def main() -> None:
+    settings = load_settings()
+    configure_logging(settings.logs_dir, settings.log_level)
+    assets = load_assets(settings.assets_config)
+    LOGGER.info("Starting public-data pipeline for %s", ", ".join(assets))
+    result = run_pipeline(settings=settings, assets=assets)
+    print(f"Run {result['run_id']} completed")
+    print(f"Quality report: {result['markdown_report']}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,202 @@
+# Hermes Crypto Lab
+
+Research-only cryptocurrency quantitative lab. It downloads and validates **public Binance spot OHLCV data** and runs a deterministic, event-driven historical backtest. It contains no parameter optimization, paper brokerage, private API access, or live trading.
+
+## Universe
+
+- BTC/USDT
+- ETH/USDT
+- BNB/USDT
+- XRP/USDT
+- TRX/USDT
+
+All timestamps are UTC. Only finalized daily candles are persisted; the current incomplete UTC day is excluded.
+
+## Quick start (Windows)
+
+```bash
+uv venv .venv
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+cp .env.example .env                 # optional; edit only non-secret settings
+.venv/Scripts/python.exe run_weekly.py
+.venv/Scripts/python.exe run_backtest.py
+.venv/Scripts/python.exe run_experiments.py
+.venv/Scripts/python.exe run_paper.py --dry-run
+.venv/Scripts/python.exe -m pytest tests -q
+```
+
+No Binance API key or secret is required. The exchange is instantiated by CCXT with `enableRateLimit=True`, a configurable timeout, and no credentials.
+
+## Configuration
+
+Runtime settings come from environment variables; `.env` is loaded when present and is git-ignored.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HCL_EXCHANGE` | `binance` | CCXT public exchange class |
+| `HCL_TIMEFRAME` | `1d` | OHLCV timeframe |
+| `HCL_SINCE` | `2017-01-01T00:00:00Z` | Earliest requested UTC timestamp |
+| `HCL_FETCH_LIMIT` | `1000` | Candles requested per page |
+| `HCL_MAX_RETRIES` | `5` | Retries after retryable CCXT/network errors |
+| `HCL_BACKOFF_BASE_SECONDS` | `1.0` | Exponential backoff base; delays are base × 2^attempt |
+| `HCL_REQUEST_TIMEOUT_MS` | `30000` | CCXT request timeout |
+| `HCL_ASSETS_CONFIG` | `config/assets.yaml` | Asset-list path |
+| `HCL_DATABASE_PATH` | `database/trading.duckdb` | DuckDB metadata path |
+| `HCL_LOG_LEVEL` | `INFO` | Python logging level |
+| `HCL_INITIAL_CASH` | `2000.0` | Starting capital, accounted in USDT as the requested €2,000 equivalent |
+| `HCL_FEE_RATE` | `0.001` | Proportional fee per fill |
+| `HCL_SLIPPAGE_RATE` | `0.0005` | Adverse proportional execution slippage |
+
+## Backtest methodology
+
+- Common evaluation period: the first next-week bar after all five assets have enough history for the 200-day BTC filter through the latest common finalized bar.
+- Weekly signal: generated on the last available bar of each ISO week.
+- Execution: orders submitted from close information at time `t` are queued and filled only on the next available close at `t+1`.
+- Momentum ranking: `close[t-7] / close[t-90] - 1`, so the latest seven days are excluded.
+- Eligibility: positive 30-day momentum, positive skip-7-day 90-day momentum, and BTC above its trailing 200-day moving average.
+- Selection: maximum two eligible assets, ranked deterministically by momentum and then symbol for ties.
+- Allocation: inverse trailing 30-day annualized realized volatility, followed by BTC/ETH/individual-alt/combined-alt caps. Capped allocation is not redistributed; it remains cash.
+- Execution ledger: orders, fills, positions, and cash are independent artifacts. Sells execute before buys. If fees and adverse slippage would overdraw cash, all buys are scaled proportionally.
+- Constraints: long-only, no short selling, no borrowing, no leverage, and a runtime negative-cash invariant.
+- Costs: fee and slippage rates are fixed from YAML/environment configuration; no parameter search is performed.
+- Benchmarks: BTC buy-and-hold, five-asset equal-weight static allocation, 50% BTC/50% ETH static allocation, and 100% cash. Static benchmark orders are submitted at the common analysis start, filled on the next available bar, and then held.
+- Metrics: CAGR, 365-day annualized volatility, Sharpe, Sortino, maximum drawdown, Calmar, 95% daily CVaR, cumulative turnover, maximum recovery duration, fees, and ending equity.
+
+## Controlled experiments
+
+`run_experiments.py` is the only component that consumes `parameter_grid`. It enforces the following chronology:
+
+1. All 96 allowed configurations are evaluated on the 60% training period only.
+2. Training scores penalize drawdown and annualized turnover. Finalists come from stable one-parameter neighborhoods using region median and dispersion, not the isolated maximum return.
+3. Five fixed finalists receive access to the 20% validation period and three expanding walk-forward folds ending no later than validation end.
+4. Validation degradation and walk-forward dispersion add parameter-instability penalties.
+5. Exactly one candidate is written to the hash-chained ledger as locked.
+6. Only after that lock event does the filtered Parquet reader load close values from the final 20% test period. Only the locked candidate is evaluated there.
+
+Every candidate trial includes configured fees/slippage and comparisons with BTC buy-and-hold and equal weight. The append-only JSONL ledger uses sequence numbers, previous-record hashes, SHA-256 record hashes, flush/fsync on each append, final chain verification, and read-only finalization. The manager always records `live_promotion: false` and cannot promote a strategy to trading.
+
+## Persistent paper trading
+
+`run_paper.py` operates the locked `mw120_sw00_ma150_n2_r07_v30` strategy with 2,000 USDT virtual capital. It creates **no real exchange orders** and only uses CCXT public `fetch_ohlcv` and `fetch_ticker` data. The default is `--dry-run`; use `--paper` only to persist simulated fills. Decisions are permitted only Monday from 00:05 through 00:35 UTC. Other runs still perform public-data health checks, recovery, reconciliation, and equity snapshots but return `NO_REBALANCE`.
+
+Execution uses observed bid/ask spread subject to a configured minimum spread, additional adverse slippage, and proportional fees. DuckDB stores the mutable current account/position projection separately from immutable order, fill, cash, and position ledgers. Schedule keys and deterministic per-signal idempotency keys prevent duplicate executions. Every run reconciles current cash and positions against append-only ledgers; a mismatch, negative state, missing calendar date, invalid/non-positive price, stale daily bar, stale quote, or failed public fetch activates a persistent kill switch before orders. Restart recovery marks abandoned `RUNNING` records as `RECOVERED_ABORTED`; committed trades remain atomic. Reset is explicit and succeeds only after reconciliation:
+
+```bash
+.venv/Scripts/python.exe run_paper.py --reset-kill-switch
+```
+
+## Data lifecycle
+
+1. CCXT calls Binance's public spot OHLCV endpoint with built-in rate limiting.
+2. Retryable rate-limit, DDoS, timeout, exchange-unavailable, and network errors use exponential backoff.
+3. Each run writes CCXT's returned OHLCV row arrays directly to an immutable run-specific JSON file before cleaning. No timestamps, values, or ordering are changed in that raw artifact.
+4. Raw rows are normalized to typed columns, validated, sorted, deduplicated by timestamp, and stripped of invalid/non-positive-price rows.
+5. Clean data is saved as Parquet with timezone-aware UTC timestamps.
+6. DuckDB records run status, paths, row counts, date ranges, and JSON quality metadata.
+7. Markdown and JSON quality reports are written. Missing dates are reported but never synthesized or forward-filled.
+
+The raw contract is CCXT's canonical six-value OHLCV array: `[timestamp_ms, open, high, low, close, volume]`. It is not Binance's lower-level REST payload with additional quote-volume/trade-count fields.
+
+## Data-quality rules
+
+- **Missing dates:** absent UTC calendar days between a dataset's first and last candle.
+- **Duplicates:** all rows sharing a timestamp (`keep=False`, so both copies count).
+- **Invalid OHLC:** `high` below any of open/close/low, `low` above any of open/close/high, or null/unparseable required values.
+- **Non-positive price:** any open, high, low, or close value less than or equal to zero.
+
+Quality checks run before cleaning. Processed data removes duplicate timestamps and invalid/non-positive rows; missing dates remain visible and are not imputed.
+
+## File-by-file map
+
+### Root
+
+- `README.md` — scope, setup, data contract, validation rules, and this file inventory.
+- `requirements.txt` — bounded runtime and test dependencies: CCXT, NumPy, pandas, PyArrow, DuckDB, PyYAML, python-dotenv, and pytest.
+- `.env.example` — safe environment-variable template; contains no secrets.
+- `.gitignore` — excludes local environment files, virtualenv/cache files, logs, databases, downloaded data, and generated reports.
+- `run_weekly.py` — end-to-end orchestration: configuration, download, raw preservation, validation, cleaning, Parquet output, metadata, reporting, run status, and exchange shutdown. Despite the name, scheduling is external.
+- `run_backtest.py` — loads aligned Parquet closes, establishes the common lookback-safe analysis period, runs the primary strategy and all benchmarks, and persists comparison artifacts.
+- `run_experiments.py` — staged training/validation/walk-forward/final-test orchestration, stable-region selection, candidate locking, and sealed holdout access.
+- `run_paper.py` — public-data fetch, persistent recovery/reconciliation, scheduled dry-run or virtual execution, kill-switch handling, and weekly reporting CLI.
+
+### `config/`
+
+- `assets.yaml` — the five-symbol research universe.
+- `strategy.yaml` — fixed baseline configuration plus the exact controlled grid and chronological experiment settings. `run_backtest.py` ignores the grid; only `run_experiments.py` consumes it. Live trading remains disabled.
+
+### `src/`
+
+- `__init__.py` — marks the data-ingestion package.
+- `config.py` — typed environment settings and YAML asset loading.
+- `logging_config.py` — UTC console and file logging setup.
+- `download_data.py` — credential-free CCXT exchange creation, pagination, finalized-candle cutoff, retry/backoff, and rate-limit handling.
+- `validate_data.py` — raw-row normalization, UTC conversion, data-quality detection, deduplication, and invalid-row filtering.
+- `storage.py` — unchanged raw JSON and processed Parquet writers.
+- `database.py` — DuckDB schema plus ingestion-run and dataset-metadata writes.
+- `report.py` — machine-readable JSON and human-readable Markdown quality reports.
+- `indicators.py` — reserved placeholder; no indicator implementation.
+- `strategy.py` — look-ahead-safe momentum, realized-volatility, eligibility, BTC regime filter, and deterministic ranking logic.
+- `portfolio.py` — inverse-volatility allocation with per-asset and combined-altcoin caps plus explicit residual cash.
+- `costs.py` — deterministic proportional fees and adverse buy/sell slippage.
+- `backtest.py` — event-driven weekly order queue, next-bar execution, sell-before-buy processing, and separate order/fill/position/cash ledgers.
+- `benchmarks.py` — the four static benchmark definitions and runners.
+- `metrics.py` — return, risk, drawdown, recovery, CVaR, turnover, fee, and terminal-value calculations.
+- `backtest_report.py` — Markdown/CSV/JSON benchmark comparison and Parquet ledger/equity persistence.
+- `experiment_manager.py` — exact-grid validation, chronological splits, train/validation/test access gate, turnover/drawdown penalties, and stable-neighborhood finalist selection.
+- `experiment_runner.py` — stage-bounded Parquet reads, candidate evaluation with costs, and per-candidate BTC/equal-weight comparisons.
+- `experiment_ledger.py` — append-only, fsync-backed, SHA-256 hash-chained experiment ledger with verification and read-only finalization.
+- `experiment_report.py` — walk-forward validation, robustness, candidate-lock, trial-table, and final-test reports.
+- `paper_market.py` — credential-free CCXT adapter limited to public OHLCV and ticker methods.
+- `paper_store.py` — DuckDB schema, current state, append-only ledgers, restart recovery, reconciliation, incidents, and kill-switch reset.
+- `paper_broker.py` — locked-strategy schedule gate, data validation, idempotent virtual orders/fills, spread/slippage/fee simulation, and negative-cash protection.
+- `paper_report.py` — concise immutable weekly status, account, cost, and position report.
+- `walk_forward.py` — reserved placeholder; no optimization/walk-forward implementation.
+- `risk_engine.py` — reserved placeholder; no trading risk implementation.
+
+### `tests/`
+
+- `test_downloader.py` — verifies retry count and exponential backoff timing for a CCXT rate-limit error.
+- `test_validate_data.py` — verifies missing-date, duplicate, invalid-OHLC, and non-positive-price detection plus cleaning behavior and UTC dtype.
+- `test_persistence.py` — verifies raw JSON equality, Parquet round-trip, and DuckDB metadata storage.
+- `test_report.py` — verifies Markdown and JSON quality-report generation.
+- `test_pipeline.py` — verifies the complete pipeline with an injected deterministic public-data substitute, including immutable raw path, Parquet, report, and DuckDB completion state.
+- `test_portfolio.py` — verifies inverse-volatility construction and individual/combined allocation caps.
+- `test_strategy.py` — verifies top-two selection, BTC regime behavior, and invariance to future-data changes.
+- `test_backtest_engine.py` — verifies week-end-to-next-bar signal timing, fee/slippage calculations, and negative-cash prevention.
+- `test_benchmarks.py` — verifies all four benchmark definitions and static buy-and-hold execution.
+- `test_metrics.py` — verifies required metrics, drawdown, CVaR, turnover, and recovery duration.
+- `test_backtest_report.py` — verifies comparison outputs and separate strategy ledgers.
+- `test_experiment_manager.py` — verifies the 96-case allowed grid, chronological split, holdout gate, scoring penalties, and stable-region preference.
+- `test_experiment_runner.py` — verifies cost-inclusive candidate evaluation and benchmark comparisons.
+- `test_experiment_ledger.py` — verifies hash chaining, chain validation, and finalized-ledger write refusal.
+- `test_experiment_report.py` — verifies walk-forward/robustness reports, trial count, and disabled live promotion.
+- `test_paper_trading.py` — verifies duplicate-execution prevention, corrupted-state kill switch, dry-run non-persistence, stale-data halt, and restart recovery.
+- `test_paper_market.py` — verifies that the market adapter uses only public OHLCV/ticker methods.
+- `test_paper_report.py` — verifies concise virtual-only weekly reporting and 2,000 USDT accounting.
+
+### Generated/runtime directories
+
+- `data/raw/<run_id>/*.json` — immutable, run-versioned CCXT OHLCV arrays saved before normalization or cleaning.
+- `data/processed/*.parquet` — latest cleaned datasets, one per symbol/timeframe.
+- `database/trading.duckdb` — `ingestion_runs` and `dataset_metadata` tables; it stores metadata, not the OHLCV fact table.
+- `reports/data_quality_<run_id>.md` — readable quality summary.
+- `reports/data_quality_<run_id>.json` — complete machine-readable quality payload, including exact missing UTC dates.
+- `reports/backtest_<run_id>/comparison.{md,csv,json}` — human- and machine-readable strategy-versus-benchmark metrics.
+- `reports/backtest_<run_id>/equity_curves.parquet` — aligned equity curves for the primary strategy and four benchmarks.
+- `reports/backtest_<run_id>/strategy_{orders,fills,positions,cash}.parquet` — separate event and state ledgers.
+- `reports/backtest_<run_id>/run_metadata.json` — exact fixed parameters, UTC period, execution convention, and explicit no-optimization flag.
+- `experiments/runs/<run_id>/experiment_ledger.jsonl` — immutable hash-chained record of stage access, every candidate trial, selection, lock, and sealed test.
+- `experiments/runs/<run_id>/training_trials.parquet` — all 96 training evaluations and benchmark comparisons.
+- `experiments/runs/<run_id>/validation_trials.parquet` — fixed-finalist validation evaluations.
+- `experiments/runs/<run_id>/walk_forward_trials.parquet` — finalist results across expanding pre-test folds.
+- `experiments/runs/<run_id>/walk_forward_validation.md` — walk-forward metrics and period disclosure.
+- `experiments/runs/<run_id>/robustness_report.md` — stable-region, instability-penalty, lock, trial-count, benchmark, and final-test summary.
+- `experiments/runs/<run_id>/candidate_lock.json` and `final_test.json` — pre-test lock decision and the later sealed-holdout result.
+- `database/paper_trading.duckdb` — persistent virtual account, positions, immutable orders/fills/cash/position ledgers, run audit, equity snapshots, and kill-switch incidents.
+- `reports/paper/paper_weekly_<date>_<run_id>.md` — never-overwritten weekly health, execution, cost, cash, equity, and position summary.
+- `logs/data_pipeline.log` — UTC operational logs for downloads, retries, row counts, persistence, and failures.
+- `experiments/.gitkeep` — reserves an empty directory for future research notebooks/scripts.
+
+## Explicitly out of scope
+
+No hyperparameter search, strategy optimization, walk-forward optimization, paper brokerage, private endpoints, API-secret handling, exchange order placement, or live trading has been implemented. Backtest fills are deterministic research simulations, not executable broker orders.

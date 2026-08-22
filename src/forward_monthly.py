@@ -113,7 +113,9 @@ def generate_monthly_forward_report(
                 """,
                 [anchor[0]],
             ).fetchall()
-            observations = anchor_observations + observations
+            observed_run_ids = {row[0] for row in observations}
+            if anchor[0] not in observed_run_ids:
+                observations = anchor_observations + observations
         forward_incidents = connection.execute(
             """
             SELECT i.incident_type, COUNT(*) FROM forward_incidents i
@@ -151,7 +153,10 @@ def generate_monthly_forward_report(
     missed_windows = sum(1 for row in windows if row[3] == "MISSED_SCHEDULE")
     completed_windows = scheduled_windows - missed_windows
     weeks_in_cash = sum(1 for row in equities if abs(float(row[3])) <= 1e-9)
-    equity_sequence = ([anchor] if anchor is not None else []) + list(equities)
+    equity_run_ids = {row[0] for row in equities}
+    equity_sequence = (
+        [anchor] if anchor is not None and anchor[0] not in equity_run_ids else []
+    ) + list(equities)
     equity_values = pd.Series(
         [float(row[4]) for row in equity_sequence],
         index=pd.DatetimeIndex(
@@ -203,6 +208,9 @@ def generate_monthly_forward_report(
     )
     if not obs_frame.empty:
         obs_frame["timestamp"] = pd.to_datetime(obs_frame["timestamp"], utc=True)
+        obs_frame = obs_frame.drop_duplicates(
+            subset=["timestamp", "symbol"], keep="first"
+        )
         pivot = obs_frame.pivot(index="timestamp", columns="symbol", values="price").sort_index()
         pivot = pivot.loc[:, list(assets)].dropna()
     else:

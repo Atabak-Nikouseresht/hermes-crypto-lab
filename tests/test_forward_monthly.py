@@ -48,6 +48,10 @@ def test_monthly_report_uses_forward_only_data_and_identical_benchmark_timestamp
                     "INSERT INTO forward_market_observations VALUES (?, ?, ?, ?)",
                     [run_id, timestamp, symbol, 100.0 * index * multiplier],
                 )
+        connection.execute(
+            "INSERT INTO forward_baselines VALUES "
+            "('forward-1','r1','2026-08-03T09:10:00Z',2000.0)"
+        )
 
     result = generate_monthly_forward_report(
         system.store,

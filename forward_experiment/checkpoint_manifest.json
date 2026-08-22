@@ -1,0 +1,13 @@
+{
+  "checkpoint_created_at_utc": "2026-08-22T00:44:34.048633+00:00",
+  "data_cutoff_utc": "2026-08-20T00:00:00+00:00",
+  "database_schema_version": "legacy-v1-unversioned",
+  "experiment_ledger_final_hash": "d6a762fa24a481410cf25f3b24ef50c063b403ebf8e2a7ea6c15be814b711f06",
+  "git_commit": "50bc10298aa5e897aaca8691943d32b60b829324",
+  "locked_candidate_id": "mw120_sw00_ma150_n2_r07_v30",
+  "locked_strategy_hash_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
+  "paper_database_schema_hash_sha256": "59a79170a8b2a2f016105532bd1ce220869ed197a5f611599ab6efffa8bcc8d9",
+  "strategy_configuration_hash_sha256": "72eebb0fe50155455d511147a4451b418d903a2ea1724b5ffcf01a9361bbf3ad",
+  "test_count": 32,
+  "test_result": "32 passed"
+}

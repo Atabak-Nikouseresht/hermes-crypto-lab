@@ -1,0 +1,100 @@
+{
+  "acceptance_criteria": [
+    "At least 12 scheduled weeks have been observed",
+    "No unresolved reconciliation errors",
+    "No duplicate executions",
+    "Net return after all modeled costs is positive",
+    "Risk-adjusted performance is better than BTC buy-and-hold or drawdown is materially reduced without eliminating return",
+    "Turnover and costs do not consume the gross edge",
+    "Results are not dependent on a single asset or a single trade",
+    "Observed paper execution is consistent with locked backtest assumptions",
+    "Any consideration of real money requires explicit human review and a separate authorization"
+  ],
+  "benchmark_definitions": {
+    "btc_buy_and_hold": "One virtual BTC allocation established at the first genuine forward observation and valued only at the strategy observation timestamps",
+    "equal_weight_five_asset": "Static 20 percent initial allocation to each of BTC, ETH, BNB, XRP and TRX, valued only at identical forward observation timestamps"
+  },
+  "cost_assumptions": {
+    "fee_rate": 0.001,
+    "minimum_spread_rate": 0.0002,
+    "slippage_rate": 0.0005
+  },
+  "experiment_id": "paper-forward-20260822",
+  "experiment_start_utc": "2026-08-22T01:02:45+00:00",
+  "incident_policy": {
+    "data_failure": "No trade; activate kill switch and record DATA_QUALITY_FAILURE",
+    "execution_error": "No replay; reconcile committed state and record EXECUTION_ERROR",
+    "missed_window": "Record MISSED_SCHEDULE; never backdate or fabricate a trade",
+    "notification_failure": "Keep committed portfolio state; retry Telegram only with the original run ID",
+    "overlap": "Refuse the second process; no portfolio mutation",
+    "reconciliation_failure": "No trade; activate kill switch; manual investigation and explicit reset only"
+  },
+  "locked_strategy": {
+    "allocation": {
+      "asset_caps": {
+        "BNB/USDT": 0.4,
+        "BTC/USDT": 0.7,
+        "ETH/USDT": 0.6,
+        "TRX/USDT": 0.4,
+        "XRP/USDT": 0.4
+      },
+      "cash_is_residual": true,
+      "max_altcoin_weight": 0.6,
+      "method": "inverse 30-day realized volatility"
+    },
+    "candidate_id": "mw120_sw00_ma150_n2_r07_v30",
+    "eligibility": {
+      "btc_close_above_ma_days": 150,
+      "positive_30_day_momentum": true,
+      "positive_locked_momentum": true
+    },
+    "parameters": {
+      "momentum_window": 120,
+      "rebalance_days": 7,
+      "selected_assets": 2,
+      "skip_window": 0,
+      "trend_filter": 150,
+      "volatility_window": 30
+    },
+    "prohibitions": {
+      "leverage": true,
+      "llm_signals_or_weights": true,
+      "margin": true,
+      "private_exchange_endpoints": true,
+      "real_orders": true,
+      "short_selling": true
+    }
+  },
+  "locked_strategy_hash_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
+  "minimum_observation_weeks": 12,
+  "preferred_evaluation_weeks": {
+    "maximum": 52,
+    "minimum": 26
+  },
+  "prohibited_changes": [
+    "Modify, optimize, replace or reselect the locked strategy",
+    "Use final-test results to tune any parameter",
+    "Reopen the 96-configuration search or create additional combinations",
+    "Overwrite or delete historical experiments, orders, fills, ledgers, reports or records",
+    "Automatically promote to live trading",
+    "Add real-order methods, private exchange endpoints, Binance credentials, withdrawals, leverage, margin, derivatives or short selling",
+    "Allow an LLM to generate signals or portfolio weights",
+    "Automatically reset the kill switch",
+    "Backdate a missed paper trade"
+  ],
+  "rejection_criteria": [
+    "Fewer than 12 scheduled observations",
+    "Any unresolved reconciliation error or duplicate execution",
+    "Non-positive net return after modeled costs at formal evaluation",
+    "Turnover or modeled costs consume the gross edge",
+    "Performance depends materially on one asset or one trade",
+    "Paper execution is inconsistent with locked backtest assumptions",
+    "Operational integrity is insufficient for scientific interpretation"
+  ],
+  "research_status": "forward paper experiment only; not a proven profitable strategy",
+  "schedule": {
+    "decision_window_utc": "Monday 09:05-09:35",
+    "execution_target_utc": "Monday 09:10",
+    "report_timezone": "Europe/Rome"
+  }
+}

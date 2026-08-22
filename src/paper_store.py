@@ -126,7 +126,107 @@ class PaperStore:
                     created_at_utc TIMESTAMPTZ NOT NULL,
                     cleared_at_utc TIMESTAMPTZ
                 );
+                CREATE TABLE IF NOT EXISTS paper_schema_versions (
+                    version INTEGER PRIMARY KEY,
+                    applied_at_utc TIMESTAMPTZ NOT NULL,
+                    description VARCHAR NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS forward_incidents (
+                    incident_id VARCHAR PRIMARY KEY,
+                    run_id VARCHAR,
+                    incident_type VARCHAR NOT NULL,
+                    scheduled_for_utc TIMESTAMPTZ,
+                    reason VARCHAR NOT NULL,
+                    created_at_utc TIMESTAMPTZ NOT NULL,
+                    resolved_at_utc TIMESTAMPTZ,
+                    UNIQUE (incident_type, scheduled_for_utc)
+                );
+                CREATE TABLE IF NOT EXISTS forward_experiments (
+                    experiment_id VARCHAR PRIMARY KEY,
+                    started_at_utc TIMESTAMPTZ NOT NULL,
+                    locked_candidate_id VARCHAR NOT NULL,
+                    locked_strategy_hash VARCHAR NOT NULL,
+                    governance_hash VARCHAR UNIQUE NOT NULL,
+                    specification JSON NOT NULL,
+                    status VARCHAR NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS forward_baselines (
+                    experiment_id VARCHAR PRIMARY KEY,
+                    run_id VARCHAR UNIQUE NOT NULL,
+                    observed_at_utc TIMESTAMPTZ NOT NULL,
+                    equity DOUBLE NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS paper_run_diagnostics (
+                    run_id VARCHAR PRIMARY KEY,
+                    outcome VARCHAR NOT NULL,
+                    regime VARCHAR,
+                    btc_vs_trend DOUBLE,
+                    momentum JSON,
+                    eligibility JSON,
+                    selected_assets JSON,
+                    current_weights JSON,
+                    target_weights JSON,
+                    proposed_orders JSON,
+                    turnover DOUBLE,
+                    kill_switch_active BOOLEAN NOT NULL,
+                    reconciliation_valid BOOLEAN NOT NULL,
+                    created_at_utc TIMESTAMPTZ NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS forward_market_observations (
+                    run_id VARCHAR NOT NULL,
+                    observed_at_utc TIMESTAMPTZ NOT NULL,
+                    symbol VARCHAR NOT NULL,
+                    price DOUBLE NOT NULL,
+                    PRIMARY KEY (run_id, symbol)
+                );
+                CREATE TABLE IF NOT EXISTS forward_schedule_windows (
+                    schedule_key VARCHAR PRIMARY KEY,
+                    scheduled_for_utc TIMESTAMPTZ NOT NULL,
+                    run_id VARCHAR,
+                    outcome VARCHAR NOT NULL,
+                    created_at_utc TIMESTAMPTZ NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS forward_experiment_windows (
+                    experiment_id VARCHAR NOT NULL,
+                    schedule_key VARCHAR NOT NULL,
+                    PRIMARY KEY (experiment_id, schedule_key)
+                );
+                CREATE TABLE IF NOT EXISTS forward_experiment_incidents (
+                    experiment_id VARCHAR NOT NULL,
+                    incident_id VARCHAR NOT NULL,
+                    PRIMARY KEY (experiment_id, incident_id)
+                );
+                CREATE TABLE IF NOT EXISTS paper_notifications (
+                    run_id VARCHAR PRIMARY KEY,
+                    target VARCHAR NOT NULL,
+                    report_path VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL,
+                    attempt_count INTEGER NOT NULL,
+                    last_error VARCHAR,
+                    created_at_utc TIMESTAMPTZ NOT NULL,
+                    updated_at_utc TIMESTAMPTZ NOT NULL,
+                    delivered_at_utc TIMESTAMPTZ
+                );
+                CREATE TABLE IF NOT EXISTS notification_attempts (
+                    attempt_id VARCHAR PRIMARY KEY,
+                    run_id VARCHAR NOT NULL,
+                    attempted_at_utc TIMESTAMPTZ NOT NULL,
+                    status VARCHAR NOT NULL,
+                    error VARCHAR
+                );
                 """
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (2, ?, 'forward paper operations')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (3, ?, 'forward baseline and monthly benchmark alignment')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (4, ?, 'experiment-scoped windows and incidents')",
+                [now],
             )
             existing = connection.execute(
                 "SELECT initial_cash FROM paper_accounts WHERE account_id=?",
@@ -291,6 +391,141 @@ class PaperStore:
                     "SELECT COUNT(*) FROM paper_runs WHERE schedule_key=?", [schedule_key]
                 ).fetchone()[0]
             )
+
+    def forward_window_exists(self, schedule_key: str) -> bool:
+        with self.connect(read_only=True) as connection:
+            return bool(
+                connection.execute(
+                    "SELECT COUNT(*) FROM forward_schedule_windows WHERE schedule_key=?",
+                    [schedule_key],
+                ).fetchone()[0]
+            )
+
+    @staticmethod
+    def _active_experiment_id(connection) -> str:
+        rows = connection.execute(
+            "SELECT experiment_id FROM forward_experiments WHERE status='ACTIVE'"
+        ).fetchall()
+        if len(rows) != 1:
+            raise ValueError(f"Expected exactly one active forward experiment, found {len(rows)}")
+        return str(rows[0][0])
+
+    def record_forward_window(
+        self,
+        *,
+        schedule_key: str,
+        scheduled_for: datetime,
+        run_id: str | None,
+        outcome: str,
+        now: datetime,
+    ) -> None:
+        with self.connect() as connection:
+            experiment_id = self._active_experiment_id(connection)
+            connection.execute(
+                "INSERT OR IGNORE INTO forward_schedule_windows VALUES (?, ?, ?, ?, ?)",
+                [schedule_key, scheduled_for, run_id, outcome, now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO forward_experiment_windows VALUES (?, ?)",
+                [experiment_id, schedule_key],
+            )
+            if run_id is not None:
+                connection.execute(
+                    """
+                    UPDATE forward_schedule_windows SET run_id=?, outcome=?
+                    WHERE schedule_key=? AND (run_id IS NULL OR run_id=?)
+                    """,
+                    [run_id, outcome, schedule_key, run_id],
+                )
+
+    def record_forward_incident(
+        self,
+        *,
+        incident_type: str,
+        reason: str,
+        now: datetime,
+        run_id: str | None = None,
+        scheduled_for: datetime | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            experiment_id = self._active_experiment_id(connection)
+            incident_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT OR IGNORE INTO forward_incidents VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                [incident_id, run_id, incident_type, scheduled_for, reason, now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO forward_experiment_incidents VALUES (?, ?)",
+                [experiment_id, incident_id],
+            )
+
+    def ensure_forward_baseline(self, *, run_id: str) -> None:
+        with self.connect() as connection:
+            experiment_id = self._active_experiment_id(connection)
+            existing = connection.execute(
+                "SELECT run_id FROM forward_baselines WHERE experiment_id=?",
+                [experiment_id],
+            ).fetchone()
+            if existing is not None:
+                return
+            snapshot = connection.execute(
+                "SELECT snapshot_at_utc, equity FROM equity_snapshots WHERE run_id=?",
+                [run_id],
+            ).fetchone()
+            observation_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM forward_market_observations WHERE run_id=?",
+                    [run_id],
+                ).fetchone()[0]
+            )
+            if snapshot is None or observation_count == 0:
+                raise ValueError("Cannot establish baseline without equity and market observations")
+            connection.execute(
+                "INSERT INTO forward_baselines VALUES (?, ?, ?, ?)",
+                [experiment_id, run_id, snapshot[0], snapshot[1]],
+            )
+
+    def record_forward_details(
+        self,
+        *,
+        run_id: str,
+        outcome: str,
+        diagnostics: dict[str, Any],
+        observed_prices: dict[str, float],
+        observed_at: datetime,
+        kill_switch_active: bool,
+        reconciliation_valid: bool,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO paper_run_diagnostics VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    run_id,
+                    outcome,
+                    diagnostics.get("regime"),
+                    diagnostics.get("btc_vs_trend"),
+                    json.dumps(diagnostics.get("momentum", {}), sort_keys=True),
+                    json.dumps(diagnostics.get("eligibility", {}), sort_keys=True),
+                    json.dumps(diagnostics.get("selected_assets", [])),
+                    json.dumps(diagnostics.get("current_weights", {}), sort_keys=True),
+                    json.dumps(diagnostics.get("target_weights", {}), sort_keys=True),
+                    json.dumps(diagnostics.get("proposed_orders", []), sort_keys=True),
+                    float(diagnostics.get("turnover", 0.0)),
+                    kill_switch_active,
+                    reconciliation_valid,
+                    observed_at,
+                ],
+            )
+            for symbol, price in observed_prices.items():
+                connection.execute(
+                    "INSERT OR IGNORE INTO forward_market_observations VALUES (?, ?, ?, ?)",
+                    [run_id, observed_at, symbol, float(price)],
+                )
+            connection.execute("COMMIT")
 
     def insert_run(
         self,

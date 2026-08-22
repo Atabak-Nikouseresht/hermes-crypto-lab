@@ -77,12 +77,31 @@ Every candidate trial includes configured fees/slippage and comparisons with BTC
 
 ## Persistent paper trading
 
-`run_paper.py` operates the locked `mw120_sw00_ma150_n2_r07_v30` strategy with 2,000 USDT virtual capital. It creates **no real exchange orders** and only uses CCXT public `fetch_ohlcv` and `fetch_ticker` data. The default is `--dry-run`; use `--paper` only to persist simulated fills. Decisions are permitted only Monday from 00:05 through 00:35 UTC. Other runs still perform public-data health checks, recovery, reconciliation, and equity snapshots but return `NO_REBALANCE`.
+`run_paper.py` operates the locked `mw120_sw00_ma150_n2_r07_v30` strategy with 2,000 USDT virtual capital. It creates **no real exchange orders** and only uses CCXT public `fetch_ohlcv` and `fetch_ticker` data. The default is `--dry-run`; use `--paper` only to persist simulated fills. Decisions are permitted only Monday from **09:05 through 09:35 UTC**, with a 09:10 UTC execution target. Other runs still perform public-data health checks, recovery, reconciliation, and equity snapshots but return `NO_REBALANCE`.
 
-Execution uses observed bid/ask spread subject to a configured minimum spread, additional adverse slippage, and proportional fees. DuckDB stores the mutable current account/position projection separately from immutable order, fill, cash, and position ledgers. Schedule keys and deterministic per-signal idempotency keys prevent duplicate executions. Every run reconciles current cash and positions against append-only ledgers; a mismatch, negative state, missing calendar date, invalid/non-positive price, stale daily bar, stale quote, or failed public fetch activates a persistent kill switch before orders. Restart recovery marks abandoned `RUNNING` records as `RECOVERED_ABORTED`; committed trades remain atomic. Reset is explicit and succeeds only after reconciliation:
+Execution uses observed bid/ask spread subject to a configured minimum spread, additional adverse slippage, and proportional fees. DuckDB stores the mutable current account/position projection separately from immutable order, fill, cash, and position ledgers. Schedule keys and deterministic per-signal idempotency keys prevent duplicate executions. Every run reconciles current cash and positions against append-only ledgers; a mismatch, negative state, missing calendar date, invalid/non-positive price, stale daily bar, stale quote, or failed public fetch activates a persistent kill switch before orders. Restart recovery marks uncommitted `RUNNING` records as `RECOVERED_ABORTED` and releases their schedule key; committed fills become `RECOVERED_COMMITTED` and retain duplicate protection. Reset is explicit and succeeds only after reconciliation:
 
 ```bash
 .venv/Scripts/python.exe run_paper.py --reset-kill-switch
+```
+
+### Forward operational governance
+
+- `forward_experiment/checkpoint_manifest.json` identifies the pre-deployment Git commit, strategy/config hashes, data cutoff, baseline schema hash, experiment-ledger hash, and 32-test checkpoint. Its SHA-256 sidecar detects modification.
+- `forward_experiment/governance.json` fixes the strategy, costs, benchmarks, minimum 12-week observation rule, preferred 26–52 week evaluation, acceptance/rejection criteria, prohibited changes, and incident policy. It is create-once and hash verified before every paper command.
+- Hermes jobs `b11c6b3fe2fe` (weekly execution: `10 9 * * 1`), `2d7c37751317` (missed-window audit only: `36 9 * * 1`), and `3861e40b01a7` (monthly: `0 9 1 * *`) are no-agent script jobs. Hermes is configured in UTC and read-back shows `+00:00` next-run timestamps. The 09:36 audit performs no market fetch, signal, equity snapshot, or execution. Deterministic UTC wrapper gates, dispatch markers, DuckDB schedule keys, idempotency keys, and a project process lock provide layered DST-safe overlap and duplicate protection.
+- Weekly Telegram delivery occurs only after the DuckDB run is terminal. A failed notification is logged separately and retried with `--resend RUN_ID`; strategy execution is never repeated.
+- `run_monthly_report.py` uses only observations recorded after forward deployment and compares BTC/equal weight at identical timestamps. It never reads backtest returns.
+
+Operational commands:
+
+```bash
+.venv/Scripts/python.exe run_paper.py --dry-run
+.venv/Scripts/python.exe run_paper.py --paper
+.venv/Scripts/python.exe run_paper.py --status
+.venv/Scripts/python.exe run_paper.py --reconcile
+.venv/Scripts/python.exe run_paper.py --resend RUN_ID
+.venv/Scripts/python.exe run_paper.py --sample-telegram
 ```
 
 ## Data lifecycle
@@ -118,6 +137,8 @@ Quality checks run before cleaning. Processed data removes duplicate timestamps 
 - `run_backtest.py` — loads aligned Parquet closes, establishes the common lookback-safe analysis period, runs the primary strategy and all benchmarks, and persists comparison artifacts.
 - `run_experiments.py` — staged training/validation/walk-forward/final-test orchestration, stable-region selection, candidate locking, and sealed holdout access.
 - `run_paper.py` — public-data fetch, persistent recovery/reconciliation, scheduled dry-run or virtual execution, kill-switch handling, and weekly reporting CLI.
+- `run_monthly_report.py` — prior-month forward-only metrics and identical-timestamp benchmark report.
+- `scripts/paper_forward_weekly.py` / `paper_forward_monthly.py` — version-controlled UTC gates that invoke the absolute project Python and script paths with a 600-second timeout.
 
 ### `config/`
 
@@ -150,6 +171,12 @@ Quality checks run before cleaning. Processed data removes duplicate timestamps 
 - `paper_store.py` — DuckDB schema, current state, append-only ledgers, restart recovery, reconciliation, incidents, and kill-switch reset.
 - `paper_broker.py` — locked-strategy schedule gate, data validation, idempotent virtual orders/fills, spread/slippage/fee simulation, and negative-cash protection.
 - `paper_report.py` — concise immutable weekly status, account, cost, and position report.
+- `paper_forward.py` — deterministic diagnostics, outcome classification, schedule-window audit, and post-transaction forward persistence.
+- `paper_notifications.py` — Hermes Telegram delivery after commit plus notification-only retry.
+- `forward_operations.py` — UTC/Rome conversion, cross-process locking, missed-window recording, and manifest verification.
+- `forward_governance.py` — locked-strategy identity and immutable governance verification.
+- `forward_monthly.py` — forward-only monthly statistics and exact-timestamp benchmarks.
+- `scheduler_contract.py` — installed Hermes job read-back verification.
 - `walk_forward.py` — reserved placeholder; no optimization/walk-forward implementation.
 - `risk_engine.py` — reserved placeholder; no trading risk implementation.
 
@@ -173,6 +200,11 @@ Quality checks run before cleaning. Processed data removes duplicate timestamps 
 - `test_paper_trading.py` — verifies duplicate-execution prevention, corrupted-state kill switch, dry-run non-persistence, stale-data halt, and restart recovery.
 - `test_paper_market.py` — verifies that the market adapter uses only public OHLCV/ticker methods.
 - `test_paper_report.py` — verifies concise virtual-only weekly reporting and 2,000 USDT accounting.
+- `test_forward_operations.py` — UTC window, DST display, process overlap, missed-window, and immutable-manifest tests.
+- `test_paper_notifications.py` — post-commit Telegram failure and notification-only resend without duplicate trade.
+- `test_forward_monthly.py` — forward/backtest separation and identical benchmark timestamps.
+- `test_forward_governance.py` / `test_forward_safety.py` — immutable governance, unchanged locked hash, and continued absence of real/private API methods.
+- `test_scheduler_contract.py` — Hermes job read-back and deterministic UTC wrapper gate.
 
 ### Generated/runtime directories
 

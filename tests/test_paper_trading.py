@@ -46,16 +46,16 @@ def _config() -> PaperConfig:
         minimum_spread_rate=0.0002,
         slippage_rate=0.0005,
         schedule_weekday=0,
-        schedule_hour=0,
+        schedule_hour=9,
         schedule_minute=5,
         schedule_window_minutes=30,
-        max_data_staleness_minutes=120,
+        max_data_staleness_minutes=720,
         max_quote_staleness_minutes=5,
     )
 
 
 def test_duplicate_scheduled_run_cannot_create_duplicate_orders_or_fills(tmp_path):
-    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     database = tmp_path / "paper.duckdb"
     system = PaperTradingSystem(database, _config())
 
@@ -79,7 +79,7 @@ def test_duplicate_scheduled_run_cannot_create_duplicate_orders_or_fills(tmp_pat
 
 
 def test_corrupted_persistent_cash_state_activates_kill_switch_before_orders(tmp_path):
-    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     database = tmp_path / "paper.duckdb"
     system = PaperTradingSystem(database, _config())
     with duckdb.connect(str(database)) as connection:
@@ -100,7 +100,7 @@ def test_corrupted_persistent_cash_state_activates_kill_switch_before_orders(tmp
 
 
 def test_dry_run_generates_proposals_without_persisting_trades(tmp_path):
-    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     database = tmp_path / "paper.duckdb"
     system = PaperTradingSystem(database, _config())
 
@@ -116,8 +116,38 @@ def test_dry_run_generates_proposals_without_persisting_trades(tmp_path):
     assert (orders, fills, cash) == (0, 0, 2_000.0)
 
 
+def test_scheduled_dry_run_does_not_consume_real_paper_window(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    database = tmp_path / "paper.duckdb"
+    system = PaperTradingSystem(database, _config())
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES "
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+        )
+
+    dry = system.run(_snapshot(now), now=now, dry_run=True)
+    from src.paper_forward import build_forward_diagnostics, finalize_forward_run
+
+    finalize_forward_run(
+        system,
+        dry,
+        _snapshot(now),
+        now=now,
+        diagnostics=build_forward_diagnostics(system, _snapshot(now)),
+    )
+    with duckdb.connect(str(database), read_only=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM forward_schedule_windows").fetchone()[0] == 0
+    paper = system.run(_snapshot(now), now=now, dry_run=False)
+
+    assert dry.status == "DRY_RUN"
+    assert paper.status == "EXECUTED"
+    with duckdb.connect(str(database), read_only=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM paper_fills").fetchone()[0] > 0
+
+
 def test_stale_market_data_activates_kill_switch(tmp_path):
-    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     system = PaperTradingSystem(tmp_path / "paper.duckdb", _config())
 
     result = system.run(_snapshot(now, stale_days=2), now=now, dry_run=False)
@@ -133,7 +163,7 @@ def test_restart_recovers_abandoned_running_record(tmp_path):
         connection.execute(
             "INSERT INTO paper_runs "
             "(run_id, started_at_utc, status, mode, schedule_key) "
-            "VALUES ('abandoned', now(), 'RUNNING', 'PAPER', '2024-08-05T00:05Z')"
+            "VALUES ('abandoned', now(), 'RUNNING', 'PAPER', '2024-08-05T09:05Z')"
         )
 
     PaperTradingSystem(database, _config())

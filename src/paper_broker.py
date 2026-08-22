@@ -44,12 +44,14 @@ class PaperConfig:
     minimum_spread_rate: float = 0.0002
     slippage_rate: float = 0.0005
     schedule_weekday: int = 0
-    schedule_hour: int = 0
+    schedule_hour: int = 9
     schedule_minute: int = 5
+    execution_target_minute: int = 10
     schedule_window_minutes: int = 30
-    max_data_staleness_minutes: int = 120
+    max_data_staleness_minutes: int = 720
     max_quote_staleness_minutes: int = 5
     quantity_tolerance: float = 1e-12
+    rebalance_days: int = 7
     locked_candidate_id: str = "mw120_sw00_ma150_n2_r07_v30"
     strategy_config: StrategyConfig = field(
         default_factory=lambda: StrategyConfig(
@@ -78,6 +80,8 @@ class PaperRunResult:
     message: str
     proposed_orders: tuple[dict[str, Any], ...] = ()
     equity: float | None = None
+    outcome: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class PaperTradingSystem:
@@ -406,7 +410,12 @@ class PaperTradingSystem:
         dry_run: bool,
     ) -> PaperRunResult:
         now_ts = self._utc(now)
-        run_id = "paper_" + now_ts.strftime("%Y%m%dT%H%M%S%fZ")
+        run_id = (
+            "paper_"
+            + now_ts.strftime("%Y%m%dT%H%M%S%fZ")
+            + "_"
+            + uuid.uuid4().hex[:8]
+        )
         account = self.store.account()
         if account["status"] != "ACTIVE":
             return PaperRunResult(run_id, "KILL_SWITCH", "Paper account is halted")

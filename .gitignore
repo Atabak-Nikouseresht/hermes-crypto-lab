@@ -11,3 +11,5 @@ reports/data_quality_*.json
 reports/data_quality_*.md
 reports/backtest_*/
 reports/paper/
+reports/forward_monthly/
+runtime/

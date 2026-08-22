@@ -2,18 +2,38 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import json
 import logging
 import os
 from pathlib import Path
+import sys
 
+import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
 from src.config import load_assets, load_settings
+from src.forward_governance import bootstrap_forward_experiment, verify_trust_anchors
+from src.forward_operations import (
+    AlreadyRunningError,
+    InterProcessLock,
+    audit_missed_schedule,
+    record_missed_windows,
+)
 from src.logging_config import configure_logging
-from src.paper_broker import PaperConfig, PaperTradingSystem
+from src.paper_broker import PaperConfig, PaperRunResult, PaperTradingSystem
+from src.paper_forward import (
+    build_forward_diagnostics,
+    commit_operational_failure,
+    finalize_forward_run,
+)
 from src.paper_market import fetch_public_market_snapshot
-from src.paper_report import write_weekly_paper_report
+from src.paper_notifications import (
+    HermesTelegramSender,
+    NotificationError,
+    NotificationService,
+)
+from src.paper_report import write_operational_failure_report, write_weekly_paper_report
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,12 +67,82 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
         schedule_weekday=int(values["schedule_weekday"]),
         schedule_hour=int(values["schedule_hour"]),
         schedule_minute=int(values["schedule_minute"]),
+        execution_target_minute=int(values["execution_target_minute"]),
         schedule_window_minutes=int(values["schedule_window_minutes"]),
         max_data_staleness_minutes=int(values["max_data_staleness_minutes"]),
         max_quote_staleness_minutes=int(values["max_quote_staleness_minutes"]),
         locked_candidate_id=str(values["locked_candidate_id"]),
     )
     return config, values
+
+
+def _project_paths(project_root: Path, values: dict) -> tuple[Path, Path]:
+    database_value = Path(os.getenv("HCL_PAPER_DATABASE", values["database_path"]))
+    database_path = (
+        database_value if database_value.is_absolute() else project_root / database_value
+    )
+    reports_value = Path(values["reports_dir"])
+    reports_dir = reports_value if reports_value.is_absolute() else project_root / reports_value
+    return database_path, reports_dir
+
+
+def _verify_research_lock(project_root: Path, config: PaperConfig) -> str:
+    return verify_trust_anchors(project_root, config)["locked_strategy"]
+
+
+def _experiment_start(project_root: Path) -> pd.Timestamp:
+    governance = project_root / "forward_experiment" / "governance.json"
+    if not governance.exists():
+        return pd.Timestamp.now(tz="UTC")
+    payload = json.loads(governance.read_text(encoding="utf-8"))
+    return pd.Timestamp(payload["experiment_start_utc"]).tz_convert("UTC")
+
+
+def _send_sample(target: str, reports_dir: Path, config: PaperConfig) -> Path:
+    now = pd.Timestamp.now(tz="UTC")
+    path = reports_dir / f"telegram_sample_{now.strftime('%Y%m%dT%H%M%SZ')}.md"
+    text = "\n".join(
+        [
+            "# SAMPLE — Hermes Crypto Lab Forward Paper Report",
+            "",
+            f"- Timestamp UTC: `{now.isoformat()}`",
+            f"- Timestamp Europe/Rome: `{now.tz_convert('Europe/Rome').isoformat()}`",
+            f"- Locked candidate: `{config.locked_candidate_id}`",
+            "- Outcome: **SAMPLE_NOTIFICATION_ONLY**",
+            "- Portfolio state changed: **no**",
+            "- Strategy executed: **no**",
+            "- All transactions are virtual; this message contains no trade.",
+            "",
+        ]
+    )
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    HermesTelegramSender()(target, path)
+    return path
+
+
+def _status(system: PaperTradingSystem) -> dict:
+    account = system.store.account()
+    positions = system.store.positions()
+    reconciliation = system.store.reconcile()
+    with system.store.connect(read_only=True) as connection:
+        counts = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM paper_orders), (SELECT COUNT(*) FROM paper_fills), "
+            "(SELECT COUNT(*) FROM forward_incidents WHERE resolved_at_utc IS NULL), "
+            "(SELECT COUNT(*) FROM paper_notifications WHERE status='FAILED')"
+        ).fetchone()
+    return {
+        "account": account,
+        "positions": positions,
+        "orders": int(counts[0]),
+        "fills": int(counts[1]),
+        "open_forward_incidents": int(counts[2]),
+        "failed_notifications": int(counts[3]),
+        "reconciliation": {
+            "valid": reconciliation.valid,
+            "message": reconciliation.message,
+        },
+    }
 
 
 def main() -> None:
@@ -62,30 +152,113 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Propose only; persist no trades")
     mode.add_argument("--paper", action="store_true", help="Persist virtual paper fills")
+    parser.add_argument("--reset-kill-switch", action="store_true")
     parser.add_argument(
-        "--reset-kill-switch",
+        "--audit-missed",
         action="store_true",
-        help="Reset only after persistent state reconciles",
+        help="Audit missed schedule only; no market fetch or strategy execution",
     )
+    parser.add_argument("--resend", metavar="RUN_ID", help="Retry Telegram only; never execute strategy")
+    parser.add_argument("--status", action="store_true", help="Print persistent forward status as JSON")
+    parser.add_argument("--reconcile", action="store_true", help="Run reconciliation only")
+    parser.add_argument(
+        "--kill-switch-status",
+        action="store_true",
+        help="Inspect kill-switch state and incidents without resetting it",
+    )
+    parser.add_argument(
+        "--sample-telegram",
+        action="store_true",
+        help="Send a sample report without fetching data or changing paper state",
+    )
+    parser.add_argument("--telegram-target", default=None)
     args = parser.parse_args()
 
     settings = load_settings()
     configure_logging(settings.logs_dir, settings.log_level)
     config, values = load_paper_configuration(settings.project_root)
-    database_value = Path(os.getenv("HCL_PAPER_DATABASE", values["database_path"]))
-    database_path = (
-        database_value if database_value.is_absolute() else settings.project_root / database_value
-    )
-    reports_value = Path(values["reports_dir"])
-    reports_dir = (
-        reports_value if reports_value.is_absolute() else settings.project_root / reports_value
-    )
+    database_path, reports_dir = _project_paths(settings.project_root, values)
     system = PaperTradingSystem(database_path, config)
-    now = datetime.now(timezone.utc)
+    _verify_research_lock(settings.project_root, config)
+    bootstrap_forward_experiment(system.store, settings.project_root, config)
+    telegram_target = args.telegram_target or str(
+        values.get("telegram_target", "telegram:configured-at-runtime")
+    )
 
+    if args.status:
+        print(json.dumps(_status(system), indent=2, sort_keys=True))
+        return
+    if args.reconcile:
+        result = system.store.reconcile()
+        print(json.dumps({"valid": result.valid, "message": result.message}, indent=2))
+        if not result.valid:
+            raise SystemExit(2)
+        return
+    if args.kill_switch_status:
+        with system.store.connect(read_only=True) as connection:
+            incidents = connection.execute(
+                """
+                SELECT incident_id, reason, created_at_utc, cleared_at_utc
+                FROM paper_incidents ORDER BY created_at_utc DESC
+                """
+            ).fetchall()
+        print(
+            json.dumps(
+                {
+                    "account_status": system.store.account()["status"],
+                    "automatic_reset": False,
+                    "incidents": [
+                        {
+                            "incident_id": row[0],
+                            "reason": row[1],
+                            "created_at_utc": str(row[2]),
+                            "cleared_at_utc": str(row[3]) if row[3] else None,
+                        }
+                        for row in incidents
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
     if args.reset_kill_switch:
-        system.store.reset_kill_switch(now=now)
+        system.store.reset_kill_switch(now=datetime.now(timezone.utc))
         print("Paper-trading kill switch reset after successful reconciliation")
+        return
+    if args.resend:
+        service = NotificationService(
+            system.store, target=telegram_target, sender=HermesTelegramSender()
+        )
+        service.resend(args.resend)
+        print(f"Notification resent for run {args.resend}; strategy was not executed")
+        return
+    if args.sample_telegram:
+        path = _send_sample(telegram_target, reports_dir, config)
+        print(f"Sample Telegram report delivered: {path}")
+        return
+    if args.audit_missed:
+        with InterProcessLock(settings.project_root / "runtime" / "paper_forward.lock"):
+            now = datetime.now(timezone.utc)
+            result = audit_missed_schedule(
+                system.store,
+                start=_experiment_start(settings.project_root),
+                now=now,
+                config=config,
+            )
+            if result is None:
+                print("No missed schedule required recording")
+                return
+            report_path = write_operational_failure_report(
+                system.store,
+                result,
+                reports_dir,
+                now=pd.Timestamp(now),
+                locked_candidate_id=config.locked_candidate_id,
+            )
+            NotificationService(
+                system.store, target=telegram_target, sender=HermesTelegramSender()
+            ).send_committed_run(result.run_id, report_path)
+            print(f"MISSED_SCHEDULE recorded and delivered: {result.run_id}")
         return
 
     if args.dry_run:
@@ -97,33 +270,139 @@ def main() -> None:
             os.getenv("HCL_PAPER_DRY_RUN", str(values["default_dry_run"]))
         )
 
-    LOGGER.info(
-        "Fetching public market data only; mode=%s locked=%s",
-        "DRY_RUN" if dry_run else "PAPER",
-        config.locked_candidate_id,
-    )
+    lock_path = settings.project_root / "runtime" / "paper_forward.lock"
     try:
-        snapshot = fetch_public_market_snapshot(
-            config,
-            exchange_id=str(values["exchange"]),
-            now=now,
-            lookback_days=int(values["lookback_days"]),
-        )
-    except Exception as error:
-        reason = f"Public market-data fetch failed: {error}"
-        system.store.activate_kill_switch(reason, run_id=None, now=now)
-        LOGGER.exception(reason)
-        raise SystemExit(2) from error
+        with InterProcessLock(lock_path):
+            now = datetime.now(timezone.utc)
+            start = _experiment_start(settings.project_root)
+            missed_count = record_missed_windows(
+                system.store, start=start, now=now, config=config
+            )
+            schedule_key = system._scheduled_key(pd.Timestamp(now))
+            window_end = pd.Timestamp(now).normalize() + pd.Timedelta(
+                hours=config.schedule_hour,
+                minutes=config.schedule_minute + config.schedule_window_minutes,
+            )
+            current_window_missed = (
+                pd.Timestamp(now).weekday() == config.schedule_weekday
+                and pd.Timestamp(now) > window_end
+                and missed_count > 0
+            )
+            if (
+                not dry_run
+                and schedule_key is not None
+                and (
+                    system.store.schedule_exists(schedule_key)
+                    or system.store.forward_window_exists(schedule_key)
+                )
+            ):
+                print(f"Status: DUPLICATE_SCHEDULE — {schedule_key} is already finalized")
+                return
 
-    result = system.run(snapshot, now=now, dry_run=dry_run)
-    report_path = write_weekly_paper_report(
-        system.store, result, snapshot, reports_dir, now=snapshot.fetched_at
-    )
-    print(f"Status: {result.status}")
-    print(f"Message: {result.message}")
-    print(f"Weekly report: {report_path}")
-    if result.status == "KILL_SWITCH":
-        raise SystemExit(2)
+            if system.store.account()["status"] != "ACTIVE":
+                result = commit_operational_failure(
+                    system,
+                    outcome="KILL_SWITCH_ACTIVATED",
+                    message="Persistent kill switch is active; no trade attempted",
+                    now=now,
+                )
+                report_path = write_operational_failure_report(
+                    system.store,
+                    result,
+                    reports_dir,
+                    now=pd.Timestamp(now),
+                    locked_candidate_id=config.locked_candidate_id,
+                )
+                if schedule_key or current_window_missed:
+                    NotificationService(
+                        system.store,
+                        target=telegram_target,
+                        sender=HermesTelegramSender(),
+                    ).send_committed_run(result.run_id, report_path)
+                raise SystemExit(2)
+
+            LOGGER.info(
+                "Fetching public market data only; mode=%s locked=%s",
+                "DRY_RUN" if dry_run else "PAPER",
+                config.locked_candidate_id,
+            )
+            try:
+                snapshot = fetch_public_market_snapshot(
+                    config,
+                    exchange_id=str(values["exchange"]),
+                    now=now,
+                    lookback_days=int(values["lookback_days"]),
+                )
+            except Exception as error:
+                reason = f"Public market-data fetch failed: {error}"
+                result = commit_operational_failure(
+                    system, outcome="DATA_QUALITY_FAILURE", message=reason, now=now
+                )
+                report_path = write_operational_failure_report(
+                    system.store,
+                    result,
+                    reports_dir,
+                    now=pd.Timestamp(now),
+                    locked_candidate_id=config.locked_candidate_id,
+                )
+                if schedule_key or current_window_missed:
+                    try:
+                        NotificationService(
+                            system.store,
+                            target=telegram_target,
+                            sender=HermesTelegramSender(),
+                        ).send_committed_run(result.run_id, report_path)
+                    except NotificationError:
+                        LOGGER.exception("Telegram failed after committed data-quality failure")
+                LOGGER.exception(reason)
+                raise SystemExit(2) from error
+
+            diagnostics = (
+                build_forward_diagnostics(system, snapshot) if schedule_key else {}
+            )
+            result = system.run(snapshot, now=now, dry_run=dry_run)
+            outcome_override = "MISSED_SCHEDULE" if current_window_missed else None
+            result = finalize_forward_run(
+                system,
+                result,
+                snapshot,
+                now=now,
+                diagnostics=diagnostics,
+                outcome_override=outcome_override,
+            )
+            report_path = write_weekly_paper_report(
+                system.store, result, snapshot, reports_dir, now=snapshot.fetched_at
+            )
+            if schedule_key or current_window_missed:
+                try:
+                    NotificationService(
+                        system.store,
+                        target=telegram_target,
+                        sender=HermesTelegramSender(),
+                    ).send_committed_run(result.run_id, report_path)
+                except NotificationError as error:
+                    LOGGER.exception(
+                        "Telegram failed after committed run %s; retry with --resend %s",
+                        result.run_id,
+                        result.run_id,
+                    )
+                    print(f"Committed run {result.run_id}; Telegram failed: {error}")
+                    print(f"Retry only: run_paper.py --resend {result.run_id}")
+                    raise SystemExit(3) from error
+            print(f"Status: {result.status}")
+            print(f"Outcome: {result.outcome}")
+            print(f"Message: {result.message}")
+            print(f"Weekly report: {report_path}")
+            if result.outcome in {
+                "KILL_SWITCH_ACTIVATED",
+                "DATA_QUALITY_FAILURE",
+                "RECONCILIATION_FAILURE",
+                "EXECUTION_ERROR",
+            }:
+                raise SystemExit(2)
+    except AlreadyRunningError as error:
+        LOGGER.error("Overlapping paper execution refused: %s", error)
+        raise SystemExit(4) from error
 
 
 if __name__ == "__main__":

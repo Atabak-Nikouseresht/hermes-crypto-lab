@@ -1,9 +1,9 @@
 param()
 $ErrorActionPreference = "Continue"
-$Project = "C:\Users\ataba\hermes-crypto-lab"
-$Hermes = "C:\Users\ataba\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
-$Python = "C:\Users\ataba\hermes-crypto-lab\.venv\Scripts\python.exe"
-$Paper = "C:\Users\ataba\hermes-crypto-lab\run_paper.py"
+$Project = Split-Path -Parent $PSScriptRoot
+$Hermes = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\hermes.exe"
+$Python = Join-Path $Project ".venv\Scripts\python.exe"
+$Paper = Join-Path $Project "run_paper.py"
 $LogDir = Join-Path $Project "logs"
 $Log = Join-Path $LogDir "gateway_watchdog.log"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null

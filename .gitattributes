@@ -1,3 +1,24 @@
-forward_experiment/*.json -text
-forward_experiment/*.sha256 -text
+# Preserve byte-stable governance and manifest inputs across platforms.
+# The active hardening manifest hashes file bytes, so checkout must not rewrite EOLs.
+.gitattributes -text
+.env.example -text
+.gitignore -text
+.github/workflows/*.yml -text
+.python-version -text
+README.md -text
+SECURITY.md -text
+CONTRIBUTING.md -text
+docs/*.md -text
+audits/*.md -text
+data/*.md -text
+config/*.yaml -text
+requirements.lock -text
+requirements.txt -text
+run_*.py -text
+scripts/*.py -text
+scripts/*.ps1 -text
+src/*.py -text
+forward_experiment/**/*.json -text
+forward_experiment/**/*.sha256 -text
+forward_experiment/**/*.sql -text
 experiments/runs/*/experiment_ledger.jsonl -text

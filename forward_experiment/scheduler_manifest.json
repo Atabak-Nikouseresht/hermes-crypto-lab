@@ -20,8 +20,8 @@
     "no_agent": true,
     "safety": "Audit-only: no market fetch, signal generation, equity snapshot, execution, or backdated trade",
     "script": "paper_forward_audit.py",
-    "workdir": "C:\\Users\\ataba\\hermes-crypto-lab",
-    "wrapper_sha256": "ef95c16fad9b53d158c470a6b3dda6458dcde051b5ea34c401a4169b5062e749"
+    "workdir": "[PROJECT_ROOT]",
+    "wrapper_sha256": "c1bc25a58c4df0a2e0317e1fe1043b8e574d596fe3af99b6bbac4e5a00a552e9"
   },
   "monthly_job": {
     "deliver": "local",
@@ -32,9 +32,10 @@
     "next_run_at": "2026-09-01T09:00:00+00:00",
     "no_agent": true,
     "script": "paper_forward_monthly.py",
-    "workdir": "C:\\Users\\ataba\\hermes-crypto-lab",
-    "wrapper_sha256": "a2e1be732f230e899675eb3066ed4e2acdc4e0c836f2c5133368ddfbea9a8908"
+    "workdir": "[PROJECT_ROOT]",
+    "wrapper_sha256": "fb2c76f58dbd4eb9c5176f159fac41b76390454d66b87420b8ce3e038b8b2fe7"
   },
+  "publication_note": "Portable source contract; exact frozen deployment snapshot preserved under forward_experiment/baselines/ebeac389/",
   "scheduler_design": "All deterministic jobs are Hermes no-agent scripts. Weekly execution is UTC-gated and never backdated. The 00:21 audit records missed windows without market access or trading. Wrapper paths and hashes are checked against installed copies. The laptop must be powered on and the interactive user session available; this is not high-availability infrastructure.",
   "weekly_job": {
     "deliver": "local",
@@ -49,8 +50,8 @@
     "no_agent": true,
     "permitted_window_utc": "Monday 00:05-00:20",
     "script": "paper_forward_weekly.py",
-    "workdir": "C:\\Users\\ataba\\hermes-crypto-lab",
-    "wrapper_sha256": "d471bae6430d69c66fd70ffa475609631fe0c631d28fad63ab0f94094b07c66a"
+    "workdir": "[PROJECT_ROOT]",
+    "wrapper_sha256": "b08279bbe0fe726c042d4c209af175ddb1e857af660feebc092e98c6b057a9e8"
   },
   "windows_task_scheduler_watchdog": {
     "installed": true,
@@ -64,6 +65,6 @@
     "start_when_available": true,
     "task_name": "Hermes_Crypto_Lab_Watchdog",
     "trigger": "logon plus every 15 minutes for one day",
-    "working_directory": "C:\\Users\\ataba\\hermes-crypto-lab"
+    "working_directory": "[PROJECT_ROOT]"
   }
 }

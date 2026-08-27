@@ -1,20 +1,57 @@
+# Secrets and local environment
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python environments, bytecode and packaging
 .venv/
 venv/
+ENV/
 __pycache__/
 **/__pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test, lint, type and notebook caches
 .pytest_cache/
 .coverage
+.coverage.*
 coverage.xml
 htmlcov/
 .mypy_cache/
+.pyright/
 .ruff_cache/
 .hypothesis/
+.ipynb_checkpoints/
+
+# IDE, editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Runtime logs and temporary files
 *.log
 logs/
+runtime/
+*.tmp
+*.temp
+*.bak
+*.lock
+*.owner.json
+
+# Local databases and recovery files
 *.duckdb
 *.duckdb.wal
 *.db
@@ -22,21 +59,15 @@ logs/
 *.sqlite3
 database/
 backups/
+
+# Downloaded/reproducible market data
 data/raw/
 data/processed/
-reports/data_quality_*.json
-reports/data_quality_*.md
-reports/backtest_*/
-reports/paper/
-reports/forward/
-reports/forward_monthly/
-reports/notifications/
-runtime/
-*.tmp
-*.lock
+
+# Generated reports and current operational snapshots
+reports/
+audits/coverage.json
+security/*.json
+
+# Keep the reproducible dependency lock despite the generic lock rule
 !requirements.lock
-*.owner.json
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/

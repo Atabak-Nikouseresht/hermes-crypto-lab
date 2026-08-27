@@ -3,15 +3,17 @@ name: CI
 on:
   pull_request:
   push:
-    branches-ignore:
-      - runtime/**
 
 permissions:
   contents: read
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - name: Check out source
@@ -27,16 +29,28 @@ jobs:
       - name: Install locked dependencies
         run: python -m pip install --require-hashes -r requirements.lock
 
-      - name: Compile source and tests
-        run: python -m compileall -q src tests run_*.py scripts/verify_safety.py
+      - name: Check dependency compatibility
+        run: python -m pip check
 
-      - name: Verify no prohibited private exchange path
+      - name: Compile source, entry points, scripts and tests
+        run: >-
+          python -m compileall -q src tests scripts
+          run_backtest.py run_data_pipeline.py run_experiments.py
+          run_monthly_report.py run_paper.py
+
+      - name: Verify public-only execution boundary
         run: python scripts/verify_safety.py
 
-      - name: Audit locked dependencies
-        run: pip-audit -r requirements.lock
+      - name: Verify portable scheduler manifest and wrapper hashes
+        run: python scripts/verify_scheduler_manifest.py
 
-      - name: Verify governance, manifests, and locked strategy
+      - name: Verify Markdown local links
+        run: python scripts/check_markdown_links.py
+
+      - name: Audit locked dependencies
+        run: python -m pip_audit -r requirements.lock
+
+      - name: Verify governance and locked strategy
         run: >-
           python -c "from pathlib import Path;
           from run_paper import load_paper_configuration;
@@ -47,13 +61,13 @@ jobs:
           verify_trust_anchors(root,config);
           print('PASS: locked strategy and trust anchors verified')"
 
-      - name: Verify hardening hash chain
+      - name: Verify active hardening manifest
         run: >-
           python -c "from pathlib import Path;
           from src.hardening_manifest import verify_hardening_manifest;
-          print(verify_hardening_manifest(Path('.'), Path('forward_experiment/hardening_manifest.json'), Path('forward_experiment/hardening_manifest.json.sha256')))"
+          print(verify_hardening_manifest(Path('.'), Path('forward_experiment/hardening_manifest.json')))"
 
-      - name: Run safe unit and integration tests
+      - name: Run unit, property and integration tests
         env:
           HCL_TELEGRAM_TARGET: telegram:ci-placeholder
         run: python -m pytest tests -q

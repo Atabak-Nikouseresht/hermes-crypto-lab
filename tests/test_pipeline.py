@@ -2,7 +2,7 @@ from pathlib import Path
 
 import duckdb
 
-from run_weekly import run_pipeline
+from run_data_pipeline import run_pipeline
 from src.config import Settings
 
 

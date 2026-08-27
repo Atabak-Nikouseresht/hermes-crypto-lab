@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
-import logging
-from pathlib import Path
 from typing import Any
 
 import ccxt

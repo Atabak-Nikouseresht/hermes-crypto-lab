@@ -1,11 +1,11 @@
-"""Hermes no-agent wrapper for the 09:36 UTC missed-window audit."""
+"""Hermes no-agent wrapper for the 00:21 UTC missed-window audit."""
 
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROJECT = Path(r"C:\Users\ataba\hermes-crypto-lab")
+PROJECT = Path(__file__).resolve().parents[1]
 PYTHON = PROJECT / ".venv" / "Scripts" / "python.exe"
 SCRIPT = PROJECT / "run_paper.py"
 COMMAND = [str(PYTHON), str(SCRIPT), "--audit-missed"]

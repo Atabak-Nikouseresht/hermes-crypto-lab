@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
 PROHIBITED = {
     "real order method": re.compile(r"\.(?:create_order|createOrder)\s*\("),
@@ -22,7 +22,7 @@ def scan(root: Path) -> list[tuple[str, str, int]]:
     findings: list[tuple[str, str, int]] = []
     candidates = [root / "src"] + [
         root / name
-        for name in ("run_paper.py", "run_monthly_report.py", "run_weekly.py")
+        for name in ("run_paper.py", "run_monthly_report.py", "run_data_pipeline.py")
     ]
     files = []
     for candidate in candidates:

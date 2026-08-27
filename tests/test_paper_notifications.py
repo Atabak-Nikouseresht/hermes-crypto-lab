@@ -36,7 +36,7 @@ def test_telegram_failure_after_committed_run_does_not_change_trades_and_retry_i
     report = tmp_path / "report.md"
     report.write_text("virtual report", encoding="utf-8")
     sender = FailingThenWorkingSender()
-    service = NotificationService(system.store, target="telegram:configured-at-runtime", sender=sender)
+    service = NotificationService(system.store, target="telegram:test-target", sender=sender)
 
     with pytest.raises(NotificationError):
         service.send_committed_run("committed-run", report)

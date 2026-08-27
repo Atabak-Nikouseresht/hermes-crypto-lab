@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 from typing import Any
-import uuid
 
 import duckdb
 
@@ -81,7 +81,8 @@ class PaperStore:
                     requested_quantity DOUBLE NOT NULL,
                     target_weight DOUBLE NOT NULL,
                     status VARCHAR NOT NULL,
-                    created_at_utc TIMESTAMPTZ NOT NULL
+                    created_at_utc TIMESTAMPTZ NOT NULL,
+                    execution_protocol_version VARCHAR
                 );
                 CREATE TABLE IF NOT EXISTS paper_fills (
                     fill_id VARCHAR PRIMARY KEY,
@@ -95,7 +96,8 @@ class PaperStore:
                     spread_cost DOUBLE NOT NULL,
                     slippage_cost DOUBLE NOT NULL,
                     fee DOUBLE NOT NULL,
-                    filled_at_utc TIMESTAMPTZ NOT NULL
+                    filled_at_utc TIMESTAMPTZ NOT NULL,
+                    execution_protocol_version VARCHAR
                 );
                 CREATE TABLE IF NOT EXISTS equity_snapshots (
                     snapshot_id VARCHAR PRIMARY KEY,
@@ -214,6 +216,23 @@ class PaperStore:
                     status VARCHAR NOT NULL,
                     error VARCHAR
                 );
+                CREATE TABLE IF NOT EXISTS paper_execution_context (
+                    run_id VARCHAR NOT NULL,
+                    symbol VARCHAR NOT NULL,
+                    execution_protocol_version VARCHAR NOT NULL,
+                    signal_timestamp_utc TIMESTAMPTZ NOT NULL,
+                    finalized_candle_open_utc TIMESTAMPTZ NOT NULL,
+                    finalized_candle_close_utc TIMESTAMPTZ NOT NULL,
+                    quote_timestamp_utc TIMESTAMPTZ NOT NULL,
+                    bid DOUBLE NOT NULL,
+                    ask DOUBLE NOT NULL,
+                    midpoint DOUBLE NOT NULL,
+                    full_spread DOUBLE NOT NULL,
+                    execution_timestamp_utc TIMESTAMPTZ NOT NULL,
+                    execution_delay_seconds DOUBLE NOT NULL,
+                    data_age_seconds DOUBLE NOT NULL,
+                    PRIMARY KEY (run_id, symbol)
+                );
                 """
             )
             connection.execute(
@@ -226,6 +245,16 @@ class PaperStore:
             )
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES (4, ?, 'experiment-scoped windows and incidents')",
+                [now],
+            )
+            connection.execute(
+                "ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS execution_protocol_version VARCHAR"
+            )
+            connection.execute(
+                "ALTER TABLE paper_fills ADD COLUMN IF NOT EXISTS execution_protocol_version VARCHAR"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (5, ?, 'versioned ask-bid execution context')",
                 [now],
             )
             existing = connection.execute(

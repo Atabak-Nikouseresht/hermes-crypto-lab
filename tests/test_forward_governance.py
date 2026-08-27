@@ -1,4 +1,3 @@
-import json
 
 import pytest
 
@@ -11,7 +10,6 @@ from src.forward_governance import (
     verify_trust_anchors,
 )
 from src.paper_broker import PaperConfig
-
 
 ASSETS = ("BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT")
 EXPECTED_HASH = "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6"
@@ -52,6 +50,15 @@ def test_repository_governance_uses_code_anchored_release_hashes():
     verified = verify_trust_anchors(root, config)
 
     assert verified["locked_strategy"] == EXPECTED_HASH
+    assert "governance_amendment" in verified
+
+
+def test_repository_governance_amendment_rejects_schedule_drift():
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    config = PaperConfig(assets=ASSETS, schedule_hour=9, schedule_minute=5)
+
+    with pytest.raises(ValueError, match="schedule"):
+        verify_trust_anchors(root, config)
 
 
 def test_forward_experiment_bootstrap_is_idempotent(tmp_path):

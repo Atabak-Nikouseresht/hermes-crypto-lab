@@ -1,6 +1,12 @@
 # Hermes Crypto Lab
 
-Research-only cryptocurrency quantitative lab. It downloads and validates **public Binance spot OHLCV data** and runs a deterministic, event-driven historical backtest. It contains no parameter optimization, paper brokerage, private API access, or live trading.
+Research-only cryptocurrency quantitative lab. It downloads and validates **public Binance spot OHLCV data**, runs deterministic event-driven backtests and controlled experiments, and operates a public-data-only forward paper broker. At this commit, automated checks and source inspection found no configured private endpoint or real-order execution path. No live trading is implemented.
+
+## Scientific status and locked result
+
+The locked candidate is `mw120_sw00_ma150_n2_r07_v30`. Its sealed final test (2025-02-02 through 2026-08-20) produced approximately **−0.08% CAGR, 0.122 Sharpe, and 20.80% maximum drawdown**. This defensive result appears before any favorable historical baseline because it is the relevant post-selection evidence. Profitability is **unproven**; neither historical benchmark outperformance nor any fixed forward duration proves a durable edge.
+
+The controlled research evaluated 96 training configurations and disclosed 117 candidate backtests. The final period was accessed by two deterministic runs of the same locked candidate, so only the first access is treated as canonical and the period is not described as globally untouched thereafter.
 
 ## Universe
 
@@ -43,9 +49,10 @@ Runtime settings come from environment variables; `.env` is loaded when present 
 | `HCL_ASSETS_CONFIG` | `config/assets.yaml` | Asset-list path |
 | `HCL_DATABASE_PATH` | `database/trading.duckdb` | DuckDB metadata path |
 | `HCL_LOG_LEVEL` | `INFO` | Python logging level |
-| `HCL_INITIAL_CASH` | `2000.0` | Starting capital, accounted in USDT as the requested €2,000 equivalent |
+| `HCL_INITIAL_CASH` | `2000.0` | Starting capital measured as 2,000 USDT; no EUR equivalence is assumed |
 | `HCL_FEE_RATE` | `0.001` | Proportional fee per fill |
 | `HCL_SLIPPAGE_RATE` | `0.0005` | Adverse proportional execution slippage |
+| `HCL_TELEGRAM_TARGET` | empty | Local notification target; never committed to the repository |
 
 ## Backtest methodology
 
@@ -77,7 +84,9 @@ Every candidate trial includes configured fees/slippage and comparisons with BTC
 
 ## Persistent paper trading
 
-`run_paper.py` operates the locked `mw120_sw00_ma150_n2_r07_v30` strategy with 2,000 USDT virtual capital. It creates **no real exchange orders** and only uses CCXT public `fetch_ohlcv` and `fetch_ticker` data. The default is `--dry-run`; use `--paper` only to persist simulated fills. Decisions are permitted only Monday from **09:05 through 09:35 UTC**, with a 09:10 UTC execution target. Other runs still perform public-data health checks, recovery, reconciliation, and equity snapshots but return `NO_REBALANCE`.
+`run_paper.py` operates the locked `mw120_sw00_ma150_n2_r07_v30` strategy with 2,000 USDT virtual capital. It creates **no real exchange orders** and only uses CCXT public `fetch_ohlcv` and `fetch_ticker` data. The default is `--dry-run`; use `--paper` only to persist simulated fills. Protocol `paper-exec-v3-ask-bid-minspread-utc0010` permits decisions only Monday from **00:05 through 00:20 UTC**, with a 00:10 UTC target after the Sunday candle finalizes. Existing v2 records are preserved and never reinterpreted.
+
+This forward protocol is explicitly different from the sealed historical engine. The sealed engine sizes from the Sunday signal close and fills fixed quantities at the next daily close (known Tuesday 00:00 UTC); forward paper sizes at the Monday quote midpoint and buys from ask/sells to bid near 00:10 UTC. This is an **EXECUTION_MODEL_MISMATCH**, not hidden alignment and not a new sealed out-of-sample test.
 
 Execution uses observed bid/ask spread subject to a configured minimum spread, additional adverse slippage, and proportional fees. DuckDB stores the mutable current account/position projection separately from immutable order, fill, cash, and position ledgers. Schedule keys and deterministic per-signal idempotency keys prevent duplicate executions. Every run reconciles current cash and positions against append-only ledgers; a mismatch, negative state, missing calendar date, invalid/non-positive price, stale daily bar, stale quote, or failed public fetch activates a persistent kill switch before orders. Restart recovery marks uncommitted `RUNNING` records as `RECOVERED_ABORTED` and releases their schedule key; committed fills become `RECOVERED_COMMITTED` and retain duplicate protection. Reset is explicit and succeeds only after reconciliation:
 
@@ -89,7 +98,8 @@ Execution uses observed bid/ask spread subject to a configured minimum spread, a
 
 - `forward_experiment/checkpoint_manifest.json` identifies the pre-deployment Git commit, strategy/config hashes, data cutoff, baseline schema hash, experiment-ledger hash, and 32-test checkpoint. Its SHA-256 sidecar detects modification.
 - `forward_experiment/governance.json` fixes the strategy, costs, benchmarks, minimum 12-week observation rule, preferred 26–52 week evaluation, acceptance/rejection criteria, prohibited changes, and incident policy. It is create-once and hash verified before every paper command.
-- Hermes jobs `b11c6b3fe2fe` (weekly execution: `10 9 * * 1`), `2d7c37751317` (missed-window audit only: `36 9 * * 1`), and `3861e40b01a7` (monthly: `0 9 1 * *`) are no-agent script jobs. Hermes is configured in UTC and read-back shows `+00:00` next-run timestamps. The 09:36 audit performs no market fetch, signal, equity snapshot, or execution. Deterministic UTC wrapper gates, dispatch markers, DuckDB schedule keys, idempotency keys, and a project process lock provide layered DST-safe overlap and duplicate protection.
+- `forward_experiment/governance_amendment_v2.json` additively supersedes only the forward operational schedule and review terminology while anchoring the unchanged governance and strategy hashes. Twelve weeks is an operational checkpoint only, 26 weeks is preliminary observation, and 52 weeks is the minimum substantive review; duration alone never proves profitability and any real-money consideration requires independent human review.
+- Hermes jobs `b11c6b3fe2fe` (weekly execution: `10 0 * * 1`), `2d7c37751317` (missed-window audit only: `21 0 * * 1`), and `3861e40b01a7` (monthly: `0 9 1 * *`) are no-agent script jobs. Hermes is configured in UTC. The audit path performs no market fetch, signal, equity snapshot, or execution. A Windows Task Scheduler watchdog checks Gateway health and runs the idempotent startup audit, but it is interactive-user scoped: reliable scheduling still requires the laptop to be powered on and the user session available.
 - Weekly Telegram delivery occurs only after the DuckDB run is terminal. A failed notification is logged separately and retried with `--resend RUN_ID`; strategy execution is never repeated.
 - `run_monthly_report.py` uses only observations recorded after forward deployment and compares BTC/equal weight at identical timestamps. It never reads backtest returns.
 
@@ -229,6 +239,12 @@ Quality checks run before cleaning. Processed data removes duplicate timestamps 
 - `logs/data_pipeline.log` — UTC operational logs for downloads, retries, row counts, persistence, and failures.
 - `experiments/.gitkeep` — reserves an empty directory for future research notebooks/scripts.
 
+## Currency and cash limitations
+
+Residual capital is labeled **USDT defensive allocation**, not risk-free cash. Results are **USDT-denominated portfolio returns** unless an externally supplied, timestamp-aligned conversion series is passed to `src/currency_reporting.py`, which then reports **EUR-converted portfolio returns** and FX contribution without forward filling. No EUR/USDT source is silently assumed. USDT depeg and counterparty risk are non-zero accepted limitations; no staking, lending, or yield is introduced.
+
+Forward-review terminology is deliberately conservative: 12 weeks is an operational checkpoint, 26 weeks is a preliminary performance observation, and 52 weeks is the minimum substantive forward review. No duration alone proves profitability, and any real-money consideration requires explicit independent human review.
+
 ## Explicitly out of scope
 
-No hyperparameter search, strategy optimization, walk-forward optimization, paper brokerage, private endpoints, API-secret handling, exchange order placement, or live trading has been implemented. Backtest fills are deterministic research simulations, not executable broker orders.
+No live trading, private endpoints, API-secret handling, exchange order placement, leverage, margin, withdrawals, staking, lending, or unattended strategy promotion has been implemented. Backtest and paper fills are research simulations, not broker orders.

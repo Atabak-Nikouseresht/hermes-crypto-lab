@@ -1,9 +1,9 @@
 """Hermes no-agent wrapper for the 09:36 UTC missed-window audit."""
 
-from datetime import datetime, timezone
-from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 PROJECT = Path(r"C:\Users\ataba\hermes-crypto-lab")
 PYTHON = PROJECT / ".venv" / "Scripts" / "python.exe"
@@ -13,7 +13,7 @@ COMMAND = [str(PYTHON), str(SCRIPT), "--audit-missed"]
 
 def should_launch(now: datetime) -> bool:
     utc = now.astimezone(timezone.utc)
-    return utc.weekday() == 0 and utc.hour == 9 and utc.minute == 36
+    return utc.weekday() == 0 and utc.hour == 0 and utc.minute == 21
 
 
 def main() -> int:

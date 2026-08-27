@@ -1,8 +1,11 @@
 ccxt>=4.4,<5
 numpy>=2.0,<3
 pandas>=2.2,<3
-pyarrow>=17,<22
+pyarrow>=23.0.1,<24
 duckdb>=1.1,<2
 PyYAML>=6.0,<7
 python-dotenv>=1.0,<2
-pytest>=8.3,<9
+pytest>=9.0.3,<10
+pytest-cov>=7,<8
+hypothesis>=6,<7
+pip-audit>=2.9,<3

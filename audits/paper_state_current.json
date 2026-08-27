@@ -1,0 +1,42 @@
+{
+  "account": [
+    [
+      "locked_strategy",
+      2000.0,
+      798.5132702567001,
+      "ACTIVE"
+    ]
+  ],
+  "equity_snapshots": 6,
+  "fills": 2,
+  "latest_fills": [
+    [
+      "BUY",
+      "2026-08-24 00:10:37.521259+00:00",
+      "paper-exec-v2-ask-bid-utc0010"
+    ],
+    [
+      "BUY",
+      "2026-08-24 00:10:37.521259+00:00",
+      "paper-exec-v2-ask-bid-utc0010"
+    ]
+  ],
+  "open_incidents": 0,
+  "orders": 2,
+  "positions": [
+    [
+      "BNB/USDT",
+      0.994,
+      702.7712099999999
+    ],
+    [
+      "XRP/USDT",
+      330.40000000000003,
+      1.5185589
+    ]
+  ],
+  "reconciliation": {
+    "cash_delta": 0.0,
+    "position_mismatches": 0
+  }
+}

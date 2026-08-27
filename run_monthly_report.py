@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -11,12 +12,11 @@ from run_paper import (
     _project_paths,
     _verify_research_lock,
     load_paper_configuration,
+    open_locked_system,
 )
 from src.config import load_settings
 from src.forward_monthly import generate_monthly_forward_report
-from src.forward_governance import bootstrap_forward_experiment
-from src.forward_operations import InterProcessLock, record_missed_windows
-from src.paper_broker import PaperTradingSystem
+from src.forward_operations import record_missed_windows
 from src.paper_notifications import HermesTelegramSender
 
 
@@ -24,16 +24,20 @@ def main() -> None:
     settings = load_settings()
     config, values = load_paper_configuration(settings.project_root)
     database_path, _weekly_reports = _project_paths(settings.project_root, values)
-    system = PaperTradingSystem(database_path, config)
     _verify_research_lock(settings.project_root, config)
-    bootstrap_forward_experiment(system.store, settings.project_root, config)
     governance = json.loads(
         (settings.project_root / "forward_experiment" / "governance.json").read_text(
             encoding="utf-8"
         )
     )
     now = datetime.now(timezone.utc)
-    with InterProcessLock(settings.project_root / "runtime" / "paper_monthly.lock"):
+    with open_locked_system(
+        database_path=database_path,
+        config=config,
+        project_root=settings.project_root,
+        lock_path=settings.project_root / "runtime" / "forward_writer.lock",
+        command_name="monthly-forward-report",
+    ) as system:
         record_missed_windows(
             system.store,
             start=_experiment_start(settings.project_root),
@@ -58,7 +62,10 @@ def main() -> None:
                 slippage_rate=config.slippage_rate,
             )
             report_path = result["report_path"]
-        HermesTelegramSender()(str(values["telegram_target"]), Path(report_path))
+        telegram_target = os.getenv("HCL_TELEGRAM_TARGET")
+        if not telegram_target:
+            raise ValueError("Monthly delivery requires HCL_TELEGRAM_TARGET")
+        HermesTelegramSender()(telegram_target, Path(report_path))
         print(f"Forward-only monthly report delivered: {report_path}")
 
 

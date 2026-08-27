@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import os
-from pathlib import Path
+import sys
 import threading
+import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import ClassVar, Self
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -15,47 +19,104 @@ import pandas as pd
 from src.paper_broker import PaperConfig, PaperRunResult
 from src.paper_store import PaperStore
 
+PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc).isoformat()
+
 
 class AlreadyRunningError(RuntimeError):
     pass
 
 
 class InterProcessLock:
-    """Non-blocking one-byte file lock with same-process protection."""
+    """OS-level writer lock with bounded wait and auditable owner metadata.
 
-    _held: set[str] = set()
-    _guard = threading.Lock()
+    The OS byte lock is authoritative and is automatically released after a
+    crash. An owner sidecar is diagnostic only; stale metadata is detected and
+    replaced only after the OS lock has been successfully acquired.
+    """
 
-    def __init__(self, path: Path):
+    _held: ClassVar[set[str]] = set()
+    _guard: ClassVar[threading.Lock] = threading.Lock()
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        timeout_seconds: float = 0.0,
+        command_name: str | None = None,
+    ):
         self.path = Path(path).resolve()
+        self.owner_path = self.path.with_suffix(self.path.suffix + ".owner.json")
+        self.timeout_seconds = max(0.0, float(timeout_seconds))
+        self.command_name = command_name or " ".join(sys.argv)
         self._handle = None
+        self._token: str | None = None
+        self.stale_owner: dict | None = None
 
-    def __enter__(self) -> "InterProcessLock":
+    @staticmethod
+    def _try_lock(handle) -> None:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _read_owner(self) -> dict | None:
+        try:
+            return json.loads(self.owner_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+    def _write_owner(self) -> None:
+        self._token = uuid.uuid4().hex
+        payload = {
+            "token": self._token,
+            "pid": os.getpid(),
+            "process_start_time_utc": PROCESS_STARTED_AT_UTC,
+            "command": self.command_name,
+            "lock_created_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary = self.owner_path.with_suffix(self.owner_path.suffix + f".{self._token}.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temporary.replace(self.owner_path)
+
+    def __enter__(self) -> Self:
         key = str(self.path).casefold()
         with self._guard:
             if key in self._held:
-                raise AlreadyRunningError(f"Paper process already holds {self.path}")
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+                raise AlreadyRunningError(f"Current process already holds {self.path}")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
             handle = self.path.open("a+b")
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
                 handle.write(b"0")
                 handle.flush()
-            handle.seek(0)
+                os.fsync(handle.fileno())
             try:
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._try_lock(handle)
+                break
             except (OSError, BlockingIOError) as error:
                 handle.close()
-                raise AlreadyRunningError(f"Another paper process is active: {self.path}") from error
+                if time.monotonic() >= deadline:
+                    owner = self._read_owner()
+                    raise AlreadyRunningError(
+                        f"Forward writer lock busy: path={self.path}, owner={owner}"
+                    ) from error
+                time.sleep(0.1)
+        self.stale_owner = self._read_owner()
+        self._handle = handle
+        with self._guard:
             self._held.add(key)
-            self._handle = handle
+        try:
+            self._write_owner()
+        except Exception:
+            self.__exit__(*sys.exc_info())
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -74,6 +135,12 @@ class InterProcessLock:
                 self._handle.close()
                 self._handle = None
             self._held.discard(key)
+        owner = self._read_owner()
+        if owner and owner.get("token") == self._token:
+            try:
+                self.owner_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def utc_and_rome_labels(value: datetime | pd.Timestamp) -> dict[str, str]:
@@ -90,7 +157,7 @@ def verify_immutable_manifest(manifest: Path, sidecar: Path) -> str:
     expected = expected_line.split()[0]
     actual = hashlib.sha256(manifest.read_bytes()).hexdigest()
     if actual != expected:
-        raise ValueError(f"Immutable manifest hash mismatch: expected {expected}, got {actual}")
+        raise ValueError(f"Tamper-evident manifest hash mismatch: expected {expected}, got {actual}")
     return actual
 
 
@@ -230,19 +297,6 @@ def audit_missed_schedule(
         completed_at=now_utc.to_pydatetime(),
         message="Missed UTC window recorded; no market fetch and no backdated trade",
         reconciliation=reconciliation,
-    )
-    window_start = now_utc.normalize() + pd.Timedelta(
-        hours=config.schedule_hour, minutes=config.schedule_minute
-    )
-    target = now_utc.normalize() + pd.Timedelta(
-        hours=config.schedule_hour, minutes=config.execution_target_minute
-    )
-    store.record_forward_window(
-        schedule_key=window_start.strftime("%Y-%m-%dT%H:%MZ"),
-        scheduled_for=target.to_pydatetime(),
-        run_id=run_id,
-        outcome="MISSED_SCHEDULE",
-        now=now_utc.to_pydatetime(),
     )
     return PaperRunResult(
         run_id,

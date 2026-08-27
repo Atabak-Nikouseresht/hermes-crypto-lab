@@ -1,13 +1,10 @@
-from dataclasses import replace
 from datetime import datetime, timezone
 
 import duckdb
 import numpy as np
 import pandas as pd
-import pytest
 
 from src.paper_broker import MarketSnapshot, PaperConfig, PaperTradingSystem, Quote
-
 
 ASSETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT"]
 
@@ -64,6 +61,12 @@ def test_duplicate_scheduled_run_cannot_create_duplicate_orders_or_fills(tmp_pat
         counts_after_first = connection.execute(
             "SELECT (SELECT COUNT(*) FROM paper_orders), (SELECT COUNT(*) FROM paper_fills)"
         ).fetchone()
+        protocols = connection.execute(
+            "SELECT DISTINCT execution_protocol_version FROM paper_fills"
+        ).fetchall()
+        context_count = connection.execute(
+            "SELECT COUNT(*) FROM paper_execution_context"
+        ).fetchone()[0]
     second = system.run(_snapshot(now), now=now, dry_run=False)
     with duckdb.connect(str(database), read_only=True) as connection:
         counts_after_second = connection.execute(
@@ -73,9 +76,29 @@ def test_duplicate_scheduled_run_cannot_create_duplicate_orders_or_fills(tmp_pat
 
     assert first.status == "EXECUTED"
     assert counts_after_first[0] > 0
+    assert protocols == [("paper-exec-v3-ask-bid-minspread-utc0010",)]
+    assert context_count == counts_after_first[0]
     assert counts_after_first == counts_after_second
     assert second.status == "DUPLICATE_SCHEDULE"
     assert minimum_cash >= -1e-9
+
+
+def test_quote_timestamp_after_execution_time_fails_closed(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    snapshot = _snapshot(now)
+    original = snapshot.quotes["BTC/USDT"]
+    snapshot.quotes["BTC/USDT"] = Quote(
+        bid=original.bid,
+        ask=original.ask,
+        last=original.last,
+        timestamp=pd.Timestamp(now) + pd.Timedelta(milliseconds=1),
+    )
+    system = PaperTradingSystem(tmp_path / "paper.duckdb", _config())
+
+    result = system.run(snapshot, now=now, dry_run=True)
+
+    assert result.status == "KILL_SWITCH"
+    assert "future quote timestamp" in result.message
 
 
 def test_corrupted_persistent_cash_state_activates_kill_switch_before_orders(tmp_path):

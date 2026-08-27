@@ -58,18 +58,23 @@ paper_trading:
   accounting_currency: USDT
   locked_candidate_id: mw120_sw00_ma150_n2_r07_v30
   locked_from_experiment: 20260822T000641481839Z
-  telegram_target: telegram:configured-at-runtime
   fee_rate: 0.001
   minimum_spread_rate: 0.0002
   slippage_rate: 0.0005
+  execution_protocol_version: paper-exec-v3-ask-bid-minspread-utc0010
+  require_exchange_rules: true
   schedule_weekday: 0       # Monday, UTC
-  schedule_hour: 9
+  schedule_hour: 0
   schedule_minute: 5
   execution_target_minute: 10
-  schedule_window_minutes: 30
-  max_data_staleness_minutes: 720
+  schedule_window_minutes: 15
+  max_data_staleness_minutes: 30
   max_quote_staleness_minutes: 5
   lookback_days: 260
+  cost_scenarios:
+    observed: {slippage_multiplier: 1.0, spread_multiplier: 1.0}
+    stressed: {slippage_multiplier: 2.0, spread_multiplier: 2.0}
+    extreme: {slippage_multiplier: 5.0, spread_multiplier: 5.0}
 
 forward_experiment:
   minimum_observation_weeks: 12

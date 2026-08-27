@@ -1,0 +1,33 @@
+{
+  "version": "forward-governance-operational-amendment-v2",
+  "status": "active additive operational amendment; original sealed governance remains unchanged",
+  "base_governance_sha256": "f73f0897c15666daf3c6ff09b2ca4ec9737f412f9cf462bc2c3db8216bd0ef69",
+  "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
+  "scope": "forward execution schedule and review terminology only",
+  "strategy_selection_changed": false,
+  "return_performance_used": false,
+  "reason": "Reduce operational delay after the prior UTC daily candle finalizes; timing chosen a priori without return optimization. This does not align the forward protocol with the sealed next-daily-close model.",
+  "operational_schedule": {
+    "schedule_weekday": 0,
+    "schedule_hour": 0,
+    "schedule_minute": 5,
+    "execution_target_minute": 10,
+    "schedule_window_minutes": 15,
+    "timezone": "UTC"
+  },
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "execution_model_classification": "EXECUTION_MODEL_MISMATCH",
+  "review_terminology": {
+    "12_weeks": "operational checkpoint only",
+    "26_weeks": "preliminary performance observation",
+    "52_weeks": "minimum substantive forward review",
+    "fixed_duration_proves_profitability": false,
+    "real_money_requires_explicit_independent_human_review": true
+  },
+  "prohibitions": [
+    "no candidate reselection",
+    "no signal parameter change",
+    "no rewrite of sealed backtest or final test",
+    "no live trading or private exchange API"
+  ]
+}

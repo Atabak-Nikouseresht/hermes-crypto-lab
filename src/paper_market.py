@@ -5,11 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-import ccxt
 import pandas as pd
 
 from src.download_data import call_with_retry, create_exchange
-from src.paper_broker import MarketSnapshot, PaperConfig, Quote
+from src.paper_broker import MarketSnapshot, PaperConfig, Quote, SymbolRules
 from src.validate_data import rows_to_frame
 
 
@@ -33,7 +32,14 @@ def fetch_public_market_snapshot(
     market = exchange or create_exchange(exchange_id, timeout_ms)
     close_series = []
     quotes: dict[str, Quote] = {}
+    rules: dict[str, SymbolRules] = {}
+    ohlcv: dict[str, pd.DataFrame] = {}
     try:
+        call_with_retry(
+            lambda: market.load_markets(),
+            max_retries=max_retries,
+            backoff_base_seconds=backoff_base_seconds,
+        )
         for symbol in config.assets:
             rows = call_with_retry(
                 lambda symbol=symbol: market.fetch_ohlcv(
@@ -46,6 +52,7 @@ def fetch_public_market_snapshot(
             if not finalized:
                 raise ValueError(f"No finalized public OHLCV rows returned for {symbol}")
             frame = rows_to_frame(finalized)
+            ohlcv[symbol] = frame.copy()
             close_series.append(
                 pd.Series(
                     frame["close"].to_numpy(dtype=float),
@@ -58,20 +65,50 @@ def fetch_public_market_snapshot(
                 max_retries=max_retries,
                 backoff_base_seconds=backoff_base_seconds,
             )
+            if ticker.get("bid") is None or ticker.get("ask") is None:
+                raise ValueError(f"Executable bid/ask missing for {symbol}")
             last = float(ticker.get("last") or ticker.get("close") or 0.0)
-            bid = float(ticker.get("bid") or last)
-            ask = float(ticker.get("ask") or last)
+            bid = float(ticker["bid"])
+            ask = float(ticker["ask"])
             ticker_ms = ticker.get("timestamp")
-            quote_time = (
-                pd.to_datetime(ticker_ms, unit="ms", utc=True)
-                if ticker_ms is not None
-                else current
-            )
+            if ticker_ms is None:
+                raise ValueError(f"Quote timestamp missing for {symbol}")
+            quote_time = pd.to_datetime(ticker_ms, unit="ms", utc=True)
             quotes[symbol] = Quote(bid=bid, ask=ask, last=last, timestamp=quote_time)
+            market_info = market.market(symbol)
+            filters = {
+                item.get("filterType"): item
+                for item in market_info.get("info", {}).get("filters", [])
+            }
+            lot = filters.get("LOT_SIZE", {})
+            notional = filters.get("NOTIONAL", filters.get("MIN_NOTIONAL", {}))
+            price_filter = filters.get("PRICE_FILTER", {})
+            limits = market_info.get("limits", {})
+            rules[symbol] = SymbolRules(
+                active=bool(market_info.get("active")),
+                min_quantity=float(lot.get("minQty") or limits.get("amount", {}).get("min") or 0.0),
+                max_quantity=(
+                    float(lot.get("maxQty") or limits.get("amount", {}).get("max"))
+                    if (lot.get("maxQty") or limits.get("amount", {}).get("max")) is not None
+                    else None
+                ),
+                step_size=float(lot.get("stepSize") or 0.0),
+                min_notional=float(
+                    notional.get("minNotional") or limits.get("cost", {}).get("min") or 0.0
+                ),
+                price_tick=float(price_filter.get("tickSize") or 0.0),
+            )
     finally:
         if owned_exchange:
             close = getattr(market, "close", None)
             if callable(close):
                 close()
+    fetched_at = current if now is not None else pd.Timestamp.now(tz="UTC")
     closes = pd.concat(close_series, axis=1, join="inner").sort_index()
-    return MarketSnapshot(closes=closes, quotes=quotes, fetched_at=current)
+    return MarketSnapshot(
+        closes=closes,
+        quotes=quotes,
+        fetched_at=fetched_at,
+        symbol_rules=rules,
+        ohlcv=ohlcv,
+    )

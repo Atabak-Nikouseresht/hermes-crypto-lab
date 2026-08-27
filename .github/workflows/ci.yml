@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - runtime/**
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11.16
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.16'
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install locked dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
+
+      - name: Compile source and tests
+        run: python -m compileall -q src tests run_*.py scripts/verify_safety.py
+
+      - name: Verify no prohibited private exchange path
+        run: python scripts/verify_safety.py
+
+      - name: Audit locked dependencies
+        run: pip-audit -r requirements.lock
+
+      - name: Verify governance, manifests, and locked strategy
+        run: >-
+          python -c "from pathlib import Path;
+          from run_paper import load_paper_configuration;
+          from src.forward_governance import locked_strategy_hash, verify_trust_anchors;
+          root=Path('.').resolve();
+          config,_=load_paper_configuration(root);
+          assert locked_strategy_hash(config)=='29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6';
+          verify_trust_anchors(root,config);
+          print('PASS: locked strategy and trust anchors verified')"
+
+      - name: Verify hardening hash chain
+        run: >-
+          python -c "from pathlib import Path;
+          from src.hardening_manifest import verify_hardening_manifest;
+          print(verify_hardening_manifest(Path('.'), Path('forward_experiment/hardening_manifest.json'), Path('forward_experiment/hardening_manifest.json.sha256')))"
+
+      - name: Run safe unit and integration tests
+        env:
+          HCL_TELEGRAM_TARGET: telegram:ci-placeholder
+        run: python -m pytest tests -q

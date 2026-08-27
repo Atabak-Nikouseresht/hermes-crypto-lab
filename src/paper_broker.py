@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 import hashlib
 import math
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-import uuid
 
 import pandas as pd
 
-from src.paper_store import PaperStore, ReconciliationResult
+from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
+from src.paper_store import PaperStore
 from src.strategy import StrategyConfig, generate_signal
+from src.validate_data import validate_ohlcv
 
 
 @dataclass(frozen=True)
@@ -29,10 +31,22 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class SymbolRules:
+    active: bool
+    min_quantity: float
+    max_quantity: float | None
+    step_size: float
+    min_notional: float
+    price_tick: float
+
+
+@dataclass(frozen=True)
 class MarketSnapshot:
     closes: pd.DataFrame
     quotes: dict[str, Quote]
     fetched_at: pd.Timestamp
+    symbol_rules: dict[str, SymbolRules] = field(default_factory=dict)
+    ohlcv: dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -44,15 +58,18 @@ class PaperConfig:
     minimum_spread_rate: float = 0.0002
     slippage_rate: float = 0.0005
     schedule_weekday: int = 0
-    schedule_hour: int = 9
+    schedule_hour: int = 0
     schedule_minute: int = 5
     execution_target_minute: int = 10
-    schedule_window_minutes: int = 30
-    max_data_staleness_minutes: int = 720
+    schedule_window_minutes: int = 15
+    max_data_staleness_minutes: int = 30
     max_quote_staleness_minutes: int = 5
     quantity_tolerance: float = 1e-12
     rebalance_days: int = 7
     locked_candidate_id: str = "mw120_sw00_ma150_n2_r07_v30"
+    require_exchange_rules: bool = False
+    max_abs_daily_return: float = 0.75
+    max_volume_ratio: float = 100.0
     strategy_config: StrategyConfig = field(
         default_factory=lambda: StrategyConfig(
             momentum_long_days=120,
@@ -112,11 +129,13 @@ class PaperTradingSystem:
         return None
 
     def _validate_snapshot(self, snapshot: MarketSnapshot, now: pd.Timestamp) -> str | None:
-        closes = snapshot.closes.sort_index()
+        closes = snapshot.closes
         if closes.index.tz is None:
             return "Invalid data: close timestamps are not timezone-aware"
         if closes.index.has_duplicates:
             return "Invalid data: duplicate close timestamps"
+        if not closes.index.is_monotonic_increasing:
+            return "Invalid data: close timestamps are not strictly increasing"
         if list(closes.columns) != list(self.config.assets):
             return "Missing data: asset columns do not match configured universe"
         required = max(
@@ -128,6 +147,11 @@ class PaperTradingSystem:
             return f"Missing data: requires at least {required} daily bars"
         if closes.isna().any().any() or (closes <= 0).any().any():
             return "Invalid data: missing or non-positive close price"
+        if not all(math.isfinite(float(value)) for value in closes.to_numpy().ravel()):
+            return "Invalid data: non-finite close price"
+        extreme_returns = closes.pct_change().abs().max()
+        if (extreme_returns > self.config.max_abs_daily_return).any():
+            return "Invalid data: extreme daily price change requires manual review"
         expected = pd.date_range(closes.index.min(), closes.index.max(), freq="D", tz="UTC")
         if not closes.index.equals(expected):
             return "Missing data: daily close calendar has gaps"
@@ -135,10 +159,33 @@ class PaperTradingSystem:
         expected_latest = now.normalize() - pd.Timedelta(days=1)
         if latest > expected_latest:
             return "Invalid data: incomplete current daily bar included"
+        if latest < expected_latest:
+            return f"Stale data: expected finalized bar {expected_latest.isoformat()}, got {latest.isoformat()}"
         candle_age = now - (latest + pd.Timedelta(days=1))
-        if candle_age > pd.Timedelta(minutes=self.config.max_data_staleness_minutes):
+        if (
+            self._scheduled_key(now) is not None
+            and candle_age > pd.Timedelta(minutes=self.config.max_data_staleness_minutes)
+        ):
             return f"Stale data: latest finalized daily bar is {latest.isoformat()}"
         for asset in self.config.assets:
+            if self.config.require_exchange_rules:
+                rules = snapshot.symbol_rules.get(asset)
+                if rules is None:
+                    return f"Missing data: public exchange filters missing for {asset}"
+                if not rules.active:
+                    return f"Invalid data: Binance symbol is inactive for {asset}"
+            frame = snapshot.ohlcv.get(asset)
+            if frame is not None:
+                validation = validate_ohlcv(frame)
+                if not validation.is_valid:
+                    return f"Invalid OHLCV for {asset}: {validation.summary}"
+                if (frame["volume"] < 0).any() or not all(
+                    math.isfinite(float(value)) for value in frame["volume"]
+                ):
+                    return f"Invalid volume for {asset}"
+                volume_ratio = frame["volume"].replace(0, float("nan")).pct_change().abs()
+                if (volume_ratio > self.config.max_volume_ratio).any():
+                    return f"Extreme volume change requires manual review for {asset}"
             quote = snapshot.quotes.get(asset)
             if quote is None:
                 return f"Missing data: quote missing for {asset}"
@@ -148,6 +195,8 @@ class PaperTradingSystem:
             ):
                 return f"Invalid data: malformed quote for {asset}"
             quote_time = self._utc(quote.timestamp)
+            if quote_time > now:
+                return f"Invalid data: future quote timestamp for {asset}"
             if now - quote_time > pd.Timedelta(
                 minutes=self.config.max_quote_staleness_minutes
             ):
@@ -177,6 +226,7 @@ class PaperTradingSystem:
             for asset in self.config.assets
         )
         proposals = []
+        self._last_rejections = []
         for asset in self.config.assets:
             current = positions.get(asset, {}).get("quantity", 0.0)
             target_weight = signal.target_weights.get(asset, 0.0)
@@ -185,6 +235,24 @@ class PaperTradingSystem:
             if abs(delta) <= self.config.quantity_tolerance:
                 continue
             side = "BUY" if delta > 0 else "SELL"
+            quantity = abs(delta)
+            rules = snapshot.symbol_rules.get(asset)
+            if rules is not None:
+                if rules.step_size > 0:
+                    quantity = math.floor(quantity / rules.step_size) * rules.step_size
+                notional = quantity * snapshot.quotes[asset].mid
+                invalid_reason = None
+                if quantity < rules.min_quantity:
+                    invalid_reason = "below_min_quantity"
+                elif rules.max_quantity is not None and quantity > rules.max_quantity:
+                    invalid_reason = "above_max_quantity"
+                elif notional < rules.min_notional:
+                    invalid_reason = "below_min_notional"
+                if invalid_reason:
+                    self._last_rejections.append(
+                        {"symbol": asset, "side": side, "reason": invalid_reason, "notional": notional}
+                    )
+                    continue
             raw_key = (
                 f"{self.config.account_id}|{signal_timestamp.isoformat()}|{asset}|"
                 f"{self.config.locked_candidate_id}"
@@ -195,7 +263,7 @@ class PaperTradingSystem:
                     "idempotency_key": idempotency_key,
                     "symbol": asset,
                     "side": side,
-                    "requested_quantity": abs(delta),
+                    "requested_quantity": quantity,
                     "target_weight": target_weight,
                 }
             )
@@ -203,19 +271,25 @@ class PaperTradingSystem:
 
     def _execution_terms(self, quote: Quote, side: str) -> dict[str, float]:
         mid = quote.mid
-        observed_half_spread = max((quote.ask - quote.bid) / (2.0 * mid), 0.0)
-        half_spread = max(observed_half_spread, self.config.minimum_spread_rate / 2.0)
+        full_spread = quote.ask - quote.bid
+        observed_half_spread = max(full_spread / (2.0 * mid), 0.0)
         if side == "BUY":
-            spread_price = mid * (1.0 + half_spread)
-            execution_price = spread_price * (1.0 + self.config.slippage_rate)
+            minimum_adverse_price = mid * (1.0 + self.config.minimum_spread_rate)
+            base_executable_price = max(quote.ask, minimum_adverse_price)
+            execution_price = base_executable_price * (1.0 + self.config.slippage_rate)
         else:
-            spread_price = mid * (1.0 - half_spread)
-            execution_price = spread_price * (1.0 - self.config.slippage_rate)
+            minimum_adverse_price = mid * (1.0 - self.config.minimum_spread_rate)
+            base_executable_price = min(quote.bid, minimum_adverse_price)
+            execution_price = base_executable_price * (1.0 - self.config.slippage_rate)
         return {
             "mid": mid,
-            "spread_price": spread_price,
+            "spread_price": base_executable_price,
+            "base_executable_price": base_executable_price,
             "execution_price": execution_price,
-            "half_spread": half_spread,
+            "half_spread": observed_half_spread,
+            "full_spread": full_spread,
+            "minimum_spread_applied": base_executable_price != (quote.ask if side == "BUY" else quote.bid),
+            "execution_protocol_version": EXECUTION_PROTOCOL_VERSION,
         }
 
     def _persist_equity(
@@ -265,6 +339,31 @@ class PaperTradingSystem:
                 symbol: {"quantity": float(quantity), "average_cost": float(average_cost)}
                 for symbol, quantity, average_cost in position_rows
             }
+            finalized_close = signal_timestamp + pd.Timedelta(days=1)
+            for proposal in proposals:
+                quote = snapshot.quotes[proposal["symbol"]]
+                connection.execute(
+                    """
+                    INSERT INTO paper_execution_context VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        run_id,
+                        proposal["symbol"],
+                        EXECUTION_PROTOCOL_VERSION,
+                        signal_timestamp,
+                        signal_timestamp,
+                        finalized_close,
+                        quote.timestamp,
+                        quote.bid,
+                        quote.ask,
+                        quote.mid,
+                        quote.ask - quote.bid,
+                        now,
+                        (now - finalized_close).total_seconds(),
+                        (now - quote.timestamp).total_seconds(),
+                    ],
+                )
             sells = [proposal for proposal in proposals if proposal["side"] == "SELL"]
             buys = [proposal for proposal in proposals if proposal["side"] == "BUY"]
 
@@ -316,7 +415,7 @@ class PaperTradingSystem:
                 order_id = "ord_" + proposal["idempotency_key"][:28]
                 fill_id = "fill_" + proposal["idempotency_key"][:27]
                 connection.execute(
-                    "INSERT INTO paper_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FILLED', ?)",
+                    "INSERT INTO paper_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FILLED', ?, ?)",
                     [
                         order_id,
                         proposal["idempotency_key"],
@@ -328,10 +427,11 @@ class PaperTradingSystem:
                         proposal["requested_quantity"],
                         proposal["target_weight"],
                         now,
+                        EXECUTION_PROTOCOL_VERSION,
                     ],
                 )
                 connection.execute(
-                    "INSERT INTO paper_fills VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO paper_fills VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         fill_id,
                         order_id,
@@ -345,6 +445,7 @@ class PaperTradingSystem:
                         slippage_cost,
                         fee,
                         now,
+                        EXECUTION_PROTOCOL_VERSION,
                     ],
                 )
                 connection.execute(

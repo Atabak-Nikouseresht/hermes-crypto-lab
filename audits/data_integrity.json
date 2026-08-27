@@ -1,0 +1,150 @@
+{
+  "created_at_utc": "2026-08-26T12:30:41.877220+00:00",
+  "files": [
+    {
+      "path": "data/processed/BNB_USDT_1d.parquet",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2017-11-07T00:00:00+00:00",
+        "first_candle_open_utc": "2017-11-06T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3210
+      },
+      "sha256": "b707136bbeaf54b20acc090bb7cce0cca8404b6c6312661c0fcce613556e18cc"
+    },
+    {
+      "path": "data/processed/BTC_USDT_1d.parquet",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2017-08-18T00:00:00+00:00",
+        "first_candle_open_utc": "2017-08-17T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3291
+      },
+      "sha256": "60b4e107f370058a0b562060e8ef2aea90ca7f1f2ddb4b69c3fb60b7fe1b6940"
+    },
+    {
+      "path": "data/processed/ETH_USDT_1d.parquet",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2017-08-18T00:00:00+00:00",
+        "first_candle_open_utc": "2017-08-17T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3291
+      },
+      "sha256": "8444b0e7d97de7b337932a2267d300d55018b74a2d510e05918bfa9839c5bf1a"
+    },
+    {
+      "path": "data/processed/TRX_USDT_1d.parquet",
+      "semantic": {
+        "extreme_price_change_count": 1,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2018-06-12T00:00:00+00:00",
+        "first_candle_open_utc": "2018-06-11T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 2993
+      },
+      "sha256": "115be3da5306b41cee78e4a47cdca9e828d1fb584fc2148c148cf578a97759e2"
+    },
+    {
+      "path": "data/processed/XRP_USDT_1d.parquet",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2018-05-05T00:00:00+00:00",
+        "first_candle_open_utc": "2018-05-04T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3031
+      },
+      "sha256": "755d865d007e2429d2a25d204fd454ee7a33a35e9b0d512d58356c6ba61d2a29"
+    },
+    {
+      "path": "data/raw/20260821T232516Z/BNB_USDT_1d.json",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2017-11-07T00:00:00+00:00",
+        "first_candle_open_utc": "2017-11-06T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3210
+      },
+      "sha256": "093dfb2a2f94f7cde6e3840fce0e2966eb67e5401431470e438750d89dfe641f"
+    },
+    {
+      "path": "data/raw/20260821T232516Z/BTC_USDT_1d.json",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2017-08-18T00:00:00+00:00",
+        "first_candle_open_utc": "2017-08-17T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3291
+      },
+      "sha256": "00e4cfdf96fc4fd7546acd322873d3603dd37b1f03e6bad8f1a804a5fee5cfa0"
+    },
+    {
+      "path": "data/raw/20260821T232516Z/ETH_USDT_1d.json",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2017-08-18T00:00:00+00:00",
+        "first_candle_open_utc": "2017-08-17T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3291
+      },
+      "sha256": "738fc059aef867431f82d4ebf6721513a6ae95cfa1ede1ea1422faf143cacdb7"
+    },
+    {
+      "path": "data/raw/20260821T232516Z/TRX_USDT_1d.json",
+      "semantic": {
+        "extreme_price_change_count": 1,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2018-06-12T00:00:00+00:00",
+        "first_candle_open_utc": "2018-06-11T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 2993
+      },
+      "sha256": "5b931efdc80e1e40b95abb10381fcb13f26cd48a60048992e4c578d67a6134e6"
+    },
+    {
+      "path": "data/raw/20260821T232516Z/XRP_USDT_1d.json",
+      "semantic": {
+        "extreme_price_change_count": 0,
+        "extreme_volume_change_count": 0,
+        "first_candle_close_utc": "2018-05-05T00:00:00+00:00",
+        "first_candle_open_utc": "2018-05-04T00:00:00+00:00",
+        "last_candle_close_utc": "2026-08-21T00:00:00+00:00",
+        "last_candle_open_utc": "2026-08-20T00:00:00+00:00",
+        "rows": 3031
+      },
+      "sha256": "84773e1ac4572a375cc82584defc249c0181d1957d358d588203ddf1be2be599"
+    }
+  ],
+  "forward_fill_used": false,
+  "metadata": {
+    "ccxt_version": "4.5.75",
+    "exchange": "Binance public spot",
+    "path_base": "project_root",
+    "source_retrieval_run": "20260821T232516Z",
+    "symbols": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "BNB/USDT",
+      "XRP/USDT",
+      "TRX/USDT"
+    ],
+    "timeframe": "1d"
+  }
+}

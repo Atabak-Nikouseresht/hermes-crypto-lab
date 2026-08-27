@@ -1,9 +1,9 @@
 """Hermes no-agent UTC gate for the exact weekly paper command."""
 
-from datetime import datetime, timezone
-from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 PROJECT = Path(r"C:\Users\ataba\hermes-crypto-lab")
 PYTHON = PROJECT / ".venv" / "Scripts" / "python.exe"
@@ -13,7 +13,7 @@ COMMAND = [str(PYTHON), str(SCRIPT), "--paper"]
 
 def should_launch(now: datetime) -> bool:
     utc = now.astimezone(timezone.utc)
-    return utc.weekday() == 0 and utc.hour == 9 and 10 <= utc.minute <= 35
+    return utc.weekday() == 0 and utc.hour == 0 and 10 <= utc.minute <= 20
 
 
 def claim_dispatch(now: datetime) -> bool:

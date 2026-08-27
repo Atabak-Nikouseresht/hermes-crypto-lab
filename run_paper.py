@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 import logging
 import os
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-import sys
 
 import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
 from src.config import load_assets, load_settings
+from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
 from src.forward_governance import bootstrap_forward_experiment, verify_trust_anchors
 from src.forward_operations import (
     AlreadyRunningError,
@@ -21,7 +22,7 @@ from src.forward_operations import (
     record_missed_windows,
 )
 from src.logging_config import configure_logging
-from src.paper_broker import PaperConfig, PaperRunResult, PaperTradingSystem
+from src.paper_broker import PaperConfig, PaperTradingSystem
 from src.paper_forward import (
     build_forward_diagnostics,
     commit_operational_failure,
@@ -57,6 +58,8 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
         raise PermissionError("Paper trading is disabled")
     if payload.get("live_trading_enabled"):
         raise PermissionError("Live trading must remain disabled")
+    if values.get("execution_protocol_version") != EXECUTION_PROTOCOL_VERSION:
+        raise PermissionError("Configured execution protocol differs from code-locked protocol")
     assets = tuple(load_assets(project_root / "config" / "assets.yaml"))
     config = PaperConfig(
         assets=assets,
@@ -72,6 +75,7 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
         max_data_staleness_minutes=int(values["max_data_staleness_minutes"]),
         max_quote_staleness_minutes=int(values["max_quote_staleness_minutes"]),
         locked_candidate_id=str(values["locked_candidate_id"]),
+        require_exchange_rules=bool(values["require_exchange_rules"]),
     )
     return config, values
 
@@ -90,12 +94,56 @@ def _verify_research_lock(project_root: Path, config: PaperConfig) -> str:
     return verify_trust_anchors(project_root, config)["locked_strategy"]
 
 
+def resolve_telegram_target(command_line_target: str | None) -> str:
+    """Resolve the notification target without repository-stored identifiers."""
+    target = command_line_target or os.getenv("HCL_TELEGRAM_TARGET")
+    if not target:
+        raise ValueError(
+            "Telegram delivery requires HCL_TELEGRAM_TARGET or --telegram-target"
+        )
+    return target
+
+
+@contextmanager
+def open_locked_system(
+    *,
+    database_path: Path,
+    config: PaperConfig,
+    project_root: Path,
+    lock_path: Path,
+    command_name: str,
+    bootstrap: bool = True,
+):
+    """Acquire the global writer lock before opening or recovering DuckDB."""
+    with InterProcessLock(
+        lock_path, timeout_seconds=5, command_name=command_name
+    ):
+        system = PaperTradingSystem(database_path, config)
+        if bootstrap:
+            bootstrap_forward_experiment(system.store, project_root, config)
+        yield system
+
+
 def _experiment_start(project_root: Path) -> pd.Timestamp:
     governance = project_root / "forward_experiment" / "governance.json"
     if not governance.exists():
         return pd.Timestamp.now(tz="UTC")
     payload = json.loads(governance.read_text(encoding="utf-8"))
     return pd.Timestamp(payload["experiment_start_utc"]).tz_convert("UTC")
+
+
+def _current_schedule_window_closed(
+    now: datetime | pd.Timestamp, config: PaperConfig
+) -> bool:
+    current = pd.Timestamp(now)
+    if current.tzinfo is None:
+        raise ValueError("Schedule audit time must be timezone-aware")
+    current = current.tz_convert("UTC")
+    window_end = current.normalize() + pd.Timedelta(
+        hours=config.schedule_hour,
+        minutes=config.schedule_minute + config.schedule_window_minutes,
+    )
+    return current.weekday() == config.schedule_weekday and current > window_end
 
 
 def _send_sample(target: str, reports_dir: Path, config: PaperConfig) -> Path:
@@ -158,6 +206,11 @@ def main() -> None:
         action="store_true",
         help="Audit missed schedule only; no market fetch or strategy execution",
     )
+    parser.add_argument(
+        "--startup-audit",
+        action="store_true",
+        help="Record every missing window since forward start; no market fetch",
+    )
     parser.add_argument("--resend", metavar="RUN_ID", help="Retry Telegram only; never execute strategy")
     parser.add_argument("--status", action="store_true", help="Print persistent forward status as JSON")
     parser.add_argument("--reconcile", action="store_true", help="Run reconciliation only")
@@ -178,66 +231,105 @@ def main() -> None:
     configure_logging(settings.logs_dir, settings.log_level)
     config, values = load_paper_configuration(settings.project_root)
     database_path, reports_dir = _project_paths(settings.project_root, values)
-    system = PaperTradingSystem(database_path, config)
     _verify_research_lock(settings.project_root, config)
-    bootstrap_forward_experiment(system.store, settings.project_root, config)
-    telegram_target = args.telegram_target or str(
-        values.get("telegram_target", "telegram:configured-at-runtime")
-    )
+    writer_lock = settings.project_root / "runtime" / "forward_writer.lock"
 
     if args.status:
-        print(json.dumps(_status(system), indent=2, sort_keys=True))
+        with open_locked_system(
+            database_path=database_path,
+            config=config,
+            project_root=settings.project_root,
+            lock_path=writer_lock,
+            command_name="status",
+        ) as system:
+            print(json.dumps(_status(system), indent=2, sort_keys=True))
         return
     if args.reconcile:
-        result = system.store.reconcile()
-        print(json.dumps({"valid": result.valid, "message": result.message}, indent=2))
-        if not result.valid:
-            raise SystemExit(2)
+        with open_locked_system(
+            database_path=database_path,
+            config=config,
+            project_root=settings.project_root,
+            lock_path=writer_lock,
+            command_name="reconcile",
+        ) as system:
+            result = system.store.reconcile()
+            print(json.dumps({"valid": result.valid, "message": result.message}, indent=2))
+            if not result.valid:
+                raise SystemExit(2)
         return
     if args.kill_switch_status:
-        with system.store.connect(read_only=True) as connection:
-            incidents = connection.execute(
-                """
-                SELECT incident_id, reason, created_at_utc, cleared_at_utc
-                FROM paper_incidents ORDER BY created_at_utc DESC
-                """
-            ).fetchall()
-        print(
-            json.dumps(
-                {
-                    "account_status": system.store.account()["status"],
-                    "automatic_reset": False,
-                    "incidents": [
-                        {
-                            "incident_id": row[0],
-                            "reason": row[1],
-                            "created_at_utc": str(row[2]),
-                            "cleared_at_utc": str(row[3]) if row[3] else None,
-                        }
-                        for row in incidents
-                    ],
-                },
-                indent=2,
+        with open_locked_system(
+            database_path=database_path,
+            config=config,
+            project_root=settings.project_root,
+            lock_path=writer_lock,
+            command_name="kill-switch-status",
+        ) as system:
+            with system.store.connect(read_only=True) as connection:
+                incidents = connection.execute(
+                    """
+                    SELECT incident_id, reason, created_at_utc, cleared_at_utc
+                    FROM paper_incidents ORDER BY created_at_utc DESC
+                    """
+                ).fetchall()
+            print(
+                json.dumps(
+                    {
+                        "account_status": system.store.account()["status"],
+                        "automatic_reset": False,
+                        "incidents": [
+                            {
+                                "incident_id": row[0],
+                                "reason": row[1],
+                                "created_at_utc": str(row[2]),
+                                "cleared_at_utc": str(row[3]) if row[3] else None,
+                            }
+                            for row in incidents
+                        ],
+                    },
+                    indent=2,
+                )
             )
-        )
         return
     if args.reset_kill_switch:
-        system.store.reset_kill_switch(now=datetime.now(timezone.utc))
+        with open_locked_system(
+            database_path=database_path,
+            config=config,
+            project_root=settings.project_root,
+            lock_path=writer_lock,
+            command_name="kill-switch-reset",
+        ) as system:
+            system.store.reset_kill_switch(now=datetime.now(timezone.utc))
         print("Paper-trading kill switch reset after successful reconciliation")
         return
     if args.resend:
-        service = NotificationService(
-            system.store, target=telegram_target, sender=HermesTelegramSender()
-        )
-        service.resend(args.resend)
+        with open_locked_system(
+            database_path=database_path,
+            config=config,
+            project_root=settings.project_root,
+            lock_path=writer_lock,
+            command_name="telegram-resend",
+        ) as system:
+            service = NotificationService(
+                system.store, target="", sender=HermesTelegramSender()
+            )
+            service.resend(args.resend)
         print(f"Notification resent for run {args.resend}; strategy was not executed")
         return
     if args.sample_telegram:
+        telegram_target = resolve_telegram_target(args.telegram_target)
         path = _send_sample(telegram_target, reports_dir, config)
         print(f"Sample Telegram report delivered: {path}")
         return
-    if args.audit_missed:
-        with InterProcessLock(settings.project_root / "runtime" / "paper_forward.lock"):
+    if args.audit_missed or args.startup_audit:
+        telegram_target = resolve_telegram_target(args.telegram_target)
+        with open_locked_system(
+            database_path=database_path,
+            config=config,
+            project_root=settings.project_root,
+            lock_path=writer_lock,
+            command_name="missed-window-audit",
+        ) as system:
             now = datetime.now(timezone.utc)
             result = audit_missed_schedule(
                 system.store,
@@ -270,24 +362,26 @@ def main() -> None:
             os.getenv("HCL_PAPER_DRY_RUN", str(values["default_dry_run"]))
         )
 
-    lock_path = settings.project_root / "runtime" / "paper_forward.lock"
     try:
-        with InterProcessLock(lock_path):
+        telegram_target = resolve_telegram_target(args.telegram_target)
+        with open_locked_system(
+            database_path=database_path,
+            config=config,
+            project_root=settings.project_root,
+            lock_path=writer_lock,
+            command_name="scheduled-paper-run",
+        ) as system:
             now = datetime.now(timezone.utc)
             start = _experiment_start(settings.project_root)
-            missed_count = record_missed_windows(
-                system.store, start=start, now=now, config=config
-            )
+            record_missed_windows(system.store, start=start, now=now, config=config)
             schedule_key = system._scheduled_key(pd.Timestamp(now))
-            window_end = pd.Timestamp(now).normalize() + pd.Timedelta(
-                hours=config.schedule_hour,
-                minutes=config.schedule_minute + config.schedule_window_minutes,
-            )
-            current_window_missed = (
-                pd.Timestamp(now).weekday() == config.schedule_weekday
-                and pd.Timestamp(now) > window_end
-                and missed_count > 0
-            )
+            current_window_missed = _current_schedule_window_closed(now, config)
+            if current_window_missed:
+                print(
+                    "Status: MISSED_SCHEDULE — current UTC window is closed; "
+                    "no market fetch, signal calculation, equity snapshot, or trade was performed"
+                )
+                return
             if (
                 not dry_run
                 and schedule_key is not None
@@ -330,7 +424,6 @@ def main() -> None:
                 snapshot = fetch_public_market_snapshot(
                     config,
                     exchange_id=str(values["exchange"]),
-                    now=now,
                     lookback_days=int(values["lookback_days"]),
                 )
             except Exception as error:
@@ -360,13 +453,14 @@ def main() -> None:
             diagnostics = (
                 build_forward_diagnostics(system, snapshot) if schedule_key else {}
             )
-            result = system.run(snapshot, now=now, dry_run=dry_run)
+            execution_now = datetime.now(timezone.utc)
+            result = system.run(snapshot, now=execution_now, dry_run=dry_run)
             outcome_override = "MISSED_SCHEDULE" if current_window_missed else None
             result = finalize_forward_run(
                 system,
                 result,
                 snapshot,
-                now=now,
+                now=execution_now,
                 diagnostics=diagnostics,
                 outcome_override=outcome_override,
             )

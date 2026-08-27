@@ -22,6 +22,8 @@ def build_target_weights(
     """
     if max_assets < 0:
         raise ValueError("max_assets must be non-negative")
+    if max_assets == 0:
+        return {"CASH": 1.0}
     selected = []
     for asset in ranked_assets:
         volatility = float(realized_volatility.get(asset, math.nan))

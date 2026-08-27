@@ -1,0 +1,18 @@
+{
+  "account": [
+    {
+      "account_id": "locked_strategy",
+      "cash": 798.5132702567001,
+      "initial_cash": 2000.0,
+      "status": "ACTIVE"
+    }
+  ],
+  "counts": {
+    "cash_ledger": 3,
+    "equity_snapshots": 6,
+    "fills": 2,
+    "orders": 2,
+    "position_ledger": 2,
+    "positions": 2
+  }
+}

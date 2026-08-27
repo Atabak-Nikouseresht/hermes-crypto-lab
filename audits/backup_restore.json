@@ -1,0 +1,77 @@
+{
+  "backup_id": "20260826T120438Z",
+  "production_replaced": false,
+  "temporary_restore": {
+    "database_checks": {
+      "account_statuses": {
+        "locked_strategy": "ACTIVE"
+      },
+      "cash_reconciles": true,
+      "orphan_fills": 0,
+      "position_mismatches": 0,
+      "schema_version": 5,
+      "tables": [
+        "cash_ledger",
+        "equity_snapshots",
+        "forward_baselines",
+        "forward_experiment_incidents",
+        "forward_experiment_windows",
+        "forward_experiments",
+        "forward_incidents",
+        "forward_market_observations",
+        "forward_schedule_windows",
+        "notification_attempts",
+        "paper_accounts",
+        "paper_execution_context",
+        "paper_fills",
+        "paper_incidents",
+        "paper_notifications",
+        "paper_orders",
+        "paper_positions",
+        "paper_run_diagnostics",
+        "paper_runs",
+        "paper_schema_versions",
+        "position_ledger"
+      ]
+    },
+    "production_database_untouched": true,
+    "restored_database": "[TEMPORARY_RESTORE]/paper_trading.duckdb",
+    "valid": true
+  },
+  "verification": {
+    "checksums": 17,
+    "database_checks": {
+      "account_statuses": {
+        "locked_strategy": "ACTIVE"
+      },
+      "cash_reconciles": true,
+      "orphan_fills": 0,
+      "position_mismatches": 0,
+      "schema_version": 5,
+      "tables": [
+        "cash_ledger",
+        "equity_snapshots",
+        "forward_baselines",
+        "forward_experiment_incidents",
+        "forward_experiment_windows",
+        "forward_experiments",
+        "forward_incidents",
+        "forward_market_observations",
+        "forward_schedule_windows",
+        "notification_attempts",
+        "paper_accounts",
+        "paper_execution_context",
+        "paper_fills",
+        "paper_incidents",
+        "paper_notifications",
+        "paper_orders",
+        "paper_positions",
+        "paper_run_diagnostics",
+        "paper_runs",
+        "paper_schema_versions",
+        "position_ledger"
+      ]
+    },
+    "valid": true
+  }
+}

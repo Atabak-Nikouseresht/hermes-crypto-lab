@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from run_paper import _current_schedule_window_closed
 from scripts.paper_forward_weekly import should_launch
 from src.scheduler_contract import SchedulerContractError, verify_scheduler_job
 
@@ -19,7 +20,7 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
     job = {
         "id": "abc123",
         "name": "crypto-paper-forward-weekly",
-        "schedule": {"kind": "cron", "expr": "10 9 * * 1"},
+        "schedule": {"kind": "cron", "expr": "10 0 * * 1"},
         "script": "paper_forward_weekly.py",
         "no_agent": True,
         "workdir": str(workdir),
@@ -29,7 +30,7 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
     verified = verify_scheduler_job(
         job,
         expected_name="crypto-paper-forward-weekly",
-        expected_expression="10 9 * * 1",
+        expected_expression="10 0 * * 1",
         expected_script=approved,
         expected_workdir=workdir,
         scripts_root=scripts_root,
@@ -38,10 +39,10 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
 
     assert verified["job_id"] == "abc123"
     assert verified["verified"] is True
-    assert should_launch(datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc))
-    assert should_launch(datetime(2026, 8, 24, 9, 35, tzinfo=timezone.utc))
-    assert not should_launch(datetime(2026, 8, 24, 9, 36, tzinfo=timezone.utc))
-    assert not should_launch(datetime(2026, 8, 24, 9, 9, tzinfo=timezone.utc))
+    assert should_launch(datetime(2026, 8, 24, 0, 10, tzinfo=timezone.utc))
+    assert should_launch(datetime(2026, 8, 24, 0, 20, tzinfo=timezone.utc))
+    assert not should_launch(datetime(2026, 8, 24, 0, 21, tzinfo=timezone.utc))
+    assert not should_launch(datetime(2026, 8, 24, 0, 9, tzinfo=timezone.utc))
 
     wrong_root = tmp_path / "other"
     wrong_root.mkdir()
@@ -51,9 +52,27 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
         verify_scheduler_job(
             wrong,
             expected_name="crypto-paper-forward-weekly",
-            expected_expression="10 9 * * 1",
+            expected_expression="10 0 * * 1",
             expected_script=approved,
             expected_workdir=workdir,
             scripts_root=scripts_root,
             expected_script_sha256=digest,
         )
+
+
+def test_missed_current_window_returns_before_market_fetch():
+    source = (Path(__file__).resolve().parents[1] / "run_paper.py").read_text(encoding="utf-8")
+    guard = source.index("if current_window_missed:")
+    fetch = source.index("snapshot = fetch_public_market_snapshot(")
+
+    assert guard < fetch
+    assert "return" in source[guard:fetch]
+
+
+def test_previously_recorded_missed_window_still_fails_closed():
+    now = datetime(2026, 8, 24, 0, 21, tzinfo=timezone.utc)
+    from src.paper_broker import PaperConfig
+
+    config = PaperConfig(assets=("BTC/USDT",))
+
+    assert _current_schedule_window_closed(now, config) is True

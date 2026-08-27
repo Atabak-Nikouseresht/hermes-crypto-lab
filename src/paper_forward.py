@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import datetime
-import math
 from typing import Any
 
 import pandas as pd
 
 from src.paper_broker import MarketSnapshot, PaperRunResult, PaperTradingSystem
-from src.paper_store import ReconciliationResult
 from src.strategy import generate_signal
-
 
 ERROR_OUTCOMES = {
     "KILL_SWITCH_ACTIVATED",
@@ -143,6 +141,7 @@ def build_forward_diagnostics(
         "current_weights": current_weights,
         "target_weights": target_weights,
         "proposed_orders": proposals,
+        "rejected_orders": list(getattr(system, "_last_rejections", [])),
         "turnover": estimated_notional / equity if equity else 0.0,
         "pre_execution_equity": equity,
     }

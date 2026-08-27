@@ -1,25 +1,27 @@
 {
+  "execution_protocol": "paper-exec-v3-ask-bid-minspread-utc0010",
   "hermes_gateway": {
+    "auto_start": true,
+    "last_run_result": 0,
+    "restart_on_failure": {
+      "count": 999,
+      "interval": "PT1M"
+    },
     "status": "running",
-    "timezone_config": "UTC",
-    "verification_command": "hermes cron list --all && hermes cron runs b11c6b3fe2fe --limit 5"
+    "task_name": "Hermes_Gateway",
+    "timezone_config": "UTC"
   },
   "missed_audit_job": {
-    "absolute_command": [
-      "C:\\Users\\ataba\\hermes-crypto-lab\\.venv\\Scripts\\python.exe",
-      "C:\\Users\\ataba\\hermes-crypto-lab\\run_paper.py",
-      "--audit-missed"
-    ],
     "enabled": true,
-    "hermes_trigger": "36 9 * * 1",
+    "hermes_trigger": "21 0 * * 1",
     "job_id": "2d7c37751317",
     "name": "crypto-paper-forward-missed-audit",
-    "next_run_at": "2026-08-24T09:36:00+00:00",
+    "next_run_at": "2026-08-31T00:21:00+00:00",
     "no_agent": true,
-    "safety": "No market fetch, signal generation, paper run execution, equity snapshot, or backdated trade",
+    "safety": "Audit-only: no market fetch, signal generation, equity snapshot, execution, or backdated trade",
     "script": "paper_forward_audit.py",
     "workdir": "C:\\Users\\ataba\\hermes-crypto-lab",
-    "wrapper_sha256": "9c9fa447f7fb18efbf8b2e631de72bee3c068e91b6bd631f33fc1d5e461cede1"
+    "wrapper_sha256": "ef95c16fad9b53d158c470a6b3dda6458dcde051b5ea34c401a4169b5062e749"
   },
   "monthly_job": {
     "deliver": "local",
@@ -30,36 +32,38 @@
     "next_run_at": "2026-09-01T09:00:00+00:00",
     "no_agent": true,
     "script": "paper_forward_monthly.py",
-    "utc_gate": "first calendar day at 09:00 UTC only",
     "workdir": "C:\\Users\\ataba\\hermes-crypto-lab",
     "wrapper_sha256": "a2e1be732f230e899675eb3066ed4e2acdc4e0c836f2c5133368ddfbea9a8908"
   },
-  "scheduler_design": "Hermes timezone is configured as UTC. Exact cron expressions are read back with +00:00 next-run timestamps. Deterministic UTC wrapper gates, dispatch markers, DuckDB schedule keys, order idempotency keys, and the project process lock provide layered overlap and duplicate protection. A separate 09:36 audit-only job records a missed window without market access or execution.",
+  "scheduler_design": "All deterministic jobs are Hermes no-agent scripts. Weekly execution is UTC-gated and never backdated. The 00:21 audit records missed windows without market access or trading. Wrapper paths and hashes are checked against installed copies. The laptop must be powered on and the interactive user session available; this is not high-availability infrastructure.",
   "weekly_job": {
-    "absolute_command": [
-      "C:\\Users\\ataba\\hermes-crypto-lab\\.venv\\Scripts\\python.exe",
-      "C:\\Users\\ataba\\hermes-crypto-lab\\run_paper.py",
-      "--paper"
-    ],
     "deliver": "local",
     "enabled": true,
-    "execution_target_utc": "Monday 09:10",
-    "hermes_trigger": "10 9 * * 1",
+    "execution_target_utc": "Monday 00:10",
+    "hermes_trigger": "10 0 * * 1",
     "job_id": "b11c6b3fe2fe",
-    "last_verified_execution_id": "5776243fcb884dd5abed248dabc745a0",
-    "last_verified_status": "completed",
+    "last_run_at": "2026-08-24T00:10:56.180280+00:00",
+    "last_status": "ok",
     "name": "crypto-paper-forward-weekly",
-    "next_run_at": "2026-08-24T09:10:00+00:00",
+    "next_run_at": "2026-08-31T00:10:00+00:00",
     "no_agent": true,
-    "permitted_window_utc": "Monday 09:05-09:35",
+    "permitted_window_utc": "Monday 00:05-00:20",
     "script": "paper_forward_weekly.py",
-    "timeout_seconds": 600,
-    "utc_gate": "launch only from 09:10 through 09:35 UTC; never backdate",
     "workdir": "C:\\Users\\ataba\\hermes-crypto-lab",
-    "wrapper_sha256": "7de18b1526bfa347c6abd5b3736c2c47f68ff1572745fabb204abf0eb671b28e"
+    "wrapper_sha256": "d471bae6430d69c66fd70ffa475609631fe0c631d28fad63ab0f94094b07c66a"
   },
-  "windows_task_scheduler_fallback": {
-    "installed": false,
-    "reason": "Not required: Hermes no-agent Windows script launch was actually verified and exact UTC next-run timestamps were read back."
+  "windows_task_scheduler_watchdog": {
+    "installed": true,
+    "last_run_result": 0,
+    "multiple_instances": "IgnoreNew",
+    "restart_on_failure": {
+      "count": 3,
+      "interval": "PT5M"
+    },
+    "run_only_if_network_available": true,
+    "start_when_available": true,
+    "task_name": "Hermes_Crypto_Lab_Watchdog",
+    "trigger": "logon plus every 15 minutes for one day",
+    "working_directory": "C:\\Users\\ataba\\hermes-crypto-lab"
   }
 }

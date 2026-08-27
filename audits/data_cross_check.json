@@ -1,0 +1,147 @@
+{
+  "archive_checks": [
+    {
+      "binance_vision_close": 5170.27,
+      "date_utc": "2019-04-07",
+      "processed_close": 5170.27,
+      "relative_error": 0.0,
+      "symbol": "BTCUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 28323.76,
+      "date_utc": "2023-04-09",
+      "processed_close": 28323.76,
+      "relative_error": 0.0,
+      "symbol": "BTCUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 110540.68,
+      "date_utc": "2025-11-02",
+      "processed_close": 110540.68,
+      "relative_error": 0.0,
+      "symbol": "BTCUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 174.21,
+      "date_utc": "2019-04-07",
+      "processed_close": 174.21,
+      "relative_error": 0.0,
+      "symbol": "ETHUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 1858.92,
+      "date_utc": "2023-04-09",
+      "processed_close": 1858.92,
+      "relative_error": 0.0,
+      "symbol": "ETHUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 3906.58,
+      "date_utc": "2025-11-02",
+      "processed_close": 3906.58,
+      "relative_error": 0.0,
+      "symbol": "ETHUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 18.9523,
+      "date_utc": "2019-04-07",
+      "processed_close": 18.9523,
+      "relative_error": 0.0,
+      "symbol": "BNBUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 312.8,
+      "date_utc": "2023-04-09",
+      "processed_close": 312.8,
+      "relative_error": 0.0,
+      "symbol": "BNBUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 1083.25,
+      "date_utc": "2025-11-02",
+      "processed_close": 1083.25,
+      "relative_error": 0.0,
+      "symbol": "BNBUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 0.3612,
+      "date_utc": "2019-04-07",
+      "processed_close": 0.3612,
+      "relative_error": 0.0,
+      "symbol": "XRPUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 0.5054,
+      "date_utc": "2023-04-09",
+      "processed_close": 0.5054,
+      "relative_error": 0.0,
+      "symbol": "XRPUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 2.5267,
+      "date_utc": "2025-11-02",
+      "processed_close": 2.5267,
+      "relative_error": 0.0,
+      "symbol": "XRPUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 0.02889,
+      "date_utc": "2019-04-07",
+      "processed_close": 0.02889,
+      "relative_error": 0.0,
+      "symbol": "TRXUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 0.06662,
+      "date_utc": "2023-04-09",
+      "processed_close": 0.06662,
+      "relative_error": 0.0,
+      "symbol": "TRXUSDT",
+      "within_tolerance": true
+    },
+    {
+      "binance_vision_close": 0.2981,
+      "date_utc": "2025-11-02",
+      "processed_close": 0.2981,
+      "relative_error": 0.0,
+      "symbol": "TRXUSDT",
+      "within_tolerance": true
+    }
+  ],
+  "created_at_utc": "2026-08-26T16:31:05.319471+00:00",
+  "independent_checks": [
+    {
+      "binance_usdt_close": 78020.19,
+      "coingecko_usd_midnight_price": 78511.2331116067,
+      "measurement_note": "USDT daily close versus independent USD midnight observation; diagnostic only",
+      "relative_error": 0.00625443127238453,
+      "symbol": "BTCUSDT",
+      "timestamp_utc": "2026-08-26T00:00:00+00:00",
+      "within_declared_2pct_tolerance": true
+    },
+    {
+      "binance_usdt_close": 2448.6,
+      "coingecko_usd_midnight_price": 2442.0111121033965,
+      "measurement_note": "USDT daily close versus independent USD midnight observation; diagnostic only",
+      "relative_error": 0.0026981400141656816,
+      "symbol": "ETHUSDT",
+      "timestamp_utc": "2026-08-26T00:00:00+00:00",
+      "within_declared_2pct_tolerance": true
+    }
+  ],
+  "replacement_performed": false,
+  "status": "PASS"
+}

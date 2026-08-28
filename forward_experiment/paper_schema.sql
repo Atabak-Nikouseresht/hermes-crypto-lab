@@ -41,11 +41,14 @@ CREATE TABLE paper_fills(fill_id VARCHAR PRIMARY KEY, order_id VARCHAR NOT NULL 
 -- paper_incidents
 CREATE TABLE paper_incidents(incident_id VARCHAR PRIMARY KEY, run_id VARCHAR, account_id VARCHAR NOT NULL, reason VARCHAR NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, cleared_at_utc TIMESTAMP WITH TIME ZONE);;
 
+-- paper_legacy_order_semantics
+CREATE TABLE paper_legacy_order_semantics(order_id VARCHAR PRIMARY KEY, preserved_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, execution_protocol_version VARCHAR);;
+
 -- paper_notifications
 CREATE TABLE paper_notifications(run_id VARCHAR PRIMARY KEY, "target" VARCHAR NOT NULL, report_path VARCHAR NOT NULL, status VARCHAR NOT NULL, attempt_count INTEGER NOT NULL, last_error VARCHAR, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, updated_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, delivered_at_utc TIMESTAMP WITH TIME ZONE);;
 
 -- paper_orders
-CREATE TABLE paper_orders(order_id VARCHAR PRIMARY KEY, idempotency_key VARCHAR NOT NULL UNIQUE, run_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL, signal_timestamp_utc TIMESTAMP WITH TIME ZONE NOT NULL, symbol VARCHAR NOT NULL, side VARCHAR NOT NULL, requested_quantity DOUBLE NOT NULL, target_weight DOUBLE NOT NULL, status VARCHAR NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, execution_protocol_version VARCHAR);;
+CREATE TABLE paper_orders(order_id VARCHAR PRIMARY KEY, idempotency_key VARCHAR NOT NULL UNIQUE, run_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL, signal_timestamp_utc TIMESTAMP WITH TIME ZONE NOT NULL, symbol VARCHAR NOT NULL, side VARCHAR NOT NULL, requested_quantity DOUBLE NOT NULL, target_weight DOUBLE NOT NULL, status VARCHAR NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, execution_protocol_version VARCHAR, ledger_semantics_version VARCHAR);;
 
 -- paper_positions
 CREATE TABLE paper_positions(account_id VARCHAR, symbol VARCHAR, quantity DOUBLE NOT NULL, average_cost DOUBLE NOT NULL, updated_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, PRIMARY KEY(account_id, symbol));;
@@ -63,4 +66,4 @@ CREATE TABLE paper_schema_versions("version" INTEGER PRIMARY KEY, applied_at_utc
 CREATE TABLE position_ledger(event_id VARCHAR PRIMARY KEY, run_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL, symbol VARCHAR NOT NULL, quantity_delta DOUBLE NOT NULL, quantity_after DOUBLE NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
 
 -- schema versions
-[(2, 'forward paper operations'), (3, 'forward baseline and monthly benchmark alignment'), (4, 'experiment-scoped windows and incidents'), (5, 'versioned ask-bid execution context')]
+[(2, 'forward paper operations'), (3, 'forward baseline and monthly benchmark alignment'), (4, 'experiment-scoped windows and incidents'), (5, 'versioned ask-bid execution context'), (6, 'final executable order quantity ledger semantics'), (7, 'explicit preservation of pre-adoption ledger semantics')]

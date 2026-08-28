@@ -115,6 +115,7 @@ def _execute_scaled_buy(
         snapshot=snapshot,
         now=now,
     )
+    assert proposal["requested_quantity"] == pytest.approx(1.0)
     return system, snapshot
 
 
@@ -127,13 +128,274 @@ def test_scaled_buy_is_requantized_down_before_persistence(tmp_path):
     )
 
     with system.store.connect(read_only=True) as connection:
-        quantity = connection.execute("SELECT filled_quantity FROM paper_fills").fetchone()[0]
+        requested, quantity, status, semantics = connection.execute(
+            "SELECT o.requested_quantity, f.filled_quantity, o.status, "
+            "o.ledger_semantics_version FROM paper_orders o "
+            "JOIN paper_fills f USING (order_id)"
+        ).fetchone()
         cash = connection.execute("SELECT cash FROM paper_accounts").fetchone()[0]
 
     step = snapshot.symbol_rules["BTC/USDT"].step_size
+    assert requested == pytest.approx(0.8)
     assert quantity == pytest.approx(0.8)
+    assert requested == pytest.approx(quantity)
+    assert status == "FILLED"
+    assert semantics == "final-executable-v1"
     assert quantity / step == pytest.approx(round(quantity / step))
     assert cash >= 0.0
+    assert system.store.reconcile().valid
+
+
+def test_fully_fundable_order_persists_executable_quantity(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=100.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        requested, filled = connection.execute(
+            "SELECT o.requested_quantity, f.filled_quantity FROM paper_orders o "
+            "JOIN paper_fills f USING (order_id)"
+        ).fetchone()
+
+    assert requested == pytest.approx(1.0)
+    assert requested == pytest.approx(filled)
+    assert system.store.reconcile().valid
+
+
+def test_sell_restriction_and_step_normalization_persist_executable_quantity(tmp_path):
+    now = pd.Timestamp("2024-08-05T09:10:00Z")
+    system = PaperTradingSystem(
+        tmp_path / "normalized-sell.duckdb",
+        PaperConfig(
+            assets=("BTC/USDT",),
+            initial_cash=1_000.0,
+            fee_rate=0.0,
+            minimum_spread_rate=0.0,
+            slippage_rate=0.0,
+            require_exchange_rules=True,
+        ),
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_positions VALUES (?, ?, ?, ?, ?)",
+            [system.config.account_id, "BTC/USDT", 0.85, 90.0, now],
+        )
+        connection.execute(
+            "INSERT INTO position_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ["seed-position", "seed-run", system.config.account_id, "BTC/USDT", 0.85, 0.85, now],
+        )
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(
+            {"BTC/USDT": [100.0]},
+            index=pd.DatetimeIndex([pd.Timestamp("2024-08-04T00:00:00Z")]),
+        ),
+        quotes={"BTC/USDT": Quote(100.0, 100.0, 100.0, now)},
+        fetched_at=now,
+        symbol_rules={
+            "BTC/USDT": SymbolRules(True, 0.1, 10.0, 0.1, 1.0, 0.01)
+        },
+    )
+    proposal = {
+        "idempotency_key": "normalized-sell",
+        "symbol": "BTC/USDT",
+        "side": "SELL",
+        "requested_quantity": 1.0,
+        "target_weight": 0.0,
+    }
+
+    system._execute(
+        run_id="normalized-sell-run",
+        signal_timestamp=pd.Timestamp("2024-08-04T00:00:00Z"),
+        proposals=[proposal],
+        snapshot=snapshot,
+        now=now,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        requested, filled, position = connection.execute(
+            "SELECT o.requested_quantity, f.filled_quantity, "
+            "(SELECT quantity FROM paper_positions WHERE symbol='BTC/USDT') "
+            "FROM paper_orders o JOIN paper_fills f USING (order_id)"
+        ).fetchone()
+    assert requested == pytest.approx(0.8)
+    assert requested == pytest.approx(filled)
+    assert position == pytest.approx(0.05)
+    assert system.store.reconcile().valid
+
+
+def test_reconciliation_rejects_current_ledger_quantity_mismatch(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute("UPDATE paper_orders SET requested_quantity=1.0")
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "quantity mismatch" in reconciliation.message.lower()
+
+
+def test_reconciliation_rejects_unknown_ledger_semantics_marker(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_orders SET ledger_semantics_version='unsupported-v99'"
+        )
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "unsupported ledger semantics" in reconciliation.message.lower()
+
+
+def test_reconciliation_rejects_missing_semantics_marker_for_new_order(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute("UPDATE paper_orders SET ledger_semantics_version=NULL")
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "missing ledger semantics" in reconciliation.message.lower()
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "message"),
+    [
+        ("paper_fills", "filled_quantity", "invalid fill"),
+        ("paper_orders", "requested_quantity", "invalid current order quantity"),
+    ],
+)
+def test_reconciliation_rejects_nonfinite_current_quantities(
+    tmp_path, table, column, message
+):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute(f"UPDATE {table} SET {column}=?", [float("nan")])
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert message in reconciliation.message.lower()
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    ["paper-exec-v2-ask-bid-utc0010", "paper-exec-v3-ask-bid-minspread-utc0010"],
+)
+def test_reconciliation_accepts_preserved_legacy_quantity_semantics(tmp_path, protocol):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_orders SET requested_quantity=1.0, "
+            "ledger_semantics_version=NULL, execution_protocol_version=?",
+            [protocol],
+        )
+        connection.execute(
+            "UPDATE paper_fills SET execution_protocol_version=?",
+            [protocol],
+        )
+        connection.execute("DELETE FROM paper_legacy_order_semantics")
+        connection.execute("DELETE FROM paper_schema_versions WHERE version=6")
+
+    system = PaperTradingSystem(system.store.path, system.config)
+
+    assert system.store.reconcile().valid
+
+
+def test_schema_v7_classifies_unmarked_orders_from_interim_v6(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_orders SET requested_quantity=1.0, "
+            "ledger_semantics_version=NULL"
+        )
+        connection.execute("DELETE FROM paper_legacy_order_semantics")
+        connection.execute("DELETE FROM paper_schema_versions WHERE version=7")
+
+    system = PaperTradingSystem(system.store.path, system.config)
+
+    with system.store.connect(read_only=True) as connection:
+        preserved = connection.execute(
+            "SELECT COUNT(*) FROM paper_legacy_order_semantics"
+        ).fetchone()[0]
+    assert preserved == 1
+    assert system.store.reconcile().valid
+
+
+def test_reconciliation_rejects_filled_order_without_fill(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute("DELETE FROM paper_fills")
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "without fill" in reconciliation.message.lower()
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        ("symbol", "ETH/USDT", "symbol mismatch"),
+        ("side", "SELL", "side mismatch"),
+        ("run_id", "other-run", "run mismatch"),
+        ("execution_protocol_version", "other-protocol", "protocol mismatch"),
+    ],
+)
+def test_reconciliation_rejects_current_order_fill_provenance_mismatch(
+    tmp_path, column, value, message
+):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute(f"UPDATE paper_fills SET {column}=?", [value])
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert message in reconciliation.message.lower()
 
 
 def test_scaled_buy_below_minimum_quantity_is_rejected(tmp_path):

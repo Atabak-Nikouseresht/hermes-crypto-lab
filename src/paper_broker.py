@@ -14,7 +14,7 @@ from typing import Any
 import pandas as pd
 
 from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
-from src.paper_store import PaperStore
+from src.paper_store import FINAL_EXECUTABLE_LEDGER_SEMANTICS, PaperStore
 from src.strategy import StrategyConfig, generate_signal
 from src.validate_data import validate_ohlcv
 
@@ -112,6 +112,7 @@ class PaperTradingSystem:
             database_path,
             account_id=config.account_id,
             initial_cash=config.initial_cash,
+            quantity_tolerance=config.quantity_tolerance,
         )
 
     @staticmethod
@@ -504,7 +505,14 @@ class PaperTradingSystem:
                 order_id = "ord_" + proposal["idempotency_key"][:28]
                 fill_id = "fill_" + proposal["idempotency_key"][:27]
                 connection.execute(
-                    "INSERT INTO paper_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FILLED', ?, ?)",
+                    """
+                    INSERT INTO paper_orders (
+                        order_id, idempotency_key, run_id, account_id,
+                        signal_timestamp_utc, symbol, side, requested_quantity,
+                        target_weight, status, created_at_utc,
+                        execution_protocol_version, ledger_semantics_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FILLED', ?, ?, ?)
+                    """,
                     [
                         order_id,
                         proposal["idempotency_key"],
@@ -513,10 +521,11 @@ class PaperTradingSystem:
                         signal_timestamp,
                         symbol,
                         side,
-                        proposal["requested_quantity"],
+                        quantity,
                         proposal["target_weight"],
                         now,
                         EXECUTION_PROTOCOL_VERSION,
+                        FINAL_EXECUTABLE_LEDGER_SEMANTICS,
                     ],
                 )
                 connection.execute(

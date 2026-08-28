@@ -42,7 +42,7 @@ Coverage output is generated locally and ignored. It is a testing diagnostic, no
 
 ```bash
 .venv/Scripts/python.exe scripts/generate_hardening_manifest.py
-.venv/Scripts/python.exe -c "from pathlib import Path; from run_paper import load_paper_configuration; from src.forward_governance import locked_strategy_hash, verify_trust_anchors; root=Path('.').resolve(); config,_=load_paper_configuration(root); print(locked_strategy_hash(config)); print(verify_trust_anchors(root,config))"
+.venv/Scripts/python.exe -c "from pathlib import Path; from run_paper import load_paper_configuration; from src.forward_governance import economic_spec_hash_v2, locked_strategy_hash, verify_trust_anchors; root=Path('.').resolve(); config,_=load_paper_configuration(root); print(locked_strategy_hash(config)); print(economic_spec_hash_v2(config)); print(verify_trust_anchors(root,config))"
 .venv/Scripts/python.exe -c "from pathlib import Path; from src.hardening_manifest import verify_hardening_manifest; print(verify_hardening_manifest(Path('.'), Path('forward_experiment/hardening_manifest.json')))"
 ```
 
@@ -74,12 +74,12 @@ The suite includes:
 - downloader retry and market-data validation tests;
 - raw/Parquet/DuckDB persistence integration tests;
 - experiment-grid, holdout-gate and hash-ledger tests;
-- paper quote, market-rule, state, reconciliation and notification tests;
+- paper quote, post-scaling quantity-rule, non-negative-cash, state, reconciliation and notification tests;
 - property-based portfolio invariants;
 - real subprocess lock contention/recovery tests;
 - backup/temporary-restore and corruption tests;
 - scheduler and repeated missed-window tests;
-- governance, protocol, manifest and prohibited-private-path tests.
+- legacy and comprehensive economic governance, protocol, manifest and prohibited-private-path tests.
 
 ## Mutation testing limitation
 

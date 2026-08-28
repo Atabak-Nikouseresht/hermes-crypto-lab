@@ -9,6 +9,7 @@ Forward validation began from:
 | Commit | `ebeac389b1c309f1ef8f5a9056e96c3b28e08e01` |
 | Locked candidate | `mw120_sw00_ma150_n2_r07_v30` |
 | Strategy SHA-256 | `29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6` |
+| Comprehensive economic-spec v2 SHA-256 | `1dc381ce5e8c663b1e1aab496503837945547d77944d082f873eab8f127eb395` |
 | Future protocol | `paper-exec-v3-ask-bid-minspread-utc0010` |
 | Baseline hardening-manifest SHA-256 | `44dcd4d6c65fb88a2fb4ed6c55607ef4351570d8a70ac665ea5851a6670efe1d` |
 
@@ -21,6 +22,7 @@ A byte-for-byte copy of the baseline hardening manifest and sidecar is preserved
 - `checkpoint_manifest.json` — pre-forward research checkpoint and data cutoff;
 - `governance.json` — original sealed forward-governance contract;
 - `governance_amendment_v2.json` — additive schedule/review terminology amendment;
+- `governance_amendment_v3_economic_spec.json` — additive comprehensive economic-integrity anchor;
 - `execution_protocol_v2.json` — preserved protocol used by historical paper fills;
 - `execution_protocol_v3.json` — protocol for future fills;
 - `paper_schema.sql` — captured paper-state schema;
@@ -28,6 +30,16 @@ A byte-for-byte copy of the baseline hardening manifest and sidecar is preserved
 - `hardening_manifest.json` — current critical-file hash chain.
 
 Original governance and protocol records are not consolidated or rewritten for presentation convenience.
+
+The legacy strategy hash remains unchanged for historical continuity. The
+versioned `economic-spec-v2` hash additionally covers the candidate, complete
+signal and allocation parameters, universe, capital denomination, rebalance and
+schedule timing, public-data source/lookback and validation thresholds,
+exchange-rule enforcement, quantity tolerance, modeled costs, and execution
+protocol. Dictionaries are serialized with sorted keys, and economically
+unordered collections are sorted before canonical JSON SHA-256 hashing. The v3
+amendment explicitly records that no strategy was reselected, no parameter was
+retuned, and no research result changed.
 
 ## Forward-validation rule
 

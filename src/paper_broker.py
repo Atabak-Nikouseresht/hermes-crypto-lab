@@ -7,6 +7,7 @@ import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,9 @@ class PaperConfig:
     assets: tuple[str, ...]
     account_id: str = "locked_strategy"
     initial_cash: float = 2_000.0
+    accounting_currency: str = "USDT"
+    exchange_id: str = "binance"
+    lookback_days: int = 260
     fee_rate: float = 0.001
     minimum_spread_rate: float = 0.0002
     slippage_rate: float = 0.0005
@@ -212,6 +216,80 @@ class PaperTradingSystem:
         )
         return account["cash"], positions_value, account["cash"] + positions_value
 
+    def _normalize_exchange_quantity(
+        self,
+        *,
+        symbol: str,
+        quantity: float,
+        validation_price: float,
+        snapshot: MarketSnapshot,
+    ) -> tuple[float | None, str | None]:
+        """Quantize down and validate a final executable quantity."""
+        if not math.isfinite(quantity) or quantity <= self.config.quantity_tolerance:
+            return None, "non_positive_quantity"
+        rules = snapshot.symbol_rules.get(symbol)
+        if rules is None:
+            if self.config.require_exchange_rules:
+                return None, "missing_exchange_rules"
+            return quantity, None
+        if not rules.active:
+            return None, "inactive_symbol"
+        if (
+            not math.isfinite(validation_price)
+            or validation_price <= 0
+            or not math.isfinite(rules.min_quantity)
+            or rules.min_quantity <= 0
+            or not math.isfinite(rules.step_size)
+            or rules.step_size <= 0
+            or not math.isfinite(rules.min_notional)
+            or rules.min_notional <= 0
+            or (
+                rules.max_quantity is not None
+                and (
+                    not math.isfinite(rules.max_quantity)
+                    or rules.max_quantity <= 0
+                    or rules.max_quantity < rules.min_quantity
+                )
+            )
+        ):
+            return None, "invalid_exchange_rules"
+        try:
+            quantity_decimal = Decimal(str(quantity))
+            step_decimal = Decimal(str(rules.step_size))
+            units = (quantity_decimal / step_decimal).to_integral_value(
+                rounding=ROUND_FLOOR
+            )
+            normalized = float(units * step_decimal)
+        except (InvalidOperation, OverflowError, ValueError):
+            return None, "invalid_quantity"
+        if normalized <= self.config.quantity_tolerance:
+            return None, "non_positive_quantity"
+        if normalized < rules.min_quantity:
+            return None, "below_min_quantity"
+        if rules.max_quantity is not None and normalized > rules.max_quantity:
+            return None, "above_max_quantity"
+        if normalized * validation_price < rules.min_notional:
+            return None, "below_min_notional"
+        return normalized, None
+
+    def _reject_quantity(
+        self,
+        *,
+        proposal: dict[str, Any],
+        reason: str,
+        notional: float,
+    ) -> None:
+        if not hasattr(self, "_last_rejections"):
+            self._last_rejections = []
+        self._last_rejections.append(
+            {
+                "symbol": proposal["symbol"],
+                "side": proposal["side"],
+                "reason": reason,
+                "notional": notional,
+            }
+        )
+
     def _proposals(self, snapshot: MarketSnapshot) -> tuple[pd.Timestamp, list[dict[str, Any]]]:
         signal_timestamp = snapshot.closes.index[-1].tz_convert("UTC")
         signal = generate_signal(
@@ -235,24 +313,20 @@ class PaperTradingSystem:
             if abs(delta) <= self.config.quantity_tolerance:
                 continue
             side = "BUY" if delta > 0 else "SELL"
-            quantity = abs(delta)
-            rules = snapshot.symbol_rules.get(asset)
-            if rules is not None:
-                if rules.step_size > 0:
-                    quantity = math.floor(quantity / rules.step_size) * rules.step_size
-                notional = quantity * snapshot.quotes[asset].mid
-                invalid_reason = None
-                if quantity < rules.min_quantity:
-                    invalid_reason = "below_min_quantity"
-                elif rules.max_quantity is not None and quantity > rules.max_quantity:
-                    invalid_reason = "above_max_quantity"
-                elif notional < rules.min_notional:
-                    invalid_reason = "below_min_notional"
-                if invalid_reason:
-                    self._last_rejections.append(
-                        {"symbol": asset, "side": side, "reason": invalid_reason, "notional": notional}
-                    )
-                    continue
+            quantity, invalid_reason = self._normalize_exchange_quantity(
+                symbol=asset,
+                quantity=abs(delta),
+                validation_price=snapshot.quotes[asset].mid,
+                snapshot=snapshot,
+            )
+            if invalid_reason:
+                self._reject_quantity(
+                    proposal={"symbol": asset, "side": side},
+                    reason=invalid_reason,
+                    notional=abs(delta) * snapshot.quotes[asset].mid,
+                )
+                continue
+            assert quantity is not None
             raw_key = (
                 f"{self.config.account_id}|{signal_timestamp.isoformat()}|{asset}|"
                 f"{self.config.locked_candidate_id}"
@@ -370,11 +444,25 @@ class PaperTradingSystem:
             executable: list[tuple[dict[str, Any], float, dict[str, float]]] = []
             for proposal in sells:
                 held = positions.get(proposal["symbol"], {}).get("quantity", 0.0)
-                quantity = min(proposal["requested_quantity"], held)
-                if quantity > self.config.quantity_tolerance:
-                    executable.append(
-                        (proposal, quantity, self._execution_terms(snapshot.quotes[proposal["symbol"]], "SELL"))
+                terms = self._execution_terms(
+                    snapshot.quotes[proposal["symbol"]], "SELL"
+                )
+                requested = min(proposal["requested_quantity"], held)
+                quantity, invalid_reason = self._normalize_exchange_quantity(
+                    symbol=proposal["symbol"],
+                    quantity=requested,
+                    validation_price=terms["execution_price"],
+                    snapshot=snapshot,
+                )
+                if invalid_reason:
+                    self._reject_quantity(
+                        proposal=proposal,
+                        reason=invalid_reason,
+                        notional=requested * terms["execution_price"],
                     )
+                    continue
+                assert quantity is not None
+                executable.append((proposal, quantity, terms))
             buy_required = 0.0
             buy_terms = {}
             for proposal in buys:
@@ -392,7 +480,8 @@ class PaperTradingSystem:
                 symbol = proposal["symbol"]
                 side = proposal["side"]
                 execution_price = terms["execution_price"]
-                fee = quantity * execution_price * self.config.fee_rate
+                executed_notional = quantity * execution_price
+                fee = executed_notional * self.config.fee_rate
                 spread_cost = quantity * abs(terms["spread_price"] - terms["mid"])
                 slippage_cost = quantity * abs(execution_price - terms["spread_price"])
                 current = positions.get(symbol, {"quantity": 0.0, "average_cost": 0.0})
@@ -402,7 +491,7 @@ class PaperTradingSystem:
                     new_average = current["average_cost"] if new_quantity > self.config.quantity_tolerance else 0.0
                     quantity_delta = -quantity
                 else:
-                    cash_delta = -(quantity * execution_price + fee)
+                    cash_delta = -(executed_notional + fee)
                     new_quantity = current["quantity"] + quantity
                     new_average = (
                         current["quantity"] * current["average_cost"] + quantity * execution_price
@@ -482,14 +571,35 @@ class PaperTradingSystem:
             if buy_required > 0:
                 scale = min(1.0, cash / buy_required)
                 for proposal in buys:
-                    quantity = proposal["requested_quantity"] * scale
-                    if quantity > self.config.quantity_tolerance:
-                        persist_fill(
-                            proposal,
-                            quantity,
-                            buy_terms[proposal["idempotency_key"]],
+                    terms = buy_terms[proposal["idempotency_key"]]
+                    scaled = proposal["requested_quantity"] * scale
+                    quantity, invalid_reason = self._normalize_exchange_quantity(
+                        symbol=proposal["symbol"],
+                        quantity=scaled,
+                        validation_price=terms["execution_price"],
+                        snapshot=snapshot,
+                    )
+                    if invalid_reason:
+                        self._reject_quantity(
+                            proposal=proposal,
+                            reason=invalid_reason,
+                            notional=scaled * terms["execution_price"],
                         )
-            if cash < -1e-8:
+                        continue
+                    assert quantity is not None
+                    executed_notional = quantity * terms["execution_price"]
+                    required_cash = executed_notional + (
+                        executed_notional * self.config.fee_rate
+                    )
+                    if required_cash > cash:
+                        self._reject_quantity(
+                            proposal=proposal,
+                            reason="insufficient_cash_after_rounding",
+                            notional=quantity * terms["execution_price"],
+                        )
+                        continue
+                    persist_fill(proposal, quantity, terms)
+            if cash < 0.0:
                 connection.execute("ROLLBACK")
                 raise RuntimeError(f"Negative cash invariant violated: {cash}")
             cash = max(0.0, cash)
@@ -638,6 +748,13 @@ class PaperTradingSystem:
             snapshot=snapshot,
             now=now_ts,
         )
+        with self.store.connect(read_only=True) as connection:
+            executed_orders = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM paper_orders WHERE run_id=?", [run_id]
+                ).fetchone()[0]
+            )
+        rejected_orders = len(proposals) - executed_orders
         reconciliation = self.store.reconcile()
         if not reconciliation.valid:
             self.store.activate_kill_switch(
@@ -647,7 +764,10 @@ class PaperTradingSystem:
             message = reconciliation.message
         else:
             status = "EXECUTED"
-            message = f"Executed {len(proposals)} idempotent paper orders"
+            message = (
+                f"Executed {executed_orders} idempotent paper orders; "
+                f"rejected {rejected_orders} after final exchange-rule validation"
+            )
         self.store.finish_run(
             run_id=run_id,
             status=status,

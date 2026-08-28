@@ -3,8 +3,15 @@ from datetime import datetime, timezone
 import duckdb
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.paper_broker import MarketSnapshot, PaperConfig, PaperTradingSystem, Quote
+from src.paper_broker import (
+    MarketSnapshot,
+    PaperConfig,
+    PaperTradingSystem,
+    Quote,
+    SymbolRules,
+)
 
 ASSETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT"]
 
@@ -49,6 +56,266 @@ def _config() -> PaperConfig:
         max_data_staleness_minutes=720,
         max_quote_staleness_minutes=5,
     )
+
+
+def _execute_scaled_buy(
+    tmp_path,
+    *,
+    initial_cash: float,
+    min_quantity: float,
+    min_notional: float,
+) -> tuple[PaperTradingSystem, MarketSnapshot]:
+    now = pd.Timestamp("2024-08-05T09:10:00Z")
+    database = tmp_path / f"scaled-{initial_cash}-{min_quantity}-{min_notional}.duckdb"
+    config = PaperConfig(
+        assets=("BTC/USDT",),
+        initial_cash=initial_cash,
+        fee_rate=0.0,
+        minimum_spread_rate=0.0,
+        slippage_rate=0.0,
+        require_exchange_rules=True,
+    )
+    system = PaperTradingSystem(database, config)
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(
+            {"BTC/USDT": [100.0]},
+            index=pd.DatetimeIndex([pd.Timestamp("2024-08-04T00:00:00Z")]),
+        ),
+        quotes={
+            "BTC/USDT": Quote(
+                bid=100.0,
+                ask=100.0,
+                last=100.0,
+                timestamp=now,
+            )
+        },
+        fetched_at=now,
+        symbol_rules={
+            "BTC/USDT": SymbolRules(
+                active=True,
+                min_quantity=min_quantity,
+                max_quantity=10.0,
+                step_size=0.1,
+                min_notional=min_notional,
+                price_tick=0.01,
+            )
+        },
+    )
+    proposal = {
+        "idempotency_key": "scaled-buy",
+        "symbol": "BTC/USDT",
+        "side": "BUY",
+        "requested_quantity": 1.0,
+        "target_weight": 1.0,
+    }
+    system._execute(
+        run_id="scaled-buy-run",
+        signal_timestamp=pd.Timestamp("2024-08-04T00:00:00Z"),
+        proposals=[proposal],
+        snapshot=snapshot,
+        now=now,
+    )
+    return system, snapshot
+
+
+def test_scaled_buy_is_requantized_down_before_persistence(tmp_path):
+    system, snapshot = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        quantity = connection.execute("SELECT filled_quantity FROM paper_fills").fetchone()[0]
+        cash = connection.execute("SELECT cash FROM paper_accounts").fetchone()[0]
+
+    step = snapshot.symbol_rules["BTC/USDT"].step_size
+    assert quantity == pytest.approx(0.8)
+    assert quantity / step == pytest.approx(round(quantity / step))
+    assert cash >= 0.0
+
+
+def test_scaled_buy_below_minimum_quantity_is_rejected(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=15.0,
+        min_quantity=0.2,
+        min_notional=1.0,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        orders, fills, cash = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM paper_orders), "
+            "(SELECT COUNT(*) FROM paper_fills), "
+            "(SELECT cash FROM paper_accounts)"
+        ).fetchone()
+
+    assert (orders, fills) == (0, 0)
+    assert cash == pytest.approx(15.0)
+    assert any(
+        rejection["reason"] == "below_min_quantity"
+        for rejection in system._last_rejections
+    )
+
+
+def test_scaled_buy_below_minimum_notional_is_rejected(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=35.0,
+        min_quantity=0.1,
+        min_notional=50.0,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        orders, fills, cash = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM paper_orders), "
+            "(SELECT COUNT(*) FROM paper_fills), "
+            "(SELECT cash FROM paper_accounts)"
+        ).fetchone()
+
+    assert (orders, fills) == (0, 0)
+    assert cash == pytest.approx(35.0)
+    assert any(
+        rejection["reason"] == "below_min_notional"
+        for rejection in system._last_rejections
+    )
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        SymbolRules(True, float("nan"), 10.0, 0.1, 1.0, 0.01),
+        SymbolRules(True, 0.0, 10.0, 0.1, 1.0, 0.01),
+        SymbolRules(True, 0.1, float("nan"), 0.1, 1.0, 0.01),
+        SymbolRules(True, 0.1, 10.0, 0.1, float("nan"), 0.01),
+        SymbolRules(True, 0.1, 10.0, 0.1, 0.0, 0.01),
+        SymbolRules(True, -0.1, 10.0, 0.1, 1.0, 0.01),
+        SymbolRules(True, 0.2, 0.1, 0.1, 1.0, 0.01),
+        SymbolRules(False, 0.1, 10.0, 0.1, 1.0, 0.01),
+    ],
+)
+def test_malformed_exchange_rules_fail_closed_before_fill(tmp_path, rules):
+    system = PaperTradingSystem(
+        tmp_path / "invalid-rules.duckdb",
+        PaperConfig(assets=("BTC/USDT",), require_exchange_rules=True),
+    )
+    now = pd.Timestamp("2024-08-05T09:10:00Z")
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(
+            {"BTC/USDT": [100.0]},
+            index=pd.DatetimeIndex([pd.Timestamp("2024-08-04T00:00:00Z")]),
+        ),
+        quotes={"BTC/USDT": Quote(100.0, 100.0, 100.0, now)},
+        fetched_at=now,
+        symbol_rules={"BTC/USDT": rules},
+    )
+
+    quantity, reason = system._normalize_exchange_quantity(
+        symbol="BTC/USDT",
+        quantity=1.0,
+        validation_price=100.0,
+        snapshot=snapshot,
+    )
+
+    assert quantity is None
+    assert reason in {"inactive_symbol", "invalid_exchange_rules"}
+
+
+def test_execution_message_counts_only_persisted_orders(monkeypatch, tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    snapshot = _snapshot(now)
+    snapshot = MarketSnapshot(
+        closes=snapshot.closes,
+        quotes=snapshot.quotes,
+        fetched_at=snapshot.fetched_at,
+        symbol_rules={
+            asset: SymbolRules(True, 0.2, 10.0, 0.1, 1.0, 0.01)
+            for asset in ASSETS
+        },
+    )
+    config = PaperConfig(
+        assets=tuple(ASSETS),
+        initial_cash=15.0,
+        fee_rate=0.0,
+        minimum_spread_rate=0.0,
+        slippage_rate=0.0,
+        schedule_hour=9,
+        schedule_minute=5,
+        schedule_window_minutes=30,
+        max_data_staleness_minutes=720,
+        require_exchange_rules=True,
+    )
+    system = PaperTradingSystem(tmp_path / "rejected-message.duckdb", config)
+    proposal = {
+        "idempotency_key": "message-rejection",
+        "symbol": "BTC/USDT",
+        "side": "BUY",
+        "requested_quantity": 1.0,
+        "target_weight": 1.0,
+    }
+    monkeypatch.setattr(
+        system,
+        "_proposals",
+        lambda _snapshot: (pd.Timestamp("2024-08-04T00:00:00Z"), [proposal]),
+    )
+
+    result = system.run(snapshot, now=now, dry_run=False)
+
+    assert result.status == "EXECUTED"
+    assert "Executed 0" in result.message
+    assert "rejected 1" in result.message
+
+
+def test_floating_point_scaling_never_persists_negative_cash(tmp_path):
+    now = pd.Timestamp("2024-08-05T09:10:00Z")
+    initial_cash = 763_901.6550981523
+    price = 2.1628355930693526
+    system = PaperTradingSystem(
+        tmp_path / "floating-cash.duckdb",
+        PaperConfig(
+            assets=("BTC/USDT",),
+            initial_cash=initial_cash,
+            fee_rate=0.003,
+            minimum_spread_rate=0.0,
+            slippage_rate=0.0,
+            require_exchange_rules=True,
+        ),
+    )
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(
+            {"BTC/USDT": [price]},
+            index=pd.DatetimeIndex([pd.Timestamp("2024-08-04T00:00:00Z")]),
+        ),
+        quotes={"BTC/USDT": Quote(price, price, price, now)},
+        fetched_at=now,
+        symbol_rules={
+            "BTC/USDT": SymbolRules(True, 1e-10, 1e9, 1e-10, 1e-10, 1e-10)
+        },
+    )
+    proposal = {
+        "idempotency_key": "floating-cash",
+        "symbol": "BTC/USDT",
+        "side": "BUY",
+        "requested_quantity": 686_284.7789865133,
+        "target_weight": 1.0,
+    }
+
+    system._execute(
+        run_id="floating-cash-run",
+        signal_timestamp=pd.Timestamp("2024-08-04T00:00:00Z"),
+        proposals=[proposal],
+        snapshot=snapshot,
+        now=now,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        minimum_ledger_cash = connection.execute(
+            "SELECT MIN(balance_after) FROM cash_ledger"
+        ).fetchone()[0]
+        account_cash = connection.execute("SELECT cash FROM paper_accounts").fetchone()[0]
+    assert minimum_ledger_cash >= 0.0
+    assert account_cash >= 0.0
 
 
 def test_duplicate_scheduled_run_cannot_create_duplicate_orders_or_fills(tmp_path):

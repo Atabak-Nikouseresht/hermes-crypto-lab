@@ -23,6 +23,9 @@ Commands below use Windows virtual-environment paths. On Linux/macOS, replace `.
 .venv/Scripts/python.exe -m pytest tests -q
 ```
 
-Also verify the locked strategy hash, governance trust anchors, and active hardening manifest. Never rewrite historical v2 fills, candidate locks, experiment ledgers, or sealed research artifacts.
+Also verify the legacy locked strategy hash, comprehensive economic-spec v2
+hash, governance trust anchors, and active hardening manifest. Never rewrite
+historical v2 fills, candidate locks, experiment ledgers, or sealed research
+artifacts.
 
 Do not commit `.env`, databases, market data, reports, logs, backups, runtime state, or real notification targets.

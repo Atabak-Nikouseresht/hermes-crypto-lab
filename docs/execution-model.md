@@ -39,6 +39,7 @@ Forward contract:
 - Quote timestamp must be no later than execution timestamp.
 - Missing, crossed, non-positive, non-finite, future-dated, or stale quotes fail closed.
 - Public exchange activity, amount, notional, step-size, and precision rules are required.
+- After proportional cash scaling, final buy quantities are quantized down to the public step size and min/max quantity plus minimum-notional rules are rechecked before any order or fill is persisted.
 - New order/fill rows record protocol, strategy hash, quote time, spread, slippage, fee, and execution time.
 
 The forward quote is approximately 23 hours 50 minutes earlier than availability of the sealed model's Monday close. Forward sizing also uses execution-time quote midpoints rather than carrying fixed Sunday-close quantities.

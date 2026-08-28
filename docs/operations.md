@@ -31,7 +31,16 @@ Persistent `--paper` execution is scheduler-owned. Do not run it manually outsid
 .venv/Scripts/python.exe run_paper.py --dry-run
 ```
 
-A dry run may retrieve public market evidence and calculate a proposal but must not persist trades.
+A dry run may retrieve public market evidence and calculate a proposal. It
+persists operational run/equity metadata for auditability, but creates no orders
+or fills and performs no portfolio trade-state mutation. It does not require
+`HCL_TELEGRAM_TARGET`.
+
+The inspection commands above also work without a Telegram target. Sample
+delivery, missed-window/startup notification, and a genuine scheduled paper
+operation resolve the target only when notification delivery is required. A
+notification-only retry uses the destination stored with the original committed
+notification record.
 
 ## Audit a missed/startup window
 

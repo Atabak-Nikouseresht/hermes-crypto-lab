@@ -114,6 +114,12 @@ Important variables are listed in [`.env.example`](.env.example):
 | `HCL_PAPER_DATABASE` | Local paper-state database |
 | `HCL_TELEGRAM_TARGET` | Optional Hermes delivery target; never commit a real target |
 
+`--dry-run`, `--status`, `--reconcile`, and `--kill-switch-status` work with an
+unset Telegram target. A target is resolved only when delivery is actually part
+of the command: sample delivery, missed-window notification, or a genuine
+scheduled paper operation. Notification retry reuses the target already stored
+with the committed notification record.
+
 Configuration boundaries:
 
 - `config/assets.yaml` — fixed five-symbol universe
@@ -146,11 +152,15 @@ Commands below are executed from the repository root and use Windows virtual-env
 .venv/Scripts/python.exe run_paper.py --kill-switch-status
 ```
 
-### Produce a non-persistent paper proposal
+### Produce a local paper proposal without virtual trades
 
 ```bash
 .venv/Scripts/python.exe run_paper.py --dry-run
 ```
+
+Dry-run records operational run/equity metadata for auditability, but creates no
+orders or fills and does not mutate portfolio trade state. It does not require a
+Telegram destination.
 
 Persistent `--paper` execution is scheduler-owned and valid only inside the governed Monday UTC window. Missed windows are audited and never backfilled. Operational and recovery commands are in [Operations](docs/operations.md).
 
@@ -179,11 +189,11 @@ See [Testing and verification](docs/testing.md).
 - **Fail closed:** incomplete, stale, invalid, crossed, non-positive, non-finite, or future-dated market evidence stops execution
 - **Executable side:** buys use ask-side evidence; sells use bid-side evidence
 - **Conservative costs:** a minimum adverse spread, additional slippage, and proportional fee are recorded separately
-- **Market rules:** amount, precision, activity, step-size, and minimum-notional evidence are required
+- **Market rules:** amount, precision, activity, step-size, and minimum-notional evidence are required; any cash-driven buy scaling is quantized down and revalidated before persistence
 - **No backdating:** a missed window records an incident and produces no historical trade
 - **Single writer:** paper execution, reporting, audit, notification state and backups share one process lock
 - **Versioned provenance:** historical v2 fills remain v2; future fills use `paper-exec-v3-ask-bid-minspread-utc0010`
-- **Locked strategy:** the candidate and strategy hash are verified before paper commands
+- **Locked strategy:** the legacy candidate hash and additive comprehensive `economic-spec-v2` hash are verified before paper commands
 - **Notification isolation:** delivery failures cannot retrigger strategy execution
 
 ## Research methodology

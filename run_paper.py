@@ -64,6 +64,9 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
     config = PaperConfig(
         assets=assets,
         initial_cash=float(values["initial_cash"]),
+        accounting_currency=str(values["accounting_currency"]),
+        exchange_id=str(values["exchange"]),
+        lookback_days=int(values["lookback_days"]),
         fee_rate=float(values["fee_rate"]),
         minimum_spread_rate=float(values["minimum_spread_rate"]),
         slippage_rate=float(values["slippage_rate"]),
@@ -363,7 +366,7 @@ def main() -> None:
         )
 
     try:
-        telegram_target = resolve_telegram_target(args.telegram_target)
+        telegram_target: str | None = None
         with open_locked_system(
             database_path=database_path,
             config=config,
@@ -393,6 +396,12 @@ def main() -> None:
                 print(f"Status: DUPLICATE_SCHEDULE — {schedule_key} is already finalized")
                 return
 
+            # Notification delivery is required only for a genuine scheduled
+            # paper operation. Local-only and inspection paths remain usable
+            # without any Telegram destination.
+            if not dry_run and schedule_key is not None:
+                telegram_target = resolve_telegram_target(args.telegram_target)
+
             if system.store.account()["status"] != "ACTIVE":
                 result = commit_operational_failure(
                     system,
@@ -407,7 +416,7 @@ def main() -> None:
                     now=pd.Timestamp(now),
                     locked_candidate_id=config.locked_candidate_id,
                 )
-                if schedule_key or current_window_missed:
+                if telegram_target is not None:
                     NotificationService(
                         system.store,
                         target=telegram_target,
@@ -423,8 +432,8 @@ def main() -> None:
             try:
                 snapshot = fetch_public_market_snapshot(
                     config,
-                    exchange_id=str(values["exchange"]),
-                    lookback_days=int(values["lookback_days"]),
+                    exchange_id=config.exchange_id,
+                    lookback_days=config.lookback_days,
                 )
             except Exception as error:
                 reason = f"Public market-data fetch failed: {error}"
@@ -438,7 +447,7 @@ def main() -> None:
                     now=pd.Timestamp(now),
                     locked_candidate_id=config.locked_candidate_id,
                 )
-                if schedule_key or current_window_missed:
+                if telegram_target is not None:
                     try:
                         NotificationService(
                             system.store,
@@ -467,7 +476,7 @@ def main() -> None:
             report_path = write_weekly_paper_report(
                 system.store, result, snapshot, reports_dir, now=snapshot.fetched_at
             )
-            if schedule_key or current_window_missed:
+            if telegram_target is not None:
                 try:
                     NotificationService(
                         system.store,

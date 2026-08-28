@@ -14,7 +14,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from run_paper import load_paper_configuration
-from src.forward_governance import locked_strategy_hash, verify_trust_anchors
+from src.forward_governance import (
+    ECONOMIC_SPEC_HASH_V2_SHA256,
+    economic_spec_hash_v2,
+    locked_strategy_hash,
+    verify_trust_anchors,
+)
 
 FROZEN_BASELINE_COMMIT = "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01"
 LOCKED_STRATEGY_SHA256 = "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6"
@@ -46,6 +51,7 @@ CRITICAL_FILES = (
     "forward_experiment/execution_protocol_v3.json",
     "forward_experiment/governance.json",
     "forward_experiment/governance_amendment_v2.json",
+    "forward_experiment/governance_amendment_v3_economic_spec.json",
     "forward_experiment/paper_schema.sql",
     "forward_experiment/scheduler_manifest.json",
     "requirements.lock",
@@ -97,6 +103,8 @@ def generate(project_root: Path, output_path: Path) -> dict:
     config, _values = load_paper_configuration(project_root)
     if locked_strategy_hash(config) != LOCKED_STRATEGY_SHA256:
         raise ValueError("locked strategy hash changed; refusing to regenerate manifest")
+    if economic_spec_hash_v2(config) != ECONOMIC_SPEC_HASH_V2_SHA256:
+        raise ValueError("economic specification v2 changed; refusing to regenerate manifest")
     verify_trust_anchors(project_root, config)
 
     missing = [relative for relative in CRITICAL_FILES if not (project_root / relative).is_file()]
@@ -109,6 +117,7 @@ def generate(project_root: Path, output_path: Path) -> dict:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "execution_protocol": EXECUTION_PROTOCOL,
         "locked_strategy_sha256": LOCKED_STRATEGY_SHA256,
+        "economic_spec_v2_sha256": ECONOMIC_SPEC_HASH_V2_SHA256,
         "preserved_protocol_records": ["paper-exec-v2-ask-bid-utc0010"],
         "archived_baseline_manifest": "forward_experiment/baselines/ebeac389/hardening_manifest.json",
         "threat_model": (

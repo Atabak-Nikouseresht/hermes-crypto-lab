@@ -1,0 +1,13 @@
+{
+  "base_governance_sha256": "f73f0897c15666daf3c6ff09b2ca4ec9737f412f9cf462bc2c3db8216bd0ef69",
+  "comprehensive_economic_spec_sha256": "1dc381ce5e8c663b1e1aab496503837945547d77944d082f873eab8f127eb395",
+  "created_at_utc": "2026-08-28T07:51:13Z",
+  "legacy_locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
+  "parameter_retuning": false,
+  "prior_operational_amendment_sha256": "5d4a9077dec6cca6ed590694fb34d5c6804295654656fe1c752294378dc64517",
+  "purpose": "Additive integrity coverage for the already-locked economic and execution specification; no strategy, parameter, selection, research result, or execution assumption is changed.",
+  "research_results_changed": false,
+  "status": "active additive integrity amendment; all earlier sealed governance remains unchanged",
+  "strategy_reselection": false,
+  "version": "forward-governance-economic-integrity-amendment-v3"
+}

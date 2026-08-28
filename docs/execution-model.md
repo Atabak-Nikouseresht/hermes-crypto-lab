@@ -8,6 +8,14 @@ EXECUTION_MODEL_MISMATCH — explicitly versioned, not erased
 
 The sealed historical backtest and forward paper path use different execution timestamps and sizing evidence. Forward observations must not be described as a direct validation of the sealed next-close assumption.
 
+For newly persisted paper orders, `paper_orders.requested_quantity` is the final
+executable simulated quantity after position restriction, cash scaling,
+step-size normalization, and exchange-filter validation. A current-semantics
+`FILLED` order must therefore match its associated fill quantity. The original
+pre-scaling strategy proposal remains in run diagnostics. This is ledger/audit
+semantics hardening only; it does not change filled quantity, price, costs,
+cash, positions, timing, risk, or the v3 execution protocol.
+
 ## Sealed historical protocol
 
 - Daily candle labels are Binance/CCXT candle-open timestamps.

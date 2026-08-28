@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,9 @@ from typing import Any
 import duckdb
 
 
+FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
+
+
 @dataclass(frozen=True)
 class ReconciliationResult:
     valid: bool
@@ -19,9 +23,17 @@ class ReconciliationResult:
 
 
 class PaperStore:
-    def __init__(self, path: Path, *, account_id: str, initial_cash: float):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        account_id: str,
+        initial_cash: float,
+        quantity_tolerance: float = 1e-7,
+    ):
         self.path = Path(path)
         self.account_id = account_id
+        self.quantity_tolerance = quantity_tolerance
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(initial_cash)
         self.recover_abandoned_runs()
@@ -82,7 +94,8 @@ class PaperStore:
                     target_weight DOUBLE NOT NULL,
                     status VARCHAR NOT NULL,
                     created_at_utc TIMESTAMPTZ NOT NULL,
-                    execution_protocol_version VARCHAR
+                    execution_protocol_version VARCHAR,
+                    ledger_semantics_version VARCHAR
                 );
                 CREATE TABLE IF NOT EXISTS paper_fills (
                     fill_id VARCHAR PRIMARY KEY,
@@ -97,6 +110,11 @@ class PaperStore:
                     slippage_cost DOUBLE NOT NULL,
                     fee DOUBLE NOT NULL,
                     filled_at_utc TIMESTAMPTZ NOT NULL,
+                    execution_protocol_version VARCHAR
+                );
+                CREATE TABLE IF NOT EXISTS paper_legacy_order_semantics (
+                    order_id VARCHAR PRIMARY KEY,
+                    preserved_at_utc TIMESTAMPTZ NOT NULL,
                     execution_protocol_version VARCHAR
                 );
                 CREATE TABLE IF NOT EXISTS equity_snapshots (
@@ -254,9 +272,45 @@ class PaperStore:
                 "ALTER TABLE paper_fills ADD COLUMN IF NOT EXISTS execution_protocol_version VARCHAR"
             )
             connection.execute(
+                "ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS ledger_semantics_version VARCHAR"
+            )
+            connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES (5, ?, 'versioned ask-bid execution context')",
                 [now],
             )
+            schema_v6 = connection.execute(
+                "SELECT 1 FROM paper_schema_versions WHERE version=6"
+            ).fetchone()
+            if schema_v6 is None:
+                connection.execute(
+                    """
+                    INSERT INTO paper_legacy_order_semantics
+                    SELECT order_id, ?, execution_protocol_version FROM paper_orders
+                    """,
+                    [now],
+                )
+                connection.execute(
+                    "INSERT INTO paper_schema_versions VALUES "
+                    "(6, ?, 'final executable order quantity ledger semantics')",
+                    [now],
+                )
+            schema_v7 = connection.execute(
+                "SELECT 1 FROM paper_schema_versions WHERE version=7"
+            ).fetchone()
+            if schema_v7 is None:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO paper_legacy_order_semantics
+                    SELECT order_id, ?, execution_protocol_version
+                    FROM paper_orders WHERE ledger_semantics_version IS NULL
+                    """,
+                    [now],
+                )
+                connection.execute(
+                    "INSERT INTO paper_schema_versions VALUES "
+                    "(7, ?, 'explicit preservation of pre-adoption ledger semantics')",
+                    [now],
+                )
             existing = connection.execute(
                 "SELECT initial_cash FROM paper_accounts WHERE account_id=?",
                 [self.account_id],
@@ -380,6 +434,119 @@ class PaperStore:
             ).fetchone()[0]
             if orphan:
                 return ReconciliationResult(False, "Orphan or invalid fill detected")
+            missing_fill = connection.execute(
+                """
+                SELECT COUNT(*) FROM paper_orders o
+                LEFT JOIN paper_fills f ON f.order_id=o.order_id
+                WHERE o.status='FILLED' AND f.order_id IS NULL
+                """
+            ).fetchone()[0]
+            if missing_fill:
+                return ReconciliationResult(False, "FILLED order without fill detected")
+            unexpected_fill = connection.execute(
+                """
+                SELECT COUNT(*) FROM paper_orders o
+                JOIN paper_fills f ON f.order_id=o.order_id
+                WHERE o.status<>'FILLED'
+                """
+            ).fetchone()[0]
+            if unexpected_fill:
+                return ReconciliationResult(False, "Fill attached to non-FILLED order detected")
+            relationships = connection.execute(
+                """
+                SELECT o.order_id, o.symbol, f.symbol, o.side, f.side, o.run_id, f.run_id,
+                       o.requested_quantity, f.filled_quantity,
+                       o.execution_protocol_version, f.execution_protocol_version,
+                       o.ledger_semantics_version,
+                       c.execution_protocol_version,
+                       legacy.order_id
+                FROM paper_orders o
+                JOIN paper_fills f ON f.order_id=o.order_id
+                LEFT JOIN paper_execution_context c
+                  ON c.run_id=o.run_id AND c.symbol=o.symbol
+                LEFT JOIN paper_legacy_order_semantics legacy
+                  ON legacy.order_id=o.order_id
+                """
+            ).fetchall()
+            for (
+                order_id,
+                order_symbol,
+                fill_symbol,
+                order_side,
+                fill_side,
+                order_run,
+                fill_run,
+                requested_quantity,
+                filled_quantity,
+                order_protocol,
+                fill_protocol,
+                ledger_semantics,
+                context_protocol,
+                legacy_order_id,
+            ) in relationships:
+                if not math.isfinite(float(filled_quantity)) or float(filled_quantity) <= 0:
+                    return ReconciliationResult(
+                        False, f"Invalid fill quantity for {order_id}"
+                    )
+                if order_symbol != fill_symbol:
+                    return ReconciliationResult(
+                        False, f"Order/fill symbol mismatch for {order_id}"
+                    )
+                if order_side != fill_side:
+                    return ReconciliationResult(
+                        False, f"Order/fill side mismatch for {order_id}"
+                    )
+                if order_run != fill_run:
+                    return ReconciliationResult(
+                        False, f"Order/fill run mismatch for {order_id}"
+                    )
+                if (
+                    order_protocol is not None
+                    and fill_protocol is not None
+                    and order_protocol != fill_protocol
+                ):
+                    return ReconciliationResult(
+                        False, f"Order/fill protocol mismatch for {order_id}"
+                    )
+                if ledger_semantics not in {
+                    None,
+                    FINAL_EXECUTABLE_LEDGER_SEMANTICS,
+                }:
+                    return ReconciliationResult(
+                        False, f"Unsupported ledger semantics for {order_id}"
+                    )
+                if legacy_order_id is not None:
+                    if ledger_semantics is not None:
+                        return ReconciliationResult(
+                            False, f"Preserved legacy semantics altered for {order_id}"
+                        )
+                    continue
+                if ledger_semantics is None:
+                    return ReconciliationResult(
+                        False, f"Missing ledger semantics for current order {order_id}"
+                    )
+                if ledger_semantics == FINAL_EXECUTABLE_LEDGER_SEMANTICS:
+                    if (
+                        not math.isfinite(float(requested_quantity))
+                        or float(requested_quantity) <= self.quantity_tolerance
+                    ):
+                        return ReconciliationResult(
+                            False, f"Invalid current order quantity for {order_id}"
+                        )
+                    if abs(float(requested_quantity) - float(filled_quantity)) > (
+                        self.quantity_tolerance
+                    ):
+                        return ReconciliationResult(
+                            False, f"Order/fill quantity mismatch for {order_id}"
+                        )
+                    if (
+                        order_protocol is None
+                        or fill_protocol != order_protocol
+                        or context_protocol != order_protocol
+                    ):
+                        return ReconciliationResult(
+                            False, f"Current ledger protocol provenance mismatch for {order_id}"
+                        )
         return ReconciliationResult(True, "cash, positions, orders and fills reconcile")
 
     def activate_kill_switch(

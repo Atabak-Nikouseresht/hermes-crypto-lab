@@ -87,6 +87,7 @@ CRITICAL_FILES = (
     "src/paper_store.py",
     "src/statistical_diagnostics.py",
     "src/strategy.py",
+    "tests/test_paper_trading.py",
 )
 
 

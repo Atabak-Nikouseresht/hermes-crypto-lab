@@ -3,7 +3,7 @@
 A reproducible systematic-crypto research and forward paper-trading platform built around public Binance spot market data, deterministic strategy evaluation, protocol-versioned simulated execution, and tamper-evident governance.
 
 > **Status: Forward Paper Validation**
-> The strategy is frozen at commit `ebeac389b1c309f1ef8f5a9056e96c3b28e08e01`. No live capital, private exchange API, or real-order path is used. Forward observations are collected as genuine out-of-sample evidence and are not used for retuning.
+> The strategy was frozen at historical pre-rewrite commit `ebeac389b1c309f1ef8f5a9056e96c3b28e08e01`, whose rewritten public equivalent is `1ae75af22c1cf09cf3179823647f7f5a40f845c7`. No live capital, private exchange API, or real-order path is used. Forward observations are collected as genuine out-of-sample evidence and are not used for retuning.
 
 This is an independent research/portfolio project. Hermes Agent is used for local scheduling and notification automation; the repository is not an official Nous Research or Hermes product.
 
@@ -242,6 +242,7 @@ See [Forward validation](docs/forward-validation.md) and [Governance](docs/gover
 - [Testing and verification](docs/testing.md)
 - [Audit evidence index](audits/README.md)
 - [Repository and artifact policy](docs/repository-policy.md)
+- [Public history rewrite and commit mapping](docs/public-history-rewrite.md)
 - [Security policy](SECURITY.md)
 
 ## License status

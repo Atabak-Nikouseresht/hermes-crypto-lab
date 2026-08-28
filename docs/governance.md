@@ -41,6 +41,13 @@ unordered collections are sorted before canonical JSON SHA-256 hashing. The v3
 amendment explicitly records that no strategy was reselected, no parameter was
 retuned, and no research result changed.
 
+The publication-security rewrite changed public Git commit identities without
+changing sealed evidence. The historical frozen baseline
+`ebeac389b1c309f1ef8f5a9056e96c3b28e08e01` maps to rewritten public commit
+`1ae75af22c1cf09cf3179823647f7f5a40f845c7`. Old identifiers embedded in
+sealed artifacts retain their pre-rewrite meaning; see
+[Public history rewrite](public-history-rewrite.md).
+
 ## Forward-validation rule
 
 The governing sequence is:

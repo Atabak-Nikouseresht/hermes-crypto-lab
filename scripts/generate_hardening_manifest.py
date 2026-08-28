@@ -22,6 +22,7 @@ from src.forward_governance import (
 )
 
 FROZEN_BASELINE_COMMIT = "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01"
+REWRITTEN_PUBLIC_BASELINE_COMMIT = "1ae75af22c1cf09cf3179823647f7f5a40f845c7"
 LOCKED_STRATEGY_SHA256 = "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6"
 EXECUTION_PROTOCOL = "paper-exec-v3-ask-bid-minspread-utc0010"
 
@@ -42,6 +43,7 @@ CRITICAL_FILES = (
     "docs/governance.md",
     "docs/methodology.md",
     "docs/operations.md",
+    "docs/public-history-rewrite.md",
     "docs/repository-policy.md",
     "docs/testing.md",
     "config/assets.yaml",
@@ -114,6 +116,8 @@ def generate(project_root: Path, output_path: Path) -> dict:
     payload = {
         "purpose": "active publication-and-operations critical-file manifest",
         "frozen_forward_baseline_commit": FROZEN_BASELINE_COMMIT,
+        "rewritten_public_baseline_commit": REWRITTEN_PUBLIC_BASELINE_COMMIT,
+        "public_history_rewrite_document": "docs/public-history-rewrite.md",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "execution_protocol": EXECUTION_PROTOCOL,
         "locked_strategy_sha256": LOCKED_STRATEGY_SHA256,

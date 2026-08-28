@@ -24,7 +24,7 @@ Linux/macOS:
 .venv/bin/python -m pytest tests -q
 ```
 
-The frozen functional baseline at commit `ebeac389b1c309f1ef8f5a9056e96c3b28e08e01` passed 70 tests. The current count should always be obtained by running the suite.
+The frozen functional baseline at historical pre-rewrite commit `ebeac389b1c309f1ef8f5a9056e96c3b28e08e01` (rewritten public equivalent `1ae75af22c1cf09cf3179823647f7f5a40f845c7`) passed 70 tests. The current count should always be obtained by running the suite. See [Public history rewrite](public-history-rewrite.md) for the verified mapping and the treatment of old SHAs embedded in sealed evidence.
 
 ## Coverage
 

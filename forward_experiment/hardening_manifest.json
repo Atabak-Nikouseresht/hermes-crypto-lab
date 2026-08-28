@@ -9,7 +9,7 @@
     ".gitignore": "06f27bef925ebf9aca61bd0474cfe368fcde0d84039e99ba695cfcad981638ba",
     ".python-version": "03520ee77719f14d31fd23cdbe29ea0e6dc6e7f181f8d8f99ef053500c192223",
     "CONTRIBUTING.md": "a8cb86c87bb7a368522840572150f0ae8a5013a03786950544e5774f4fa89cd1",
-    "README.md": "3418e9ac7a85e0b9679411bfa4bd984d40a0e81a9b6b1ae3a194b2ae7e1fcb91",
+    "README.md": "eb3b97646f3fb1950bdd1772777eabac9f26952060186e4f5c1a6d378b898b8c",
     "SECURITY.md": "89a38b4f7b4cf9bcd6287157897a3c0f5a92833b368756291bfd652f5d0ad6e8",
     "audits/README.md": "4c753f98c9a595cd1dcf5126bc51a5267a3046be16cd19da178d2220a6b72236",
     "config/assets.yaml": "5fa14abbed5257ce0083c291779735e212b308f35e7405036303a55a7b4309f8",
@@ -18,11 +18,12 @@
     "docs/architecture.md": "490304922c0cf5b936d31902cb1cdec4202d0dfa7e6912200419e3a9ab2d7ab0",
     "docs/execution-model.md": "7d1c2e1c1c08ec40ef16002872bf33902a9da671cb4b83c3fade310c356e3c6d",
     "docs/forward-validation.md": "3041e1b800d90aa798c6487a7d9bfc3f7967d1df2a7e75fd29510174319e5e89",
-    "docs/governance.md": "945ff5be5fd2a612917681655e73a1e6fe1b5b09d2241cc33d12ea5f78e8c794",
+    "docs/governance.md": "53ef20edbae4ab584f2c589c40c780e34fceacf1ac18aecae365f442caa3b068",
     "docs/methodology.md": "60b6f802398c23a5cf58aff0d83fa1de3e7dcc3f3e1254bb3ade863913a3e36a",
     "docs/operations.md": "a7016caebcf43f7cd137ac90a8c0a7ede8796ad7396c73ccc32dffadb24ccd20",
+    "docs/public-history-rewrite.md": "e1f5f8f60fc13d231287af5244a203595ac4f2f0bfc13a142e69de576cd2a254",
     "docs/repository-policy.md": "1aeba452d3438ddf3c42c997cf3428acb62e0fe70ffce4d100f537f0c68f4499",
-    "docs/testing.md": "b8867e722aaa05a8d27d26923ee3fe1da18873be926593f0cf43eb2befbf9fab",
+    "docs/testing.md": "dc8f64e05b80a363ae3b34a16a61cadd0d4495ad18ae05ccebb21f6e5cb9b78d",
     "forward_experiment/checkpoint_manifest.json": "97e8d1770a1d78010566760ac3d4121b8b6eafd8f13b617782286cbfaab31c4b",
     "forward_experiment/execution_protocol_v2.json": "682b0b494c0309428c6e9fd1d1306dfbd2495ea450fdb278c12e65033fc1605c",
     "forward_experiment/execution_protocol_v3.json": "cd118b83b8428d4c2eccaa92360ca0f1aa14a85463221f75241797a48bbf7989",
@@ -40,7 +41,7 @@
     "run_paper.py": "a2b06fc103d8d1fb9bedf9c4f8a8d6d91c43532064be6e6c5d53576011fcf04b",
     "scripts/backup_forward.py": "f4cbd00a9a5d0c57514ba0a1719bfba8d5f06f79ae30e40c6c8bc1682cb01ecb",
     "scripts/check_markdown_links.py": "2ae389ad79e85596a005d3d2890b5334be791490133d26beb4fda5ab7713379a",
-    "scripts/generate_hardening_manifest.py": "473f0ea9abdea477ee5401a8a193a41c1dd148bbf9b22a44c352658c42f3f4ff",
+    "scripts/generate_hardening_manifest.py": "fda19d2e98d50ee0acdaec6a331b52dcdba1750c3aa8760a1cbc5b5689e3a8cd",
     "scripts/hermes_gateway_watchdog.ps1": "81b2d17cfd8ca8d91b09ad68ff7dfedbbe60092fa62445a67d3fcfaf72ed26b3",
     "scripts/paper_forward_audit.py": "c1bc25a58c4df0a2e0317e1fe1043b8e574d596fe3af99b6bbac4e5a00a552e9",
     "scripts/paper_forward_monthly.py": "fb2c76f58dbd4eb9c5176f159fac41b76390454d66b87420b8ce3e038b8b2fe7",
@@ -64,11 +65,13 @@
     "src/strategy.py": "a1e79c1059d1b97b127dca80d08daafdb0586d8901181ab0978fe6186a081988"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-08-28T08:12:15.210320+00:00",
+  "generated_at_utc": "2026-08-28T08:22:23.652351+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"
   ],
+  "public_history_rewrite_document": "docs/public-history-rewrite.md",
   "purpose": "active publication-and-operations critical-file manifest",
+  "rewritten_public_baseline_commit": "1ae75af22c1cf09cf3179823647f7f5a40f845c7",
   "threat_model": "tamper-evident under Git plus code-anchored hashes; not immutable against compromise of Git history and verifier together"
 }

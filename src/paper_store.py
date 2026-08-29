@@ -615,24 +615,56 @@ class PaperStore:
         outcome: str,
         now: datetime,
     ) -> None:
-        with self.connect() as connection:
-            experiment_id = self._active_experiment_id(connection)
-            connection.execute(
-                "INSERT OR IGNORE INTO forward_schedule_windows VALUES (?, ?, ?, ?, ?)",
-                [schedule_key, scheduled_for, run_id, outcome, now],
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO forward_experiment_windows VALUES (?, ?)",
-                [experiment_id, schedule_key],
-            )
-            if run_id is not None:
-                connection.execute(
-                    """
-                    UPDATE forward_schedule_windows SET run_id=?, outcome=?
-                    WHERE schedule_key=? AND (run_id IS NULL OR run_id=?)
-                    """,
-                    [run_id, outcome, schedule_key, run_id],
+        for attempt in range(2):
+            try:
+                self._record_forward_window_once(
+                    schedule_key=schedule_key,
+                    scheduled_for=scheduled_for,
+                    run_id=run_id,
+                    outcome=outcome,
+                    now=now,
                 )
+                return
+            except (duckdb.ConstraintException, duckdb.TransactionException):
+                if attempt == 1:
+                    raise
+
+    def _record_forward_window_once(
+        self,
+        *,
+        schedule_key: str,
+        scheduled_for: datetime,
+        run_id: str | None,
+        outcome: str,
+        now: datetime,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                experiment_id = self._active_experiment_id(connection)
+                connection.execute(
+                    "INSERT OR IGNORE INTO forward_schedule_windows VALUES (?, ?, ?, ?, ?)",
+                    [schedule_key, scheduled_for, run_id, outcome, now],
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO forward_experiment_windows VALUES (?, ?)",
+                    [experiment_id, schedule_key],
+                )
+                if run_id is not None:
+                    connection.execute(
+                        """
+                        UPDATE forward_schedule_windows SET run_id=?, outcome=?
+                        WHERE schedule_key=? AND (run_id IS NULL OR run_id=?)
+                        """,
+                        [run_id, outcome, schedule_key, run_id],
+                    )
+                connection.execute("COMMIT")
+            except Exception:
+                try:
+                    connection.execute("ROLLBACK")
+                except duckdb.TransactionException:
+                    pass
+                raise
 
     def record_forward_incident(
         self,
@@ -643,17 +675,83 @@ class PaperStore:
         run_id: str | None = None,
         scheduled_for: datetime | None = None,
     ) -> None:
+        for attempt in range(2):
+            try:
+                self._record_forward_incident_once(
+                    incident_type=incident_type,
+                    reason=reason,
+                    now=now,
+                    run_id=run_id,
+                    scheduled_for=scheduled_for,
+                )
+                return
+            except (duckdb.ConstraintException, duckdb.TransactionException):
+                if attempt == 1:
+                    raise
+
+    def _record_forward_incident_once(
+        self,
+        *,
+        incident_type: str,
+        reason: str,
+        now: datetime,
+        run_id: str | None,
+        scheduled_for: datetime | None,
+    ) -> None:
         with self.connect() as connection:
-            experiment_id = self._active_experiment_id(connection)
-            incident_id = str(uuid.uuid4())
-            connection.execute(
-                "INSERT OR IGNORE INTO forward_incidents VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                [incident_id, run_id, incident_type, scheduled_for, reason, now],
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO forward_experiment_incidents VALUES (?, ?)",
-                [experiment_id, incident_id],
-            )
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                experiment_id = self._active_experiment_id(connection)
+                existing = None
+                if scheduled_for is not None:
+                    existing = connection.execute(
+                        """
+                        SELECT incident_id FROM forward_incidents
+                        WHERE incident_type=? AND scheduled_for_utc=?
+                        ORDER BY created_at_utc, incident_id
+                        LIMIT 1
+                        """,
+                        [incident_type, scheduled_for],
+                    ).fetchone()
+                if existing is None:
+                    proposed_incident_id = str(uuid.uuid4())
+                    connection.execute(
+                        "INSERT OR IGNORE INTO forward_incidents VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                        [
+                            proposed_incident_id,
+                            run_id,
+                            incident_type,
+                            scheduled_for,
+                            reason,
+                            now,
+                        ],
+                    )
+                    if scheduled_for is None:
+                        existing = (proposed_incident_id,)
+                    else:
+                        existing = connection.execute(
+                            """
+                            SELECT incident_id FROM forward_incidents
+                            WHERE incident_type=? AND scheduled_for_utc=?
+                            ORDER BY created_at_utc, incident_id
+                            LIMIT 1
+                            """,
+                            [incident_type, scheduled_for],
+                        ).fetchone()
+                if existing is None:
+                    raise RuntimeError("Incident persistence did not produce an incident row")
+                incident_id = str(existing[0])
+                connection.execute(
+                    "INSERT OR IGNORE INTO forward_experiment_incidents VALUES (?, ?)",
+                    [experiment_id, incident_id],
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                try:
+                    connection.execute("ROLLBACK")
+                except duckdb.TransactionException:
+                    pass
+                raise
 
     def ensure_forward_baseline(self, *, run_id: str) -> None:
         with self.connect() as connection:

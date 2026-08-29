@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 import pandas as pd
 
@@ -12,10 +12,53 @@ from src.paper_broker import MarketSnapshot, PaperConfig, Quote, SymbolRules
 from src.validate_data import rows_to_frame
 
 
+class PublicMarketCapability(Protocol):
+    """The complete exchange capability surface allowed in paper operations."""
+
+    def load_markets(self) -> Any: ...
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str, since: int, limit: int) -> Any: ...
+
+    def fetch_ticker(self, symbol: str) -> Any: ...
+
+    def market(self, symbol: str) -> Any: ...
+
+    def close(self) -> Any: ...
+
+
+class PublicMarketClient:
+    """Capability-limited facade over a general-purpose exchange client."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def load_markets(self) -> Any:
+        return self._client.load_markets()
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str, since: int, limit: int) -> Any:
+        return self._client.fetch_ohlcv(
+            symbol, timeframe=timeframe, since=since, limit=limit
+        )
+
+    def fetch_ticker(self, symbol: str) -> Any:
+        return self._client.fetch_ticker(symbol)
+
+    def market(self, symbol: str) -> Any:
+        return self._client.market(symbol)
+
+    def close(self) -> Any:
+        close = getattr(self._client, "close", None)
+        return close() if callable(close) else None
+
+
+def create_public_market_client(exchange_id: str, timeout_ms: int) -> PublicMarketClient:
+    return PublicMarketClient(create_exchange(exchange_id, timeout_ms))
+
+
 def fetch_public_market_snapshot(
     config: PaperConfig,
     *,
-    exchange: Any | None = None,
+    exchange: PublicMarketCapability | None = None,
     exchange_id: str = "binance",
     now: datetime | None = None,
     lookback_days: int = 260,
@@ -29,7 +72,7 @@ def fetch_public_market_snapshot(
     since_ms = int(since.timestamp() * 1000)
     cutoff_ms = int(current.normalize().timestamp() * 1000)
     owned_exchange = exchange is None
-    market = exchange or create_exchange(exchange_id, timeout_ms)
+    market = exchange or create_public_market_client(exchange_id, timeout_ms)
     close_series = []
     quotes: dict[str, Quote] = {}
     rules: dict[str, SymbolRules] = {}

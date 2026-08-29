@@ -14,11 +14,19 @@ data/*.md -text
 config/*.yaml -text
 requirements.lock -text
 requirements.txt -text
+pyproject.toml -text
 run_*.py -text
 scripts/*.py -text
 scripts/*.ps1 -text
 src/*.py -text
+tests/test_ci_quality.py text eol=lf
+tests/test_forward_operations.py text eol=lf
+tests/test_forward_safety.py text eol=lf
+tests/test_paper_config.py text eol=lf
+tests/test_paper_market.py text eol=lf
 tests/test_paper_trading.py text eol=lf
+tests/test_runner_safety.py text eol=lf
+tests/test_scheduler_contract.py text eol=lf
 forward_experiment/**/*.json -text
 forward_experiment/**/*.sha256 -text
 forward_experiment/**/*.sql -text

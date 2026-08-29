@@ -58,6 +58,7 @@ CRITICAL_FILES = (
     "forward_experiment/scheduler_manifest.json",
     "requirements.lock",
     "requirements.txt",
+    "pyproject.toml",
     "run_backtest.py",
     "run_data_pipeline.py",
     "run_experiments.py",
@@ -87,7 +88,14 @@ CRITICAL_FILES = (
     "src/paper_store.py",
     "src/statistical_diagnostics.py",
     "src/strategy.py",
+    "tests/test_ci_quality.py",
+    "tests/test_forward_operations.py",
+    "tests/test_forward_safety.py",
+    "tests/test_paper_config.py",
+    "tests/test_paper_market.py",
     "tests/test_paper_trading.py",
+    "tests/test_runner_safety.py",
+    "tests/test_scheduler_contract.py",
 )
 
 

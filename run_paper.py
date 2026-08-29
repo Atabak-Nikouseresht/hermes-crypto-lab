@@ -12,7 +12,7 @@ import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
-from src.config import load_assets, load_settings
+from src.config import Settings, load_assets, load_settings
 from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
 from src.forward_governance import bootstrap_forward_experiment, verify_trust_anchors
 from src.forward_operations import (
@@ -22,7 +22,7 @@ from src.forward_operations import (
     record_missed_windows,
 )
 from src.logging_config import configure_logging
-from src.paper_broker import PaperConfig, PaperTradingSystem
+from src.paper_broker import MarketSnapshot, PaperConfig, PaperTradingSystem
 from src.paper_forward import (
     build_forward_diagnostics,
     commit_operational_failure,
@@ -81,6 +81,20 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
         require_exchange_rules=bool(values["require_exchange_rules"]),
     )
     return config, values
+
+
+def fetch_configured_public_market_snapshot(
+    config: PaperConfig, settings: Settings
+) -> MarketSnapshot:
+    """Fetch paper-market data with the typed runtime transport policy."""
+    return fetch_public_market_snapshot(
+        config,
+        exchange_id=config.exchange_id,
+        lookback_days=config.lookback_days,
+        max_retries=settings.max_retries,
+        backoff_base_seconds=settings.backoff_base_seconds,
+        timeout_ms=settings.request_timeout_ms,
+    )
 
 
 def _project_paths(project_root: Path, values: dict) -> tuple[Path, Path]:
@@ -149,6 +163,35 @@ def _current_schedule_window_closed(
     return current.weekday() == config.schedule_weekday and current > window_end
 
 
+def _schedule_window_deadline(
+    schedule_key: str | None, config: PaperConfig
+) -> pd.Timestamp | None:
+    if schedule_key is None:
+        return None
+    window_start = pd.Timestamp(schedule_key)
+    if window_start.tzinfo is None:
+        raise ValueError("Schedule key must be timezone-aware")
+    return window_start.tz_convert("UTC") + pd.Timedelta(
+        minutes=config.schedule_window_minutes
+    )
+
+
+def _latest_schedule_key(now: datetime | pd.Timestamp, config: PaperConfig) -> str:
+    current = pd.Timestamp(now)
+    if current.tzinfo is None:
+        raise ValueError("Schedule audit time must be timezone-aware")
+    current = current.tz_convert("UTC")
+    days_since_schedule = (current.weekday() - config.schedule_weekday) % 7
+    window_start = current.normalize() - pd.Timedelta(days=days_since_schedule)
+    window_start += pd.Timedelta(
+        hours=config.schedule_hour,
+        minutes=config.schedule_minute,
+    )
+    if window_start > current:
+        window_start -= pd.Timedelta(days=7)
+    return window_start.strftime("%Y-%m-%dT%H:%MZ")
+
+
 def _send_sample(target: str, reports_dir: Path, config: PaperConfig) -> Path:
     now = pd.Timestamp.now(tz="UTC")
     path = reports_dir / f"telegram_sample_{now.strftime('%Y%m%dT%H%M%SZ')}.md"
@@ -203,26 +246,26 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Propose only; persist no trades")
     mode.add_argument("--paper", action="store_true", help="Persist virtual paper fills")
-    parser.add_argument("--reset-kill-switch", action="store_true")
-    parser.add_argument(
+    mode.add_argument("--reset-kill-switch", action="store_true")
+    mode.add_argument(
         "--audit-missed",
         action="store_true",
         help="Audit missed schedule only; no market fetch or strategy execution",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--startup-audit",
         action="store_true",
         help="Record every missing window since forward start; no market fetch",
     )
-    parser.add_argument("--resend", metavar="RUN_ID", help="Retry Telegram only; never execute strategy")
-    parser.add_argument("--status", action="store_true", help="Print persistent forward status as JSON")
-    parser.add_argument("--reconcile", action="store_true", help="Run reconciliation only")
-    parser.add_argument(
+    mode.add_argument("--resend", metavar="RUN_ID", help="Retry Telegram only; never execute strategy")
+    mode.add_argument("--status", action="store_true", help="Print persistent forward status as JSON")
+    mode.add_argument("--reconcile", action="store_true", help="Run reconciliation only")
+    mode.add_argument(
         "--kill-switch-status",
         action="store_true",
         help="Inspect kill-switch state and incidents without resetting it",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--sample-telegram",
         action="store_true",
         help="Send a sample report without fetching data or changing paper state",
@@ -378,6 +421,7 @@ def main() -> None:
             start = _experiment_start(settings.project_root)
             record_missed_windows(system.store, start=start, now=now, config=config)
             schedule_key = system._scheduled_key(pd.Timestamp(now))
+            schedule_deadline = _schedule_window_deadline(schedule_key, config)
             current_window_missed = _current_schedule_window_closed(now, config)
             if current_window_missed:
                 print(
@@ -385,6 +429,16 @@ def main() -> None:
                     "no market fetch, signal calculation, equity snapshot, or trade was performed"
                 )
                 return
+            if schedule_key is None:
+                latest_schedule_key = _latest_schedule_key(now, config)
+                if system.store.forward_window_exists(
+                    latest_schedule_key
+                ) or system.store.schedule_exists(latest_schedule_key):
+                    print(
+                        "Status: DUPLICATE_SCHEDULE — latest governed UTC window "
+                        f"{latest_schedule_key} is already finalized"
+                    )
+                    return
             if (
                 not dry_run
                 and schedule_key is not None
@@ -430,11 +484,7 @@ def main() -> None:
                 config.locked_candidate_id,
             )
             try:
-                snapshot = fetch_public_market_snapshot(
-                    config,
-                    exchange_id=config.exchange_id,
-                    lookback_days=config.lookback_days,
-                )
+                snapshot = fetch_configured_public_market_snapshot(config, settings)
             except Exception as error:
                 reason = f"Public market-data fetch failed: {error}"
                 result = commit_operational_failure(
@@ -459,19 +509,30 @@ def main() -> None:
                 LOGGER.exception(reason)
                 raise SystemExit(2) from error
 
+            execution_now = datetime.now(timezone.utc)
+            if schedule_deadline is not None and pd.Timestamp(execution_now) > schedule_deadline:
+                record_missed_windows(
+                    system.store,
+                    start=start,
+                    now=execution_now,
+                    config=config,
+                )
+                print(
+                    "Status: MISSED_SCHEDULE — UTC window closed during market-data "
+                    "retrieval; no signal calculation, equity snapshot, or trade was performed"
+                )
+                return
             diagnostics = (
                 build_forward_diagnostics(system, snapshot) if schedule_key else {}
             )
-            execution_now = datetime.now(timezone.utc)
             result = system.run(snapshot, now=execution_now, dry_run=dry_run)
-            outcome_override = "MISSED_SCHEDULE" if current_window_missed else None
             result = finalize_forward_run(
                 system,
                 result,
                 snapshot,
                 now=execution_now,
                 diagnostics=diagnostics,
-                outcome_override=outcome_override,
+                outcome_override=None,
             )
             report_path = write_weekly_paper_report(
                 system.store, result, snapshot, reports_dir, now=snapshot.fetched_at

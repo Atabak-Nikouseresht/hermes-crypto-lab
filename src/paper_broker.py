@@ -85,13 +85,51 @@ class PaperConfig:
     )
 
     def __post_init__(self) -> None:
-        if self.initial_cash <= 0:
+        if not math.isfinite(self.initial_cash) or self.initial_cash <= 0:
             raise ValueError("initial_cash must be positive")
         if not self.assets:
             raise ValueError("assets cannot be empty")
         for rate in (self.fee_rate, self.minimum_spread_rate, self.slippage_rate):
-            if not 0 <= rate < 1:
+            if not math.isfinite(rate) or not 0 <= rate < 1:
                 raise ValueError("cost rates must be in [0, 1)")
+        if not 0 <= self.schedule_weekday <= 6:
+            raise ValueError("schedule_weekday must be in [0, 6]")
+        if not 0 <= self.schedule_hour <= 23:
+            raise ValueError("schedule_hour must be in [0, 23]")
+        if not 0 <= self.schedule_minute <= 59:
+            raise ValueError("schedule_minute must be in [0, 59]")
+        if not 0 <= self.execution_target_minute <= 59:
+            raise ValueError("execution_target_minute must be in [0, 59]")
+        if self.schedule_window_minutes <= 0:
+            raise ValueError("schedule_window_minutes must be positive")
+        window_end_minute = self.schedule_minute + self.schedule_window_minutes
+        if not self.schedule_minute <= self.execution_target_minute <= window_end_minute:
+            raise ValueError("execution_target_minute must fall within the schedule window")
+        if self.max_data_staleness_minutes <= 0:
+            raise ValueError("max_data_staleness_minutes must be positive")
+        if self.max_quote_staleness_minutes <= 0:
+            raise ValueError("max_quote_staleness_minutes must be positive")
+        if self.max_quote_staleness_minutes > self.max_data_staleness_minutes:
+            raise ValueError(
+                "max_quote_staleness_minutes cannot exceed max_data_staleness_minutes"
+            )
+        minimum_lookback = (
+            max(
+                self.strategy_config.momentum_long_days
+                + self.strategy_config.momentum_skip_days,
+                self.strategy_config.btc_moving_average_days,
+                self.strategy_config.volatility_days,
+            )
+            + 1
+        )
+        if self.lookback_days < minimum_lookback:
+            raise ValueError(
+                f"lookback_days must be at least {minimum_lookback} for the strategy"
+            )
+        if not math.isfinite(self.quantity_tolerance) or not 0 < self.quantity_tolerance < 1:
+            raise ValueError("quantity_tolerance must be finite and in (0, 1)")
+        if self.rebalance_days <= 0:
+            raise ValueError("rebalance_days must be positive")
 
 
 @dataclass(frozen=True)

@@ -44,6 +44,9 @@ jobs:
           run_backtest.py run_data_pipeline.py run_experiments.py
           run_monthly_report.py run_paper.py
 
+      - name: Run static quality gate
+        run: python -m ruff check .
+
       - name: Verify public-only execution boundary
         run: python scripts/verify_safety.py
 
@@ -75,4 +78,10 @@ jobs:
           print(verify_hardening_manifest(Path('.'), Path('forward_experiment/hardening_manifest.json')))"
 
       - name: Run unit, property and integration tests
-        run: python -m pytest tests -q
+        run: >-
+          python -m pytest tests -q
+          --cov=src
+          --cov=run_paper
+          --cov-branch
+          --cov-report=term
+          --cov-fail-under=75

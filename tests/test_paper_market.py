@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from src.paper_broker import PaperConfig
-from src.paper_market import fetch_public_market_snapshot
+from src.paper_market import create_public_market_client, fetch_public_market_snapshot
 
 
 class FakePublicExchange:
@@ -40,6 +40,40 @@ class FakePublicExchange:
     def fetch_ticker(self, symbol):
         self.calls.append(("fetch_ticker", symbol))
         return {"bid": 99.9, "ask": 100.1, "last": 100.0, "timestamp": self.now_ms}
+
+
+def test_public_market_client_exposes_no_private_exchange_capability(monkeypatch):
+    class GeneralPurposeExchange:
+        def load_markets(self):
+            return {}
+
+        def fetch_ohlcv(self, *args, **kwargs):
+            return []
+
+        def fetch_ticker(self, symbol):
+            return {"symbol": symbol}
+
+        def market(self, symbol):
+            return {"symbol": symbol}
+
+        def close(self):
+            return None
+
+        def create_order(self, *args, **kwargs):
+            raise AssertionError("must not be exposed")
+
+        def fetch_balance(self):
+            raise AssertionError("must not be exposed")
+
+    monkeypatch.setattr(
+        "src.paper_market.create_exchange", lambda _exchange_id, _timeout: GeneralPurposeExchange()
+    )
+
+    client = create_public_market_client("binance", 30_000)
+
+    assert client.load_markets() == {}
+    assert not hasattr(client, "create_order")
+    assert not hasattr(client, "fetch_balance")
 
 
 def test_public_snapshot_uses_only_market_data_methods():

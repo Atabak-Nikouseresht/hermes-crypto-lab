@@ -11,7 +11,8 @@ Windows:
 .venv/Scripts/python.exe scripts/verify_safety.py
 .venv/Scripts/python.exe scripts/verify_scheduler_manifest.py
 .venv/Scripts/python.exe scripts/check_markdown_links.py
-.venv/Scripts/python.exe -m pytest tests -q
+.venv/Scripts/python.exe -m ruff check .
+.venv/Scripts/python.exe -m pytest tests -q --cov=src --cov=run_paper --cov-branch --cov-report=term --cov-fail-under=75
 ```
 
 Linux/macOS:
@@ -21,7 +22,8 @@ Linux/macOS:
 .venv/bin/python scripts/verify_safety.py
 .venv/bin/python scripts/verify_scheduler_manifest.py
 .venv/bin/python scripts/check_markdown_links.py
-.venv/bin/python -m pytest tests -q
+.venv/bin/python -m ruff check .
+.venv/bin/python -m pytest tests -q --cov=src --cov=run_paper --cov-branch --cov-report=term --cov-fail-under=75
 ```
 
 The frozen functional baseline at historical pre-rewrite commit `ebeac389b1c309f1ef8f5a9056e96c3b28e08e01` (rewritten public equivalent `1ae75af22c1cf09cf3179823647f7f5a40f845c7`) passed 70 tests. The current count should always be obtained by running the suite. See [Public history rewrite](public-history-rewrite.md) for the verified mapping and the treatment of old SHAs embedded in sealed evidence.
@@ -30,13 +32,16 @@ The frozen functional baseline at historical pre-rewrite commit `ebeac389b1c309f
 
 ```bash
 .venv/Scripts/python.exe -m pytest tests -q \
-  --cov=src \
+  --cov=src --cov=run_paper \
   --cov-branch \
   --cov-report=term-missing \
-  --cov-report=html
+  --cov-fail-under=75
 ```
 
 Coverage output is generated locally and ignored. It is a testing diagnostic, not permanent governance evidence.
+The branch-aware baseline measured for this hardening release is 78% across
+`src` and `run_paper.py`. CI uses a 75% floor: a three-point margin avoids a
+fragile vanity threshold while still catching material coverage regressions.
 
 ## Integrity checks
 
@@ -93,4 +98,4 @@ No mutation score is claimed. This limitation should not be relabeled as a pass.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes and pull requests with read-only repository permissions. It installs the hash-pinned lock, compiles source/tests, verifies the public-only boundary, audits dependencies, checks trust anchors and the active hardening manifest, and runs the complete suite.
+`.github/workflows/ci.yml` runs on pushes and pull requests with read-only repository permissions. It installs the hash-pinned lock, compiles source/tests, runs the low-noise Ruff correctness gate, verifies the public-only boundary, audits dependencies, checks trust anchors and the active hardening manifest, and runs the complete suite with branch coverage.

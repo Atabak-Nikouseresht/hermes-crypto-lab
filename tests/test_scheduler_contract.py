@@ -63,7 +63,7 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
 def test_missed_current_window_returns_before_market_fetch():
     source = (Path(__file__).resolve().parents[1] / "run_paper.py").read_text(encoding="utf-8")
     guard = source.index("if current_window_missed:")
-    fetch = source.index("snapshot = fetch_public_market_snapshot(")
+    fetch = source.index("snapshot = fetch_configured_public_market_snapshot(")
 
     assert guard < fetch
     assert "return" in source[guard:fetch]

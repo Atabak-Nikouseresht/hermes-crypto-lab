@@ -52,6 +52,18 @@ Forward contract:
 
 The forward quote is approximately 23 hours 50 minutes earlier than availability of the sealed model's Monday close. Forward sizing also uses execution-time quote midpoints rather than carrying fixed Sunday-close quantities.
 
+## Legacy signal field names
+
+The internal `StrategySignal` attributes `momentum_90_ex_7` and
+`btc_above_ma200` are preserved compatibility identifiers from an earlier
+baseline. They are not literal descriptions of the locked candidate. Their
+calculations use the active immutable `StrategyConfig` values: momentum 120,
+skip 0, and BTC moving average 150 for the current locked candidate. Forward
+diagnostics already persist generic `momentum` and `trend_window` fields.
+Renaming the legacy attributes would create avoidable compatibility risk for
+historical research code and tests, so this operational remediation leaves the
+identifiers and all calculations unchanged.
+
 ## Historical examples
 
 ### 2019-04-07 → 2019-04-08

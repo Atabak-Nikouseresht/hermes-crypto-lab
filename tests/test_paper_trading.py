@@ -446,6 +446,35 @@ def test_schema_v9_adds_persistent_rejection_audit_without_rewriting_runs(tmp_pa
     assert description == "persist run-attributable paper order rejection audit trail"
 
 
+def test_forward_evidence_migration_preserves_historical_runs(tmp_path):
+    path = tmp_path / "migration_v10.duckdb"
+    system = PaperTradingSystem(path, _config())
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_runs "
+            "(run_id, started_at_utc, completed_at_utc, status, mode, message, reconciliation) "
+            "VALUES ('historical-run', now(), now(), 'EXECUTED', 'PAPER', 'historical', '{}')"
+        )
+        connection.execute("DROP TABLE paper_forward_execution_evidence")
+        connection.execute("DELETE FROM paper_schema_versions WHERE version=10")
+
+    migrated = PaperTradingSystem(path, _config())
+    with migrated.store.connect(read_only=True) as connection:
+        historical = connection.execute(
+            "SELECT status, message FROM paper_runs WHERE run_id='historical-run'"
+        ).fetchone()
+        description = connection.execute(
+            "SELECT description FROM paper_schema_versions WHERE version=10"
+        ).fetchone()[0]
+        evidence_count = connection.execute(
+            "SELECT COUNT(*) FROM paper_forward_execution_evidence"
+        ).fetchone()[0]
+
+    assert historical == ("EXECUTED", "historical")
+    assert description == "atomically persist forward execution evidence"
+    assert evidence_count == 0
+
+
 def test_reconciliation_rejects_filled_order_without_fill(tmp_path):
     system, _ = _execute_scaled_buy(
         tmp_path,
@@ -1108,7 +1137,7 @@ def test_forward_outcome_classification_covers_operational_terminal_states(
 
 
 def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkeypatch):
-    from src.paper_forward import recover_committed_forward_evidence
+    from src.paper_forward import build_forward_diagnostics, recover_committed_forward_evidence
 
     now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     database = tmp_path / "paper.duckdb"
@@ -1125,8 +1154,15 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("crash after commit")),
     )
 
+    snapshot = _snapshot(now)
+    diagnostics = build_forward_diagnostics(system, snapshot)
     with pytest.raises(RuntimeError, match="crash after commit"):
-        system.run(_snapshot(now), now=now, dry_run=False)
+        system.run(
+            snapshot,
+            now=now,
+            dry_run=False,
+            forward_diagnostics=diagnostics,
+        )
 
     with duckdb.connect(str(database), read_only=True) as connection:
         run_id = connection.execute("SELECT run_id FROM paper_runs").fetchone()[0]
@@ -1161,14 +1197,63 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
         observations = connection.execute(
             "SELECT COUNT(*) FROM forward_market_observations WHERE run_id=?", [run_id]
         ).fetchone()[0]
+        incomplete_incidents = connection.execute(
+            "SELECT COUNT(*) FROM forward_incidents "
+            "WHERE run_id=? AND incident_type='RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE'",
+            [run_id],
+        ).fetchone()[0]
     assert recovered == 1
     assert recovered_again == 0
     assert status == "RECOVERED_COMMITTED"
     assert fill_ids_after == fill_ids_before
     assert equity_count_before == equity_count_after == 1
-    assert outcome == "RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE"
-    assert window == (run_id, "RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE")
-    assert observations == 0
+    assert outcome == "PAPER_TRADE_COMPLETED"
+    assert window == (run_id, "PAPER_TRADE_COMPLETED")
+    assert observations == len(system.config.assets)
+    assert incomplete_incidents == 0
+
+
+def test_forward_evidence_failure_rolls_back_with_paper_transaction(tmp_path, monkeypatch):
+    from src.paper_forward import build_forward_diagnostics
+
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    database = tmp_path / "evidence_rollback.duckdb"
+    system = PaperTradingSystem(database, _config())
+    snapshot = _snapshot(now)
+    diagnostics = build_forward_diagnostics(system, snapshot)
+    original = system.store.record_committed_forward_evidence
+
+    def interrupt_after_evidence(connection, **kwargs):
+        original(connection, **kwargs)
+        raise RuntimeError("crash before transaction commit")
+
+    monkeypatch.setattr(
+        system.store, "record_committed_forward_evidence", interrupt_after_evidence
+    )
+
+    with pytest.raises(RuntimeError, match="crash before transaction commit"):
+        system.run(
+            snapshot,
+            now=now,
+            dry_run=False,
+            forward_diagnostics=diagnostics,
+        )
+
+    restarted = PaperTradingSystem(database, _config())
+    with restarted.store.connect(read_only=True) as connection:
+        counts = connection.execute(
+            "SELECT "
+            "(SELECT COUNT(*) FROM paper_orders), "
+            "(SELECT COUNT(*) FROM paper_fills), "
+            "(SELECT COUNT(*) FROM equity_snapshots), "
+            "(SELECT COUNT(*) FROM paper_forward_execution_evidence), "
+            "(SELECT COUNT(*) FROM forward_market_observations)"
+        ).fetchone()
+        run_state = connection.execute(
+            "SELECT status, schedule_key FROM paper_runs"
+        ).fetchone()
+    assert counts == (0, 0, 0, 0, 0)
+    assert run_state == ("RECOVERED_ABORTED", None)
 
 
 def test_recovers_terminal_run_missing_post_commit_evidence(tmp_path):

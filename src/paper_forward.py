@@ -83,10 +83,41 @@ def recover_committed_forward_evidence(
         ).fetchall()
     recovered = 0
     for run_id, schedule_key, persisted_outcome, observation_count, notification_count in rows:
-        evidence_complete = persisted_outcome is not None and int(observation_count) > 0
+        committed_evidence = system.store.committed_forward_evidence(run_id)
+        staged_complete = bool(
+            committed_evidence is not None
+            and set(committed_evidence[1]) == set(system.config.assets)
+        )
+        canonical_complete = bool(
+            persisted_outcome is not None
+            and persisted_outcome != RECOVERED_INCOMPLETE_OUTCOME
+            and int(observation_count) == len(system.config.assets)
+        )
+        evidence_complete = canonical_complete or staged_complete
         delivery_incomplete = evidence_complete and int(notification_count) == 0
-        outcome = persisted_outcome if evidence_complete else RECOVERED_INCOMPLETE_OUTCOME
-        if persisted_outcome is None:
+        outcome = persisted_outcome
+        if persisted_outcome is None and staged_complete:
+            assert committed_evidence is not None
+            diagnostics, observed_prices, observed_at = committed_evidence
+            reconciliation = system.store.reconcile()
+            account = system.store.account()
+            recovered_result = PaperRunResult(
+                run_id,
+                "EXECUTED" if reconciliation.valid else "KILL_SWITCH",
+                reconciliation.message,
+            )
+            outcome = classify_outcome(system, recovered_result, diagnostics)
+            system.store.record_forward_details(
+                run_id=run_id,
+                outcome=outcome,
+                diagnostics=diagnostics,
+                observed_prices=observed_prices,
+                observed_at=observed_at,
+                kill_switch_active=account["status"] != "ACTIVE",
+                reconciliation_valid=reconciliation.valid,
+            )
+        elif persisted_outcome is None:
+            outcome = RECOVERED_INCOMPLETE_OUTCOME
             reconciliation = system.store.reconcile()
             account = system.store.account()
             system.store.record_forward_details(
@@ -98,6 +129,7 @@ def recover_committed_forward_evidence(
                 kill_switch_active=account["status"] != "ACTIVE",
                 reconciliation_valid=reconciliation.valid,
             )
+        assert outcome is not None
         if evidence_complete:
             system.store.ensure_forward_baseline(run_id=run_id)
         else:
@@ -344,7 +376,15 @@ def finalize_forward_run(
         ).fetchone()
     if row is None or row[0] == "RUNNING" or row[1] is None:
         raise RuntimeError("Cannot finalize forward diagnostics before paper transaction finalization")
-    diagnostics = diagnostics or {}
+    committed_evidence = system.store.committed_forward_evidence(result.run_id)
+    if committed_evidence is not None:
+        diagnostics, observed_prices, observed_at = committed_evidence
+    else:
+        diagnostics = diagnostics or {}
+        observed_prices = {
+            asset: snapshot.quotes[asset].mid for asset in system.config.assets
+        }
+        observed_at = now_ts.to_pydatetime()
     persisted_rejections = system.store.order_rejections(result.run_id)
     if persisted_rejections:
         diagnostics["rejected_orders"] = persisted_rejections
@@ -355,8 +395,8 @@ def finalize_forward_run(
         run_id=result.run_id,
         outcome=outcome,
         diagnostics=diagnostics,
-        observed_prices={asset: snapshot.quotes[asset].mid for asset in system.config.assets},
-        observed_at=now_ts.to_pydatetime(),
+        observed_prices=observed_prices,
+        observed_at=observed_at,
         kill_switch_active=account["status"] != "ACTIVE",
         reconciliation_valid=reconciliation.valid,
     )

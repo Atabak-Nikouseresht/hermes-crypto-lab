@@ -533,7 +533,12 @@ def main() -> None:
             diagnostics = (
                 build_forward_diagnostics(system, snapshot) if schedule_key else {}
             )
-            result = system.run(snapshot, now=execution_now, dry_run=dry_run)
+            result = system.run(
+                snapshot,
+                now=execution_now,
+                dry_run=dry_run,
+                forward_diagnostics=diagnostics if schedule_key else None,
+            )
             result = finalize_forward_run(
                 system,
                 result,

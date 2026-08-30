@@ -53,9 +53,12 @@ def block_bootstrap_ci(
     *,
     statistic: str,
     block_size: int,
+    periods_per_year: int = 365,
     replications: int = 2000,
     seed: int = 20260822,
 ) -> dict[str, Any]:
+    if periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
     values = np.asarray(returns, dtype=float)
     values = values[np.isfinite(values)]
     if len(values) < max(3, block_size + 1):
@@ -73,7 +76,9 @@ def block_bootstrap_ci(
             result = float(sample.mean())
         elif statistic == "sharpe":
             std = sample.std(ddof=1)
-            result = float(sample.mean() / std * sqrt(365)) if std > 0 else 0.0
+            result = (
+                float(sample.mean() / std * sqrt(periods_per_year)) if std > 0 else 0.0
+            )
         else:
             raise ValueError(f"Unsupported statistic: {statistic}")
         samples.append(result)
@@ -147,10 +152,10 @@ def generate_statistical_diagnostic(
             "reason": "No candidate-by-subperiod return matrix was preserved for all 96 configurations; forcing PBO would be invalid.",
         },
         "mean_return_block_bootstrap_95": block_bootstrap_ci(
-            returns, statistic="mean", block_size=7
+            returns, statistic="mean", block_size=7, periods_per_year=365
         ),
         "sharpe_block_bootstrap_95": block_bootstrap_ci(
-            returns, statistic="sharpe", block_size=7
+            returns, statistic="sharpe", block_size=7, periods_per_year=365
         ),
         "cost_sensitivity": cost_sensitivity,
         "parameter_neighborhood_summary": heatmap,

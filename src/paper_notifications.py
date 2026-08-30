@@ -164,9 +164,13 @@ class NotificationService:
         """Retry Telegram only; never fetches data or invokes strategy execution."""
         with self.store.connect(read_only=True) as connection:
             row = connection.execute(
-                "SELECT target, report_path FROM paper_notifications WHERE run_id=?",
+                "SELECT target, report_path, status FROM paper_notifications WHERE run_id=?",
                 [run_id],
             ).fetchone()
         if row is None:
             raise NotificationError(f"No prior notification record for run {run_id}")
+        if row[2] not in {"PENDING", "FAILED"}:
+            raise NotificationError(
+                f"Notification for run {run_id} is already delivered; resend refused"
+            )
         return self._attempt(run_id, Path(row[1]), row[0])

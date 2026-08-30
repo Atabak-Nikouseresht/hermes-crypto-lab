@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Any, Protocol
 
 import pandas as pd
@@ -112,12 +113,15 @@ def fetch_public_market_snapshot(
                 raise ValueError(f"Executable bid/ask missing for {symbol}")
             bid = float(ticker["bid"])
             ask = float(ticker["ask"])
-            informational_last = ticker.get("last") or ticker.get("close")
-            last = (
-                float(informational_last)
-                if informational_last is not None
-                else (bid + ask) / 2.0
-            )
+            informational_last = ticker.get("last")
+            if informational_last is None:
+                informational_last = ticker.get("close")
+            try:
+                last = float(informational_last)
+            except (TypeError, ValueError):
+                last = (bid + ask) / 2.0
+            if not math.isfinite(last) or last <= 0:
+                last = (bid + ask) / 2.0
             ticker_ms = ticker.get("timestamp")
             if ticker_ms is None:
                 raise ValueError(f"Quote timestamp missing for {symbol}")

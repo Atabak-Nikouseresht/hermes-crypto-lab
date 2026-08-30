@@ -80,3 +80,46 @@ def test_tracked_post_selection_diagnostics_use_corrected_frequency_scaling(tmp_
 def test_small_sample_is_explicitly_insufficient():
     result = block_bootstrap_ci(np.array([0.01, -0.01]), statistic="sharpe", block_size=2)
     assert result["status"] == "INSUFFICIENT_SAMPLE"
+
+
+def test_sharpe_bootstrap_defaults_to_daily_annualization():
+    returns = np.array([0.01, -0.005, 0.004, 0.002, -0.003] * 30)
+
+    default = block_bootstrap_ci(
+        returns, statistic="sharpe", block_size=5, replications=500, seed=7
+    )
+    explicit = block_bootstrap_ci(
+        returns,
+        statistic="sharpe",
+        block_size=5,
+        periods_per_year=365,
+        replications=500,
+        seed=7,
+    )
+
+    assert default == explicit
+
+
+def test_sharpe_bootstrap_supports_alternative_frequency_reference():
+    returns = np.array([0.01, -0.005, 0.004, 0.002, -0.003] * 30)
+
+    daily = block_bootstrap_ci(
+        returns,
+        statistic="sharpe",
+        block_size=5,
+        periods_per_year=365,
+        replications=500,
+        seed=7,
+    )
+    weekly = block_bootstrap_ci(
+        returns,
+        statistic="sharpe",
+        block_size=5,
+        periods_per_year=52,
+        replications=500,
+        seed=7,
+    )
+
+    scale = np.sqrt(52 / 365)
+    assert weekly["lower"] == pytest.approx(daily["lower"] * scale, abs=1e-12)
+    assert weekly["upper"] == pytest.approx(daily["upper"] * scale, abs=1e-12)

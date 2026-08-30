@@ -124,3 +124,70 @@ def test_process_interruption_before_notification_completion_leaves_retry_eligib
     assert state[2] == str(report.resolve())
     assert trades == (0, 0)
     assert externally_sent == [("telegram:test-target", report.resolve())]
+
+
+@pytest.mark.parametrize("status", ["PENDING", "FAILED"])
+def test_resend_allows_only_retryable_notification_states(tmp_path, status):
+    database = tmp_path / "paper.duckdb"
+    system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
+    now = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
+    report = tmp_path / "report.md"
+    report.write_text("virtual report", encoding="utf-8")
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_runs (run_id, started_at_utc, completed_at_utc, status, mode) "
+            "VALUES ('retryable', ?, ?, 'EXECUTED', 'PAPER')",
+            [now, now],
+        )
+        connection.execute(
+            "INSERT INTO paper_notifications VALUES (?, ?, ?, ?, 0, NULL, ?, ?, NULL)",
+            ["retryable", "telegram:test", str(report.resolve()), status, now, now],
+        )
+    sent = []
+    service = NotificationService(
+        system.store,
+        target="",
+        sender=lambda target, path: sent.append((target, path)) or {"ok": True},
+    )
+
+    service.resend("retryable")
+
+    assert sent == [("telegram:test", report.resolve())]
+
+
+def test_resend_refuses_delivered_notification_without_sending(tmp_path):
+    database = tmp_path / "paper.duckdb"
+    system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
+    now = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
+    report = tmp_path / "report.md"
+    report.write_text("virtual report", encoding="utf-8")
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_runs (run_id, started_at_utc, completed_at_utc, status, mode) "
+            "VALUES ('delivered', ?, ?, 'EXECUTED', 'PAPER')",
+            [now, now],
+        )
+        connection.execute(
+            "INSERT INTO paper_notifications VALUES (?, ?, ?, 'DELIVERED', 1, NULL, ?, ?, ?)",
+            ["delivered", "telegram:test", str(report.resolve()), now, now, now],
+        )
+    sent = []
+    service = NotificationService(system.store, target="", sender=lambda *args: sent.append(args))
+
+    with pytest.raises(NotificationError, match="already delivered"):
+        service.resend("delivered")
+
+    assert sent == []
+
+
+def test_resend_refuses_unknown_run_without_sending(tmp_path):
+    system = PaperTradingSystem(
+        tmp_path / "paper.duckdb", PaperConfig(assets=("BTC/USDT",))
+    )
+    sent = []
+    service = NotificationService(system.store, target="", sender=lambda *args: sent.append(args))
+
+    with pytest.raises(NotificationError, match="No prior notification record"):
+        service.resend("unknown")
+
+    assert sent == []

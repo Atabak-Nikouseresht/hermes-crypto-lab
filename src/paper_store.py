@@ -263,6 +263,11 @@ class PaperStore:
                     rejected_at_utc TIMESTAMPTZ NOT NULL,
                     PRIMARY KEY (run_id, rejection_index)
                 );
+                CREATE TABLE IF NOT EXISTS paper_forward_execution_evidence (
+                    run_id VARCHAR PRIMARY KEY,
+                    captured_at_utc TIMESTAMPTZ NOT NULL,
+                    diagnostics JSON NOT NULL
+                );
                 """
             )
             connection.execute(
@@ -298,6 +303,11 @@ class PaperStore:
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES "
                 "(9, ?, 'persist run-attributable paper order rejection audit trail')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(10, ?, 'atomically persist forward execution evidence')",
                 [now],
             )
             connection.execute(
@@ -885,6 +895,44 @@ class PaperStore:
                     [run_id, observed_at, symbol, float(price)],
                 )
             connection.execute("COMMIT")
+
+    def record_committed_forward_evidence(
+        self,
+        connection,
+        *,
+        run_id: str,
+        diagnostics: dict[str, Any],
+        observed_prices: dict[str, float],
+        observed_at: datetime,
+    ) -> None:
+        """Stage exact forward evidence inside the paper execution transaction."""
+        connection.execute(
+            "INSERT INTO paper_forward_execution_evidence VALUES (?, ?, ?)",
+            [run_id, observed_at, json.dumps(diagnostics, sort_keys=True)],
+        )
+        for symbol, price in observed_prices.items():
+            connection.execute(
+                "INSERT INTO forward_market_observations VALUES (?, ?, ?, ?)",
+                [run_id, observed_at, symbol, float(price)],
+            )
+
+    def committed_forward_evidence(
+        self, run_id: str
+    ) -> tuple[dict[str, Any], dict[str, float], datetime] | None:
+        with self.connect(read_only=True) as connection:
+            row = connection.execute(
+                "SELECT diagnostics, captured_at_utc "
+                "FROM paper_forward_execution_evidence WHERE run_id=?",
+                [run_id],
+            ).fetchone()
+            if row is None:
+                return None
+            observations = connection.execute(
+                "SELECT symbol, price FROM forward_market_observations WHERE run_id=?",
+                [run_id],
+            ).fetchall()
+        diagnostics = json.loads(row[0]) if isinstance(row[0], str) else dict(row[0])
+        return diagnostics, {symbol: float(price) for symbol, price in observations}, row[1]
 
     def insert_run(
         self,

@@ -56,7 +56,7 @@
     "src/data_integrity.py": "805d36b4b9b22bcde7f0ee10e7824ff641d65e684e436c8233a25639342683ef",
     "src/execution_protocol.py": "1ca0c7ae9405c4349cfb3dfa94016e5918254b3470ee4d77757f6155a29bff03",
     "src/forward_governance.py": "6eadd069110575960860ece191fce342b57c874fbcbb9bf956c2809664d03bef",
-    "src/forward_operations.py": "d9b3221ce0def50a9bf4d1b3a084d382b6a9466e155c968a382fca105650db00",
+    "src/forward_operations.py": "28f2106cd73080fca6072a0de72b14a6f4de3db8c6dc752fe6381d133c7fe99d",
     "src/hardening_manifest.py": "93925dcbbf39e8423bf0bfea4550ed5f0d1b72fb0a318bd305dc1978fdf14a2c",
     "src/paper_broker.py": "1eed284764802ee07b4419e0b3cbb899f30a6dc88070c2cd6553db919d38dbb7",
     "src/paper_forward.py": "d1ea49b76860243400b30374e5ca8fa14d26f7ce68d56e4f01f79e02ab306253",
@@ -80,7 +80,7 @@
     "tests/test_statistical_diagnostics.py": "434686f8c314cf6796e5b0e3e0f59879f3229b17039ff922f8fb5346e761f91a"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-08-30T14:33:02.057593+00:00",
+  "generated_at_utc": "2026-08-30T14:44:43.907546+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

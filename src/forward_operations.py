@@ -55,11 +55,11 @@ class InterProcessLock:
     @staticmethod
     def _try_lock(handle) -> None:
         handle.seek(0)
-        if os.name == "nt":
+        if os.name == "nt":  # pragma: no cover - exercised only on Windows
             import msvcrt
 
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
+        else:  # pragma: no cover - exercised only on POSIX
             import fcntl
 
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -124,11 +124,11 @@ class InterProcessLock:
         with self._guard:
             if self._handle is not None:
                 self._handle.seek(0)
-                if os.name == "nt":
+                if os.name == "nt":  # pragma: no cover - exercised only on Windows
                     import msvcrt
 
                     msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
+                else:  # pragma: no cover - exercised only on POSIX
                     import fcntl
 
                     fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)

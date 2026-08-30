@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Any
+
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -38,13 +39,6 @@ def write_weekly_paper_report(
     reconciliation = store.reconcile()
     diagnostics = result.diagnostics or {}
     with store.connect(read_only=True) as connection:
-        orders = connection.execute(
-            """
-            SELECT symbol, side, requested_quantity, target_weight, status
-            FROM paper_orders WHERE run_id=? ORDER BY symbol
-            """,
-            [result.run_id],
-        ).fetchall()
         fills = connection.execute(
             """
             SELECT symbol, side, filled_quantity, mid_price, execution_price,
@@ -143,6 +137,24 @@ def write_weekly_paper_report(
         )
     if not proposed:
         lines.append("| — | — | 0 | — |")
+
+    rejections = store.order_rejections(result.run_id)
+    lines.extend(
+        [
+            "",
+            "## Rejected orders",
+            "",
+            "| Asset | Side | Stage | Reason | Notional |",
+            "|---|---|---|---|---:|",
+        ]
+    )
+    for rejection in rejections:
+        lines.append(
+            f"| {rejection['symbol']} | {rejection['side']} | {rejection['stage']} | "
+            f"{rejection['reason']} | {float(rejection['notional']):.4f} |"
+        )
+    if not rejections:
+        lines.append("| — | — | — | — | 0 |")
 
     lines.extend(
         [
@@ -243,7 +255,7 @@ def write_operational_failure_report(
         "- Fee / spread / slippage: **0 / 0 / 0 USDT**",
         "- Turnover: **0.00%**",
         f"- Cash: **{account['cash']:,.2f} USDT**",
-        f"- Ending equity: **UNAVAILABLE without a valid quote snapshot**",
+        "- Ending equity: **UNAVAILABLE without a valid quote snapshot**",
         "- Cumulative return / maximum drawdown / current drawdown: **UNAVAILABLE for this failed run**",
         f"- Kill switch: **{'ACTIVE' if account['status'] != 'ACTIVE' else 'inactive'}**",
         f"- Reconciliation: **{'valid' if reconciliation.valid else 'FAILED'} — {reconciliation.message}**",
@@ -254,4 +266,58 @@ def write_operational_failure_report(
     ]
     with path.open("x", encoding="utf-8", newline="\n") as handle:
         handle.write("\n".join(lines))
+    return path
+
+
+def write_recovered_committed_report(
+    store: PaperStore,
+    *,
+    run_id: str,
+    outcome: str,
+    reports_dir: Path,
+    now: pd.Timestamp,
+    locked_candidate_id: str,
+) -> Path:
+    """Write an auditable report using only already-committed database evidence."""
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    utc_now = pd.Timestamp(now).tz_convert("UTC")
+    with store.connect(read_only=True) as connection:
+        run = connection.execute(
+            "SELECT status, message FROM paper_runs WHERE run_id=?", [run_id]
+        ).fetchone()
+        snapshot = connection.execute(
+            "SELECT cash, positions_value, equity, snapshot_at_utc "
+            "FROM equity_snapshots WHERE run_id=?",
+            [run_id],
+        ).fetchone()
+        fills = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(fee), 0), COALESCE(SUM(spread_cost), 0), "
+            "COALESCE(SUM(slippage_cost), 0) FROM paper_fills WHERE run_id=?",
+            [run_id],
+        ).fetchone()
+    path = reports_dir / f"paper_recovered_{utc_now.strftime('%Y-%m-%d')}_{run_id}.md"
+    lines = [
+        "# Recovered Forward Paper Report",
+        "",
+        f"- Run ID: `{run_id}`",
+        f"- Recovery outcome: **{outcome}**",
+        f"- Internal status: **{run[0]}**",
+        f"- Locked candidate: `{locked_candidate_id}`",
+        f"- Committed snapshot UTC: `{pd.Timestamp(snapshot[3]).isoformat()}`",
+        f"- Cash / positions / equity: **{float(snapshot[0]):.4f} / {float(snapshot[1]):.4f} / {float(snapshot[2]):.4f} USDT**",
+        f"- Fills: **{int(fills[0])}**",
+        f"- Fee / spread / slippage: **{float(fills[1]):.4f} / {float(fills[2]):.4f} / {float(fills[3]):.4f} USDT**",
+        f"- Original message: {run[1] or 'unavailable'}",
+        "",
+        "> Generated only from committed DuckDB state after interruption. Missing market evidence is not reconstructed or fabricated. No strategy execution was rerun.",
+        "",
+    ]
+    if path.exists():
+        return path
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
     return path

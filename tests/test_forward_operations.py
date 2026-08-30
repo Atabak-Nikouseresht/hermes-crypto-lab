@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 import json
-from pathlib import Path
 import threading
 
 import duckdb

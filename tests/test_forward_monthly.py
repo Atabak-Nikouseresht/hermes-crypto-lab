@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-import json
 
 from src.forward_monthly import generate_monthly_forward_report
 from src.paper_broker import PaperConfig, PaperTradingSystem

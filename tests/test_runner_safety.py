@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 import duckdb
+import pandas as pd
 
 import run_paper
 from src.forward_operations import AlreadyRunningError, InterProcessLock
@@ -153,6 +154,322 @@ def test_inspection_cli_modes_work_without_telegram_target(tmp_path, mode):
 
     assert completed.returncode == 0, completed.stderr
     assert "HCL_TELEGRAM_TARGET" not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("--status", '"reconciliation"'),
+        ("--reconcile", '"valid": true'),
+        ("--kill-switch-status", '"automatic_reset": false'),
+        ("--reset-kill-switch", "kill switch reset"),
+    ],
+)
+def test_operational_cli_modes_execute_in_process_for_coverage(
+    monkeypatch, tmp_path, capsys, mode, expected
+):
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    values = {
+        **values,
+        "database_path": str(tmp_path / "operational.duckdb"),
+        "reports_dir": str(tmp_path / "reports"),
+    }
+    settings = SimpleNamespace(
+        project_root=root,
+        logs_dir=tmp_path / "logs",
+        log_level="INFO",
+    )
+    monkeypatch.delenv("HCL_TELEGRAM_TARGET", raising=False)
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", mode])
+
+    run_paper.main()
+
+    assert expected in capsys.readouterr().out.lower()
+
+
+def test_project_paths_resolve_relative_runtime_locations_and_env_override(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("HCL_PAPER_DATABASE", raising=False)
+    database, reports = run_paper._project_paths(
+        tmp_path,
+        {"database_path": "database/paper.duckdb", "reports_dir": "reports"},
+    )
+    assert database == tmp_path / "database/paper.duckdb"
+    assert reports == tmp_path / "reports"
+
+    override = (tmp_path / "override.duckdb").resolve()
+    monkeypatch.setenv("HCL_PAPER_DATABASE", str(override))
+    database, _ = run_paper._project_paths(
+        tmp_path,
+        {"database_path": "ignored.duckdb", "reports_dir": str(tmp_path / "absolute")},
+    )
+    assert database == override
+
+
+def test_schedule_helpers_fail_closed_for_naive_timestamps_and_missing_governance(
+    tmp_path,
+):
+    project_root = Path(__file__).resolve().parents[1]
+    config, _ = run_paper.load_paper_configuration(project_root)
+    before = pd.Timestamp.now(tz="UTC")
+    inferred = run_paper._experiment_start(tmp_path)
+    after = pd.Timestamp.now(tz="UTC")
+    assert before <= inferred <= after
+    with pytest.raises(ValueError, match="timezone-aware"):
+        run_paper._current_schedule_window_closed(datetime(2026, 1, 5, 0, 21), config)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        run_paper._schedule_window_deadline("2026-01-05T00:05:00", config)
+
+
+def test_active_paper_strategy_is_derived_from_locked_candidate_identity():
+    project_root = Path(__file__).resolve().parents[1]
+
+    config, _ = run_paper.load_paper_configuration(project_root)
+
+    assert config.locked_candidate_id == "mw120_sw00_ma150_n2_r07_v30"
+    assert config.strategy_config.momentum_long_days == 120
+    assert config.strategy_config.momentum_skip_days == 0
+    assert config.strategy_config.btc_moving_average_days == 150
+    assert config.strategy_config.max_assets == 2
+    assert config.rebalance_days == 7
+    assert config.strategy_config.volatility_days == 30
+
+
+def test_sample_notification_cli_writes_paper_only_report_and_delivers(
+    monkeypatch, tmp_path, capsys
+):
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    values = {
+        **values,
+        "database_path": str(tmp_path / "sample.duckdb"),
+        "reports_dir": str(tmp_path / "reports"),
+    }
+    settings = SimpleNamespace(
+        project_root=root,
+        logs_dir=tmp_path / "logs",
+        log_level="INFO",
+    )
+    delivered = []
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(
+        run_paper,
+        "HermesTelegramSender",
+        lambda: lambda target, path: delivered.append((target, path)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_paper.py", "--sample-telegram", "--telegram-target", "local-test"],
+    )
+
+    run_paper.main()
+
+    assert len(delivered) == 1
+    assert delivered[0][0] == "local-test"
+    assert "SAMPLE_NOTIFICATION_ONLY" in delivered[0][1].read_text(encoding="utf-8")
+    assert "Sample Telegram report delivered" in capsys.readouterr().out
+
+
+def test_resend_cli_only_retries_existing_notification(monkeypatch, tmp_path, capsys):
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    settings = SimpleNamespace(project_root=root, logs_dir=tmp_path, log_level="INFO")
+    resent = []
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield SimpleNamespace(store=object())
+
+    class FakeNotifications:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def resend(self, run_id):
+            resent.append(run_id)
+
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "NotificationService", FakeNotifications)
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--resend", "committed-run"])
+
+    run_paper.main()
+
+    assert resent == ["committed-run"]
+    assert "strategy was not executed" in capsys.readouterr().out
+
+
+def test_audit_cli_records_reports_and_notifies_without_market_execution(
+    monkeypatch, tmp_path, capsys
+):
+    from src.paper_broker import PaperRunResult
+
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    values = {**values, "reports_dir": str(tmp_path / "reports")}
+    settings = SimpleNamespace(project_root=root, logs_dir=tmp_path, log_level="INFO")
+    result = PaperRunResult("missed-run", "MISSED_SCHEDULE", "missed")
+    delivered = []
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield SimpleNamespace(store=object())
+
+    class FakeNotifications:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def send_committed_run(self, run_id, report_path):
+            delivered.append((run_id, report_path))
+
+    report = tmp_path / "reports" / "missed.md"
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "audit_missed_schedule", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(run_paper, "write_operational_failure_report", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(run_paper, "NotificationService", FakeNotifications)
+    monkeypatch.setattr(run_paper, "HermesTelegramSender", lambda: object())
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--audit-missed", "--telegram-target", "local-test"])
+
+    run_paper.main()
+
+    assert delivered == [("missed-run", report)]
+    assert "MISSED_SCHEDULE recorded and delivered" in capsys.readouterr().out
+
+
+def test_dry_run_success_orchestrates_public_snapshot_and_report_without_notification(
+    monkeypatch, tmp_path, capsys
+):
+    from src.paper_broker import PaperRunResult
+
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    values = {**values, "reports_dir": str(tmp_path / "reports")}
+    settings = SimpleNamespace(
+        project_root=root,
+        logs_dir=tmp_path,
+        log_level="INFO",
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1_000,
+    )
+    store = SimpleNamespace(
+        forward_window_exists=lambda _key: False,
+        schedule_exists=lambda _key: False,
+        account=lambda: {"status": "ACTIVE"},
+    )
+    result = PaperRunResult("dry-run", "DRY_RUN", "proposal", outcome="CASH_ONLY")
+    system = SimpleNamespace(
+        store=store,
+        _scheduled_key=lambda _now: None,
+        run=lambda *_args, **_kwargs: result,
+    )
+    snapshot = SimpleNamespace(fetched_at=run_paper.pd.Timestamp("2026-01-06T00:01:00Z"))
+    report = tmp_path / "reports" / "dry.md"
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield system
+
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: snapshot.fetched_at)
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
+    monkeypatch.setattr(run_paper, "finalize_forward_run", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(
+        run_paper,
+        "resolve_telegram_target",
+        lambda _target: (_ for _ in ()).throw(AssertionError("dry-run must not notify")),
+    )
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--dry-run"])
+
+    run_paper.main()
+
+    output = capsys.readouterr().out
+    assert "Status: DRY_RUN" in output
+    assert "Outcome: CASH_ONLY" in output
+    assert str(report) in output
+
+
+def test_dry_run_market_failure_commits_auditable_failure_without_notification(
+    monkeypatch, tmp_path
+):
+    from src.paper_broker import PaperRunResult
+
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    values = {**values, "reports_dir": str(tmp_path / "reports")}
+    settings = SimpleNamespace(
+        project_root=root,
+        logs_dir=tmp_path,
+        log_level="INFO",
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1_000,
+    )
+    store = SimpleNamespace(
+        forward_window_exists=lambda _key: False,
+        schedule_exists=lambda _key: False,
+        account=lambda: {"status": "ACTIVE"},
+    )
+    system = SimpleNamespace(store=store, _scheduled_key=lambda _now: None)
+    committed = []
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield system
+
+    def commit(*_args, **kwargs):
+        committed.append(kwargs)
+        return PaperRunResult("failed-run", "DATA_QUALITY_FAILURE", kwargs["message"])
+
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: run_paper.pd.Timestamp.now(tz="UTC"))
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        run_paper,
+        "fetch_configured_public_market_snapshot",
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("public timeout")),
+    )
+    monkeypatch.setattr(run_paper, "commit_operational_failure", commit)
+    monkeypatch.setattr(
+        run_paper,
+        "write_operational_failure_report",
+        lambda *_args, **_kwargs: tmp_path / "failed.md",
+    )
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--dry-run"])
+
+    with pytest.raises(SystemExit, match="2"):
+        run_paper.main()
+
+    assert committed[0]["outcome"] == "DATA_QUALITY_FAILURE"
+    assert "public timeout" in committed[0]["message"]
 
 
 @pytest.mark.parametrize(

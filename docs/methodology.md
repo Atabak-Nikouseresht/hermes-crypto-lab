@@ -69,12 +69,18 @@ The historical manager enforced:
 1. a 60% training period over the allowed 96-case grid;
 2. stable-neighborhood scoring rather than isolated best-return selection;
 3. five fixed finalists for the 20% validation period;
-4. three expanding walk-forward folds ending before final-test access;
+4. three fixed-finalist rolling pre-test evaluation folds ending before final-test access;
 5. penalties for degradation, dispersion, drawdown, and turnover;
 6. a hash-chained candidate-lock event;
 7. final-test access for the locked candidate only.
 
 The repository preserves two deterministic run directories. The first final-period access is canonical for sealed-result interpretation; the later run is retained because deleting it would conceal provenance. Neither is reused for forward retuning.
+
+The historical reports retain the compatibility label `walk_forward`, but the
+implementation does not retrain or reselect candidates in each fold. It evaluates
+the already selected finalists over sequential pre-test periods using all price
+history available through each fold end. This is rolling pre-test evaluation, not
+a true expanding retrain→test walk-forward process.
 
 ## Historical execution
 
@@ -107,6 +113,7 @@ A comparison is descriptive evidence. It may identify possible overfitting, inst
 - Historical selection creates post-selection uncertainty.
 - A sealed backtest cannot reproduce live market microstructure.
 - Paper fills do not establish real fillability.
-- The forward and sealed execution models differ materially.
+- The forward bid/ask protocol and sealed next-close model differ materially;
+  this remains explicitly classified as `EXECUTION_MODEL_MISMATCH`.
 - Small forward samples have low statistical power.
 - Stable software and passing tests do not establish an economic edge.

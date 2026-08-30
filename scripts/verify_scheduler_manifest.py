@@ -27,6 +27,24 @@ JOBS = {
     ),
 }
 
+VOLATILE_DEPLOYMENT_FIELDS = {
+    "installed",
+    "job_id",
+    "last_run_at",
+    "last_run_result",
+    "last_status",
+    "next_run_at",
+    "status",
+}
+
+
+def _all_keys(value) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | set().union(*(_all_keys(item) for item in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_all_keys(item) for item in value))
+    return set()
+
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -42,6 +60,12 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     if payload.get("execution_protocol") != EXPECTED_PROTOCOL:
         raise ValueError("scheduler execution protocol mismatch")
+    leaked_fields = sorted(_all_keys(payload) & VOLATILE_DEPLOYMENT_FIELDS)
+    if leaked_fields:
+        raise ValueError(
+            "scheduler contract contains volatile deployment fields: "
+            + ", ".join(leaked_fields)
+        )
 
     verified = {}
     for key, (relative_wrapper, expected_trigger, expected_name) in JOBS.items():

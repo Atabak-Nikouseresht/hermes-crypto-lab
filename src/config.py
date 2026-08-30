@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import os
 
@@ -47,15 +48,41 @@ def load_settings(project_root: Path | None = None) -> Settings:
         value = Path(os.getenv(variable, default))
         return value if value.is_absolute() else root / value
 
+    def integer_setting(variable: str, default: str, *, minimum: int) -> int:
+        try:
+            value = int(os.getenv(variable, default))
+        except ValueError as error:
+            qualifier = "positive" if minimum == 1 else "non-negative"
+            raise ValueError(f"{variable} must be a {qualifier} integer") from error
+        if value < minimum:
+            qualifier = "positive" if minimum == 1 else "non-negative"
+            raise ValueError(f"{variable} must be a {qualifier} integer")
+        return value
+
+    def positive_float_setting(variable: str, default: str) -> float:
+        try:
+            value = float(os.getenv(variable, default))
+        except ValueError as error:
+            raise ValueError(
+                f"{variable} must be a positive finite number"
+            ) from error
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{variable} must be a positive finite number")
+        return value
+
     return Settings(
         project_root=root,
         exchange=os.getenv("HCL_EXCHANGE", "binance"),
         timeframe=os.getenv("HCL_TIMEFRAME", "1d"),
         since=os.getenv("HCL_SINCE", "2017-01-01T00:00:00Z"),
-        fetch_limit=int(os.getenv("HCL_FETCH_LIMIT", "1000")),
-        max_retries=int(os.getenv("HCL_MAX_RETRIES", "5")),
-        backoff_base_seconds=float(os.getenv("HCL_BACKOFF_BASE_SECONDS", "1.0")),
-        request_timeout_ms=int(os.getenv("HCL_REQUEST_TIMEOUT_MS", "30000")),
+        fetch_limit=integer_setting("HCL_FETCH_LIMIT", "1000", minimum=1),
+        max_retries=integer_setting("HCL_MAX_RETRIES", "5", minimum=0),
+        backoff_base_seconds=positive_float_setting(
+            "HCL_BACKOFF_BASE_SECONDS", "1.0"
+        ),
+        request_timeout_ms=integer_setting(
+            "HCL_REQUEST_TIMEOUT_MS", "30000", minimum=1
+        ),
         assets_config=project_path("HCL_ASSETS_CONFIG", "config/assets.yaml"),
         database_path=project_path("HCL_DATABASE_PATH", "database/trading.duckdb"),
         log_level=os.getenv("HCL_LOG_LEVEL", "INFO").upper(),

@@ -5,11 +5,14 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from src.paper_broker import MarketSnapshot, PaperRunResult, PaperTradingSystem
+from src.paper_notifications import NotificationService
+from src.paper_report import write_recovered_committed_report
 from src.strategy import generate_signal
 
 ERROR_OUTCOMES = {
@@ -18,6 +21,139 @@ ERROR_OUTCOMES = {
     "RECONCILIATION_FAILURE",
     "EXECUTION_ERROR",
 }
+
+RECOVERED_INCOMPLETE_OUTCOME = "RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE"
+RECOVERED_INCOMPLETE_DELIVERY = "RECOVERED_COMMITTED_INCOMPLETE_DELIVERY"
+
+
+def recover_committed_forward_evidence(
+    system: PaperTradingSystem,
+    *,
+    now: datetime | pd.Timestamp,
+    reports_dir: Path | None = None,
+    notification_target: str | None = None,
+) -> int:
+    """Finalize schedule evidence without replaying committed paper state."""
+    now_ts = pd.Timestamp(now).tz_convert("UTC")
+    with system.store.connect(read_only=True) as connection:
+        rows = connection.execute(
+            """
+            SELECT r.run_id, r.schedule_key, d.outcome,
+                   (SELECT COUNT(*) FROM forward_market_observations o
+                    WHERE o.run_id=r.run_id) AS observation_count,
+                   (SELECT COUNT(*) FROM paper_notifications n
+                    WHERE n.run_id=r.run_id) AS notification_count
+            FROM paper_runs r
+            LEFT JOIN paper_run_diagnostics d ON d.run_id=r.run_id
+            WHERE r.mode='PAPER' AND r.schedule_key IS NOT NULL
+              AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED')
+              AND EXISTS (SELECT 1 FROM equity_snapshots e WHERE e.run_id=r.run_id)
+              AND (
+                    d.run_id IS NULL
+                 OR NOT EXISTS (
+                        SELECT 1 FROM forward_schedule_windows w
+                        WHERE w.schedule_key=r.schedule_key)
+                 OR (
+                        NOT EXISTS (SELECT 1 FROM paper_notifications n
+                                    WHERE n.run_id=r.run_id)
+                    AND d.outcome <> ?
+                    AND EXISTS (SELECT 1 FROM forward_market_observations o
+                                WHERE o.run_id=r.run_id)
+                    AND NOT EXISTS (SELECT 1 FROM forward_incidents i
+                                    WHERE i.run_id=r.run_id
+                                      AND i.incident_type=?))
+                 OR (
+                        ?
+                    AND NOT EXISTS (SELECT 1 FROM paper_notifications n
+                                    WHERE n.run_id=r.run_id)
+                    AND EXISTS (SELECT 1 FROM forward_incidents i
+                                WHERE i.run_id=r.run_id
+                                  AND i.incident_type IN (?, ?)))
+              )
+            ORDER BY r.started_at_utc
+            """
+            ,
+            [
+                RECOVERED_INCOMPLETE_OUTCOME,
+                RECOVERED_INCOMPLETE_DELIVERY,
+                bool(reports_dir and notification_target),
+                RECOVERED_INCOMPLETE_DELIVERY,
+                RECOVERED_INCOMPLETE_OUTCOME,
+            ],
+        ).fetchall()
+    recovered = 0
+    for run_id, schedule_key, persisted_outcome, observation_count, notification_count in rows:
+        evidence_complete = persisted_outcome is not None and int(observation_count) > 0
+        delivery_incomplete = evidence_complete and int(notification_count) == 0
+        outcome = persisted_outcome if evidence_complete else RECOVERED_INCOMPLETE_OUTCOME
+        if persisted_outcome is None:
+            reconciliation = system.store.reconcile()
+            account = system.store.account()
+            system.store.record_forward_details(
+                run_id=run_id,
+                outcome=outcome,
+                diagnostics={"rejected_orders": system.store.order_rejections(run_id)},
+                observed_prices={},
+                observed_at=now_ts.to_pydatetime(),
+                kill_switch_active=account["status"] != "ACTIVE",
+                reconciliation_valid=reconciliation.valid,
+            )
+        if evidence_complete:
+            system.store.ensure_forward_baseline(run_id=run_id)
+        else:
+            system.store.ensure_recovered_forward_baseline(run_id=run_id)
+        schedule_start = pd.Timestamp(schedule_key).tz_convert("UTC")
+        scheduled_for = schedule_start.normalize() + pd.Timedelta(
+            hours=system.config.schedule_hour,
+            minutes=system.config.execution_target_minute,
+        )
+        system.store.record_forward_window(
+            schedule_key=schedule_key,
+            scheduled_for=scheduled_for.to_pydatetime(),
+            run_id=run_id,
+            outcome=outcome,
+            now=now_ts.to_pydatetime(),
+        )
+        if not evidence_complete:
+            system.store.record_forward_incident(
+                incident_type=RECOVERED_INCOMPLETE_OUTCOME,
+                reason=(
+                    "Committed paper state recovered after interruption; exact market "
+                    "evidence cannot be reconstructed; a recovery report and notification "
+                    "eligibility record are created without fabricated observations"
+                ),
+                now=now_ts.to_pydatetime(),
+                run_id=run_id,
+                scheduled_for=scheduled_for.to_pydatetime(),
+            )
+        elif delivery_incomplete:
+            system.store.record_forward_incident(
+                incident_type=RECOVERED_INCOMPLETE_DELIVERY,
+                reason=(
+                    "Forward evidence committed before interruption; report or "
+                    "notification completion was not persisted and cannot be assumed"
+                ),
+                now=now_ts.to_pydatetime(),
+                run_id=run_id,
+                scheduled_for=scheduled_for.to_pydatetime(),
+            )
+        if int(notification_count) == 0 and reports_dir is not None:
+            report_path = write_recovered_committed_report(
+                system.store,
+                run_id=run_id,
+                outcome=outcome,
+                reports_dir=reports_dir,
+                now=now_ts,
+                locked_candidate_id=system.config.locked_candidate_id,
+            )
+            if notification_target is not None:
+                NotificationService(
+                    system.store,
+                    target=notification_target,
+                    sender=lambda _target, _path: None,
+                ).register_pending(run_id, report_path)
+        recovered += 1
+    return recovered
 
 
 def commit_operational_failure(
@@ -209,6 +345,9 @@ def finalize_forward_run(
     if row is None or row[0] == "RUNNING" or row[1] is None:
         raise RuntimeError("Cannot finalize forward diagnostics before paper transaction finalization")
     diagnostics = diagnostics or {}
+    persisted_rejections = system.store.order_rejections(result.run_id)
+    if persisted_rejections:
+        diagnostics["rejected_orders"] = persisted_rejections
     outcome = outcome_override or classify_outcome(system, result, diagnostics)
     reconciliation = system.store.reconcile()
     account = system.store.account()

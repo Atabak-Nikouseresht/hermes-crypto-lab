@@ -12,6 +12,18 @@ def test_ci_runs_ruff_and_branch_coverage_gate():
     assert "--cov=run_paper" in workflow
     assert "--cov-branch" in workflow
     assert "--cov-fail-under=75" in workflow
+    for path, minimum in (
+        ("run_paper.py", 80),
+        ("src/paper_forward.py", 80),
+        ("src/paper_broker.py", 85),
+        ("src/paper_store.py", 85),
+        ("src/forward_operations.py", 85),
+        ("src/statistical_diagnostics.py", 80),
+    ):
+        assert (
+            f"python -m coverage report --precision=2 --include={path} "
+            f"--fail-under={minimum}" in workflow
+        )
 
 
 def test_quality_gate_configuration_is_protected():

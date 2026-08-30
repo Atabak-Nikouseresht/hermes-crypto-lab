@@ -83,7 +83,9 @@ def download_daily_ohlcv(
     LOGGER.info("Downloading %s %s from %s to %s", symbol, timeframe, since_iso, cutoff.isoformat())
     while cursor < cutoff_ms:
         batch = call_with_retry(
-            lambda: exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit),
+            lambda cursor=cursor: exchange.fetch_ohlcv(
+                symbol, timeframe=timeframe, since=cursor, limit=limit
+            ),
             max_retries=max_retries,
             backoff_base_seconds=backoff_base_seconds,
         )

@@ -2,21 +2,17 @@
   "execution_protocol": "paper-exec-v3-ask-bid-minspread-utc0010",
   "hermes_gateway": {
     "auto_start": true,
-    "last_run_result": 0,
     "restart_on_failure": {
       "count": 999,
       "interval": "PT1M"
     },
-    "status": "running",
     "task_name": "Hermes_Gateway",
     "timezone_config": "UTC"
   },
   "missed_audit_job": {
     "enabled": true,
     "hermes_trigger": "21 0 * * 1",
-    "job_id": "2d7c37751317",
     "name": "crypto-paper-forward-missed-audit",
-    "next_run_at": "2026-08-31T00:21:00+00:00",
     "no_agent": true,
     "safety": "Audit-only: no market fetch, signal generation, equity snapshot, execution, or backdated trade",
     "script": "paper_forward_audit.py",
@@ -27,35 +23,27 @@
     "deliver": "local",
     "enabled": true,
     "hermes_trigger": "0 9 1 * *",
-    "job_id": "3861e40b01a7",
     "name": "crypto-paper-forward-monthly",
-    "next_run_at": "2026-09-01T09:00:00+00:00",
     "no_agent": true,
     "script": "paper_forward_monthly.py",
     "workdir": "[PROJECT_ROOT]",
     "wrapper_sha256": "fb2c76f58dbd4eb9c5176f159fac41b76390454d66b87420b8ce3e038b8b2fe7"
   },
-  "publication_note": "Portable source contract; exact frozen deployment snapshot preserved under forward_experiment/baselines/ebeac389/",
-  "scheduler_design": "All deterministic jobs are Hermes no-agent scripts. Weekly execution is UTC-gated and never backdated. The 00:21 audit records missed windows without market access or trading. Wrapper paths and hashes are checked against installed copies. The laptop must be powered on and the interactive user session available; this is not high-availability infrastructure.",
+  "publication_note": "Portable static source contract; runtime deployment observations remain local. Historical scheduler-state changes remain visible in ordinary Git history, while sealed baseline hash commitments remain untouched.",
+  "scheduler_design": "All deterministic jobs are Hermes no-agent scripts. Weekly launches may retry inside Monday 00:05-00:20 UTC after transient or pre-execution failure; DB schedule idempotency and the global writer lock prevent duplicate committed trades. The 00:21 audit records missed windows without market access or trading. Wrapper paths and hashes are checked against installed copies. The laptop must be powered on and the interactive user session available; this is not high-availability infrastructure.",
   "weekly_job": {
     "deliver": "local",
     "enabled": true,
     "execution_target_utc": "Monday 00:10",
     "hermes_trigger": "10 0 * * 1",
-    "job_id": "b11c6b3fe2fe",
-    "last_run_at": "2026-08-24T00:10:56.180280+00:00",
-    "last_status": "ok",
     "name": "crypto-paper-forward-weekly",
-    "next_run_at": "2026-08-31T00:10:00+00:00",
     "no_agent": true,
     "permitted_window_utc": "Monday 00:05-00:20",
     "script": "paper_forward_weekly.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "b08279bbe0fe726c042d4c209af175ddb1e857af660feebc092e98c6b057a9e8"
+    "wrapper_sha256": "115143e5d4aa85b9a2d847bb5eeae2b1b9b9499c9ac0f86cdafeafa9af5f5a97"
   },
   "windows_task_scheduler_watchdog": {
-    "installed": true,
-    "last_run_result": 0,
     "multiple_instances": "IgnoreNew",
     "restart_on_failure": {
       "count": 3,

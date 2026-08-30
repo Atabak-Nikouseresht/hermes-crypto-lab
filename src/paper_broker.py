@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
@@ -84,6 +85,38 @@ class PaperConfig:
         )
     )
 
+    @classmethod
+    def from_locked_candidate(
+        cls,
+        *,
+        assets: tuple[str, ...],
+        locked_candidate_id: str,
+        **values: Any,
+    ) -> PaperConfig:
+        match = re.fullmatch(
+            r"mw(?P<momentum>\d+)_sw(?P<skip>\d+)_ma(?P<trend>\d+)_"
+            r"n(?P<assets>\d+)_r(?P<rebalance>\d+)_v(?P<volatility>\d+)",
+            locked_candidate_id,
+        )
+        if match is None:
+            raise ValueError(f"Invalid locked candidate ID: {locked_candidate_id}")
+        parameters = {name: int(value) for name, value in match.groupdict().items()}
+        strategy = replace(
+            StrategyConfig(),
+            momentum_long_days=parameters["momentum"],
+            momentum_skip_days=parameters["skip"],
+            btc_moving_average_days=parameters["trend"],
+            max_assets=parameters["assets"],
+            volatility_days=parameters["volatility"],
+        )
+        return cls(
+            assets=assets,
+            locked_candidate_id=locked_candidate_id,
+            rebalance_days=parameters["rebalance"],
+            strategy_config=strategy,
+            **values,
+        )
+
     def __post_init__(self) -> None:
         if not math.isfinite(self.initial_cash) or self.initial_cash <= 0:
             raise ValueError("initial_cash must be positive")
@@ -146,6 +179,7 @@ class PaperRunResult:
 class PaperTradingSystem:
     def __init__(self, database_path: Path, config: PaperConfig):
         self.config = config
+        self._last_rejections: list[dict[str, Any]] = []
         self.store = PaperStore(
             database_path,
             account_id=config.account_id,
@@ -317,6 +351,7 @@ class PaperTradingSystem:
         proposal: dict[str, Any],
         reason: str,
         notional: float,
+        stage: str,
     ) -> None:
         if not hasattr(self, "_last_rejections"):
             self._last_rejections = []
@@ -324,6 +359,7 @@ class PaperTradingSystem:
             {
                 "symbol": proposal["symbol"],
                 "side": proposal["side"],
+                "stage": stage,
                 "reason": reason,
                 "notional": notional,
             }
@@ -363,6 +399,7 @@ class PaperTradingSystem:
                     proposal={"symbol": asset, "side": side},
                     reason=invalid_reason,
                     notional=abs(delta) * snapshot.quotes[asset].mid,
+                    stage="PROPOSAL",
                 )
                 continue
             assert quantity is not None
@@ -498,6 +535,7 @@ class PaperTradingSystem:
                         proposal=proposal,
                         reason=invalid_reason,
                         notional=requested * terms["execution_price"],
+                        stage="FINAL",
                     )
                     continue
                 assert quantity is not None
@@ -631,6 +669,7 @@ class PaperTradingSystem:
                             proposal=proposal,
                             reason=invalid_reason,
                             notional=scaled * terms["execution_price"],
+                            stage="FINAL",
                         )
                         continue
                     assert quantity is not None
@@ -643,6 +682,7 @@ class PaperTradingSystem:
                             proposal=proposal,
                             reason="insufficient_cash_after_rounding",
                             notional=quantity * terms["execution_price"],
+                            stage="FINAL",
                         )
                         continue
                     persist_fill(proposal, quantity, terms)
@@ -657,6 +697,22 @@ class PaperTradingSystem:
             equity = self._persist_equity(
                 connection, run_id=run_id, snapshot=snapshot, now=now
             )
+            for index, rejection in enumerate(self._last_rejections):
+                connection.execute(
+                    """
+                    INSERT INTO paper_order_rejections VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        run_id,
+                        index,
+                        rejection["symbol"],
+                        rejection["side"],
+                        rejection.get("stage", "PROPOSAL"),
+                        rejection["reason"],
+                        rejection["notional"],
+                        now,
+                    ],
+                )
             connection.execute("COMMIT")
         return equity
 
@@ -801,7 +857,7 @@ class PaperTradingSystem:
                     "SELECT COUNT(*) FROM paper_orders WHERE run_id=?", [run_id]
                 ).fetchone()[0]
             )
-        rejected_orders = len(proposals) - executed_orders
+        rejected_orders = len(self.store.order_rejections(run_id))
         reconciliation = self.store.reconcile()
         if not reconciliation.valid:
             self.store.activate_kill_switch(
@@ -813,7 +869,7 @@ class PaperTradingSystem:
             status = "EXECUTED"
             message = (
                 f"Executed {executed_orders} idempotent paper orders; "
-                f"rejected {rejected_orders} after final exchange-rule validation"
+                f"rejected {rejected_orders} across proposal and final execution validation"
             )
         self.store.finish_run(
             run_id=run_id,

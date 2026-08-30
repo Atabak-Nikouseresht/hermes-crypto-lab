@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from itertools import product
 from statistics import median, pstdev
-from typing import Any
+
 
 import numpy as np
 import pandas as pd
@@ -127,7 +127,7 @@ def build_chronological_periods(
     pretest_span = validation_end_position - start_position + 1
     edges = np.linspace(0.50, 1.0, walk_forward_folds + 1)
     walk_forward: list[Period] = []
-    for left, right in zip(edges[:-1], edges[1:]):
+    for left, right in zip(edges[:-1], edges[1:], strict=True):
         fold_start_target = start_position + int(pretest_span * float(left)) - 1
         fold_end_target = start_position + int(pretest_span * float(right)) - 1
         fold_start = max(position for position in week_ends if position <= fold_start_target)
@@ -154,7 +154,12 @@ def penalized_score(metrics: dict[str, float | int], *, duration_days: int) -> f
 
 
 def _hamming_distance(left: Candidate, right: Candidate) -> int:
-    return sum(a != b for a, b in zip(left.to_dict().values(), right.to_dict().values()))
+    return sum(
+        a != b
+        for a, b in zip(
+            left.to_dict().values(), right.to_dict().values(), strict=True
+        )
+    )
 
 
 def select_stable_finalists(

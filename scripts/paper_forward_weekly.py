@@ -2,52 +2,61 @@
 
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 PROJECT = Path(__file__).resolve().parents[1]
 PYTHON = PROJECT / ".venv" / "Scripts" / "python.exe"
 SCRIPT = PROJECT / "run_paper.py"
 COMMAND = [str(PYTHON), str(SCRIPT), "--paper"]
+MAX_ATTEMPTS = 3
+RETRY_SECONDS = 60
 
 
 def should_launch(now: datetime) -> bool:
     utc = now.astimezone(timezone.utc)
-    return utc.weekday() == 0 and utc.hour == 0 and 10 <= utc.minute <= 20
+    return utc.weekday() == 0 and utc.hour == 0 and 5 <= utc.minute <= 20
 
 
-def claim_dispatch(now: datetime) -> bool:
-    utc = now.astimezone(timezone.utc)
-    marker = PROJECT / "runtime" / f"weekly_dispatch_{utc.strftime('%Y-%m-%d')}.claim"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with marker.open("x", encoding="ascii") as handle:
-            handle.write(utc.isoformat())
-        return True
-    except FileExistsError:
-        return False
-
-
-def main() -> int:
-    now = datetime.now(timezone.utc)
-    if not should_launch(now) or not claim_dispatch(now):
+def main(
+    now: datetime | None = None,
+    *,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    sleeper: Callable[[float], None] = time.sleep,
+) -> int:
+    current = now or clock()
+    if not should_launch(current):
         return 0
-    try:
-        completed = subprocess.run(
-            COMMAND,
-            cwd=str(PROJECT),
-            text=True,
-            capture_output=True,
-            timeout=600,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        print("EXECUTION_ERROR: weekly paper process exceeded 600 seconds", file=sys.stderr)
-        return 124
-    if completed.returncode != 0:
-        print((completed.stderr or completed.stdout).strip(), file=sys.stderr)
-        return completed.returncode
-    return 0
+    last_code = 1
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            completed = subprocess.run(
+                COMMAND,
+                cwd=str(PROJECT),
+                text=True,
+                capture_output=True,
+                timeout=600,
+                check=False,
+            )
+            last_code = completed.returncode
+            if last_code == 0:
+                return 0
+            print((completed.stderr or completed.stdout).strip(), file=sys.stderr)
+        except subprocess.TimeoutExpired:
+            last_code = 124
+            print(
+                "EXECUTION_ERROR: weekly paper process exceeded 600 seconds",
+                file=sys.stderr,
+            )
+        if attempt == MAX_ATTEMPTS:
+            break
+        sleeper(RETRY_SECONDS)
+        current = clock()
+        if not should_launch(current):
+            break
+    return last_code
 
 
 if __name__ == "__main__":

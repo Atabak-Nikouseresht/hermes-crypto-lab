@@ -20,6 +20,12 @@ scripts/*.py -text
 scripts/*.ps1 -text
 src/*.py -text
 tests/test_ci_quality.py text eol=lf
+tests/test_config.py text eol=lf
+tests/test_paper_notifications.py text eol=lf
+tests/test_paper_report.py text eol=lf
+tests/test_statistical_diagnostics.py text eol=lf
+audits/statistical/statistical_diagnostics.json text eol=lf
+audits/statistical/statistical_diagnostics.md text eol=lf
 tests/test_forward_operations.py text eol=lf
 tests/test_forward_safety.py text eol=lf
 tests/test_paper_config.py text eol=lf

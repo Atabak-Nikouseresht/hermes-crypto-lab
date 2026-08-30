@@ -110,9 +110,14 @@ def fetch_public_market_snapshot(
             )
             if ticker.get("bid") is None or ticker.get("ask") is None:
                 raise ValueError(f"Executable bid/ask missing for {symbol}")
-            last = float(ticker.get("last") or ticker.get("close") or 0.0)
             bid = float(ticker["bid"])
             ask = float(ticker["ask"])
+            informational_last = ticker.get("last") or ticker.get("close")
+            last = (
+                float(informational_last)
+                if informational_last is not None
+                else (bid + ask) / 2.0
+            )
             ticker_ms = ticker.get("timestamp")
             if ticker_ms is None:
                 raise ValueError(f"Quote timestamp missing for {symbol}")

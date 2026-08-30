@@ -25,6 +25,27 @@ Commands below use Windows virtual-environment paths. On Linux/macOS, replace `.
 
 Persistent `--paper` execution is scheduler-owned. Do not run it manually outside the declared window. A missed window is audited and never backfilled.
 
+The weekly wrapper uses no durable daily filesystem claim. A transient or
+pre-execution subprocess failure may therefore retry inside the same governed
+window. The global writer lock serializes attempts, while the unique database
+schedule key prevents replay after any committed run. On restart, committed
+fills/equity are never replayed. Missing post-commit evidence is finalized as
+`RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE` when exact market observations cannot
+be reconstructed without fabrication.
+
+Recovery also writes a report from committed database evidence and records the
+notification as `PENDING`; `--resend RUN_ID` retries delivery only and never
+invokes market fetch, signal generation, or execution. Because Telegram does not
+offer a transaction shared with DuckDB, interruption after an external send but
+before the local `DELIVERED` update remains an auditable at-least-once delivery
+ambiguity; the pending record is retained rather than falsely claiming success.
+
+`forward_experiment/scheduler_manifest.json` is the portable static contract:
+job names, UTC triggers, safety settings, wrapper paths, and wrapper hashes.
+Volatile deployment observations—including local job IDs, installation status,
+last/next run times, and live state—remain local runtime metadata and are not
+source-controlled.
+
 ## Dry run
 
 ```bash
@@ -87,7 +108,7 @@ C:/Windows/System32/schtasks.exe /Query /TN Hermes_Gateway /V /FO LIST
 C:/Windows/System32/schtasks.exe /Query /TN Hermes_Crypto_Lab_Watchdog /V /FO LIST
 ```
 
-The watchdog checks Gateway, attempts restart when unavailable, and invokes startup audit only. It cannot bypass the weekly paper wrapper. Scheduling still depends on the host being powered on and the Windows task environment being available.
+The watchdog checks Gateway, attempts restart when unavailable, and invokes startup audit only. It cannot bypass the weekly paper wrapper. On failure it retains only compact, sanitized tail output in its local log; credential- or destination-shaped lines are redacted. Scheduling still depends on the host being powered on and the Windows task environment being available.
 
 ## Dependency update and rollback
 

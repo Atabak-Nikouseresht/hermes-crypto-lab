@@ -36,6 +36,19 @@ def test_weekly_paper_report_is_concise_and_discloses_virtual_only_mode(tmp_path
             "turnover": 1.0,
         },
     )
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_order_rejections VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
+            [
+                result.run_id,
+                "ETH/USDT",
+                "BUY",
+                "FINAL",
+                "below_min_notional",
+                4.5,
+                now,
+            ],
+        )
 
     path = write_weekly_paper_report(
         system.store, result, snapshot, tmp_path / "reports", now=pd.Timestamp(now)
@@ -51,3 +64,5 @@ def test_weekly_paper_report_is_concise_and_discloses_virtual_only_mode(tmp_path
     assert "RISK_ON" in text
     assert "Maximum drawdown" in text
     assert "Reconciliation" in text
+    assert "below_min_notional" in text
+    assert "FINAL" in text

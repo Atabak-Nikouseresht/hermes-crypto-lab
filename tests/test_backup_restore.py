@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from src.backup_restore import create_verified_backup, verify_backup, verify_restore_to_temporary
@@ -13,7 +11,7 @@ def test_backup_and_temporary_restore_verify_without_overwriting_production(tmp_
     (project / "reports" / "paper").mkdir(parents=True)
     (project / "forward_experiment" / "governance.json").write_text("{}", encoding="utf-8")
     database = project / "database" / "paper_trading.duckdb"
-    system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
+    PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
 
     backup = create_verified_backup(
         project_root=project,

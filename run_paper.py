@@ -27,6 +27,7 @@ from src.paper_forward import (
     build_forward_diagnostics,
     commit_operational_failure,
     finalize_forward_run,
+    recover_committed_forward_evidence,
 )
 from src.paper_market import fetch_public_market_snapshot
 from src.paper_notifications import (
@@ -61,8 +62,9 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
     if values.get("execution_protocol_version") != EXECUTION_PROTOCOL_VERSION:
         raise PermissionError("Configured execution protocol differs from code-locked protocol")
     assets = tuple(load_assets(project_root / "config" / "assets.yaml"))
-    config = PaperConfig(
+    config = PaperConfig.from_locked_candidate(
         assets=assets,
+        locked_candidate_id=str(values["locked_candidate_id"]),
         initial_cash=float(values["initial_cash"]),
         accounting_currency=str(values["accounting_currency"]),
         exchange_id=str(values["exchange"]),
@@ -77,7 +79,6 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
         schedule_window_minutes=int(values["schedule_window_minutes"]),
         max_data_staleness_minutes=int(values["max_data_staleness_minutes"]),
         max_quote_staleness_minutes=int(values["max_quote_staleness_minutes"]),
-        locked_candidate_id=str(values["locked_candidate_id"]),
         require_exchange_rules=bool(values["require_exchange_rules"]),
     )
     return config, values
@@ -419,6 +420,19 @@ def main() -> None:
         ) as system:
             now = datetime.now(timezone.utc)
             start = _experiment_start(settings.project_root)
+            if not dry_run:
+                telegram_target = resolve_telegram_target(args.telegram_target)
+            recovered = recover_committed_forward_evidence(
+                system,
+                now=now,
+                reports_dir=reports_dir,
+                notification_target=telegram_target,
+            )
+            if recovered:
+                LOGGER.warning(
+                    "Recovered %s committed run(s) without replaying paper fills",
+                    recovered,
+                )
             record_missed_windows(system.store, start=start, now=now, config=config)
             schedule_key = system._scheduled_key(pd.Timestamp(now))
             schedule_deadline = _schedule_window_deadline(schedule_key, config)
@@ -449,12 +463,6 @@ def main() -> None:
             ):
                 print(f"Status: DUPLICATE_SCHEDULE — {schedule_key} is already finalized")
                 return
-
-            # Notification delivery is required only for a genuine scheduled
-            # paper operation. Local-only and inspection paths remain usable
-            # without any Telegram destination.
-            if not dry_run and schedule_key is not None:
-                telegram_target = resolve_telegram_target(args.telegram_target)
 
             if system.store.account()["status"] != "ACTIVE":
                 result = commit_operational_failure(

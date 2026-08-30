@@ -70,6 +70,22 @@ class NotificationService:
         if row[0] == "RUNNING" or row[1] is None:
             raise NotificationError("Telegram delivery is forbidden before transaction finalization")
 
+    def register_pending(self, run_id: str, report_path: Path) -> None:
+        """Persist notification eligibility without invoking the external sender."""
+        self._assert_committed(run_id)
+        report_path = Path(report_path).resolve()
+        if not report_path.is_file():
+            raise NotificationError(f"Report file does not exist: {report_path}")
+        now = datetime.now(timezone.utc)
+        with self.store.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO paper_notifications
+                VALUES (?, ?, ?, 'PENDING', 0, NULL, ?, ?, NULL)
+                """,
+                [run_id, self.target, str(report_path), now, now],
+            )
+
     def _attempt(self, run_id: str, report_path: Path, target: str) -> dict[str, Any]:
         self._assert_committed(run_id)
         report_path = Path(report_path).resolve()
@@ -141,6 +157,7 @@ class NotificationService:
         return response if isinstance(response, dict) else {"ok": True}
 
     def send_committed_run(self, run_id: str, report_path: Path) -> dict[str, Any]:
+        self.register_pending(run_id, report_path)
         return self._attempt(run_id, report_path, self.target)
 
     def resend(self, run_id: str) -> dict[str, Any]:

@@ -190,7 +190,8 @@ class PaperStore:
                     turnover DOUBLE,
                     kill_switch_active BOOLEAN NOT NULL,
                     reconciliation_valid BOOLEAN NOT NULL,
-                    created_at_utc TIMESTAMPTZ NOT NULL
+                    created_at_utc TIMESTAMPTZ NOT NULL,
+                    rejected_orders JSON
                 );
                 CREATE TABLE IF NOT EXISTS forward_market_observations (
                     run_id VARCHAR NOT NULL,
@@ -251,6 +252,17 @@ class PaperStore:
                     data_age_seconds DOUBLE NOT NULL,
                     PRIMARY KEY (run_id, symbol)
                 );
+                CREATE TABLE IF NOT EXISTS paper_order_rejections (
+                    run_id VARCHAR NOT NULL,
+                    rejection_index INTEGER NOT NULL,
+                    symbol VARCHAR NOT NULL,
+                    side VARCHAR NOT NULL,
+                    stage VARCHAR NOT NULL,
+                    reason VARCHAR NOT NULL,
+                    notional DOUBLE NOT NULL,
+                    rejected_at_utc TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (run_id, rejection_index)
+                );
                 """
             )
             connection.execute(
@@ -273,6 +285,20 @@ class PaperStore:
             )
             connection.execute(
                 "ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS ledger_semantics_version VARCHAR"
+            )
+            connection.execute(
+                "ALTER TABLE paper_run_diagnostics "
+                "ADD COLUMN IF NOT EXISTS rejected_orders JSON"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(8, ?, 'persist proposal and final execution rejection diagnostics')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(9, ?, 'persist run-attributable paper order rejection audit trail')",
+                [now],
             )
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES (5, ?, 'versioned ask-bid execution context')",
@@ -330,8 +356,8 @@ class PaperStore:
     def recover_abandoned_runs(self) -> int:
         """Recover interrupted runs without replaying committed fills.
 
-        A run with fills committed keeps its schedule key and is marked committed.
-        A run with no fills releases the schedule key so the weekly decision can retry.
+        An equity snapshot is the final marker inside the execution transaction, including
+        valid zero-fill decisions. Only runs without that marker release their schedule.
         """
         now = datetime.now(timezone.utc)
         with self.connect() as connection:
@@ -339,17 +365,17 @@ class PaperStore:
                 "SELECT run_id FROM paper_runs WHERE status='RUNNING'"
             ).fetchall()
             for (run_id,) in running:
-                fill_count = int(
+                equity_count = int(
                     connection.execute(
-                        "SELECT COUNT(*) FROM paper_fills WHERE run_id=?", [run_id]
+                        "SELECT COUNT(*) FROM equity_snapshots WHERE run_id=?", [run_id]
                     ).fetchone()[0]
                 )
-                if fill_count:
+                if equity_count:
                     connection.execute(
                         """
                         UPDATE paper_runs
                         SET status='RECOVERED_COMMITTED', completed_at_utc=?,
-                            message='Recovered committed fills after process restart'
+                            message='Recovered committed paper state after process restart'
                         WHERE run_id=?
                         """,
                         [now, run_id],
@@ -434,6 +460,19 @@ class PaperStore:
             ).fetchone()[0]
             if orphan:
                 return ReconciliationResult(False, "Orphan or invalid fill detected")
+            invalid_rejection = connection.execute(
+                """
+                SELECT COUNT(*) FROM paper_order_rejections rejection
+                LEFT JOIN paper_runs run ON run.run_id=rejection.run_id
+                WHERE run.run_id IS NULL
+                   OR rejection.side NOT IN ('BUY', 'SELL')
+                   OR rejection.stage NOT IN ('PROPOSAL', 'FINAL', 'FINAL_CASH')
+                   OR NOT isfinite(rejection.notional)
+                   OR rejection.notional < 0
+                """
+            ).fetchone()[0]
+            if invalid_rejection:
+                return ReconciliationResult(False, "Orphan or invalid order rejection detected")
             missing_fill = connection.execute(
                 """
                 SELECT COUNT(*) FROM paper_orders o
@@ -779,6 +818,27 @@ class PaperStore:
                 [experiment_id, run_id, snapshot[0], snapshot[1]],
             )
 
+    def ensure_recovered_forward_baseline(self, *, run_id: str) -> None:
+        """Anchor exact committed equity when interrupted market evidence is unavailable."""
+        with self.connect() as connection:
+            experiment_id = self._active_experiment_id(connection)
+            existing = connection.execute(
+                "SELECT run_id FROM forward_baselines WHERE experiment_id=?",
+                [experiment_id],
+            ).fetchone()
+            if existing is not None:
+                return
+            snapshot = connection.execute(
+                "SELECT snapshot_at_utc, equity FROM equity_snapshots WHERE run_id=?",
+                [run_id],
+            ).fetchone()
+            if snapshot is None:
+                raise ValueError("Cannot recover baseline without committed equity")
+            connection.execute(
+                "INSERT INTO forward_baselines VALUES (?, ?, ?, ?)",
+                [experiment_id, run_id, snapshot[0], snapshot[1]],
+            )
+
     def record_forward_details(
         self,
         *,
@@ -794,8 +854,12 @@ class PaperStore:
             connection.execute("BEGIN TRANSACTION")
             connection.execute(
                 """
-                INSERT OR IGNORE INTO paper_run_diagnostics VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO paper_run_diagnostics (
+                    run_id, outcome, regime, btc_vs_trend, momentum, eligibility,
+                    selected_assets, current_weights, target_weights, proposed_orders,
+                    turnover, kill_switch_active, reconciliation_valid, created_at_utc,
+                    rejected_orders
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     run_id,
@@ -812,6 +876,7 @@ class PaperStore:
                     kill_switch_active,
                     reconciliation_valid,
                     observed_at,
+                    json.dumps(diagnostics.get("rejected_orders", []), sort_keys=True),
                 ],
             )
             for symbol, price in observed_prices.items():
@@ -841,6 +906,39 @@ class PaperStore:
                 """,
                 [run_id, started_at, mode, schedule_key, signal_timestamp, data_timestamp],
             )
+
+    def order_rejections(self, run_id: str) -> list[dict[str, Any]]:
+        with self.connect(read_only=True) as connection:
+            rows = connection.execute(
+                """
+                SELECT symbol, side, stage, reason, notional
+                FROM paper_order_rejections
+                WHERE run_id=? ORDER BY rejection_index
+                """,
+                [run_id],
+            ).fetchall()
+            legacy = None
+            if not rows:
+                legacy = connection.execute(
+                    "SELECT rejected_orders FROM paper_run_diagnostics WHERE run_id=?",
+                    [run_id],
+                ).fetchone()
+        normalized = [
+            {
+                "symbol": symbol,
+                "side": side,
+                "stage": stage,
+                "reason": reason,
+                "notional": float(notional),
+            }
+            for symbol, side, stage, reason, notional in rows
+        ]
+        if normalized or legacy is None or legacy[0] is None:
+            return normalized
+        return [
+            {**item, "stage": item.get("stage", "LEGACY_DIAGNOSTIC")}
+            for item in json.loads(legacy[0])
+        ]
 
     def finish_run(
         self,

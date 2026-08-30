@@ -19,20 +19,32 @@ def _normal_cdf(value: float) -> float:
 def probabilistic_sharpe_ratio(
     returns: np.ndarray, *, benchmark_sharpe: float, periods_per_year: int
 ) -> float:
+    if periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
     values = np.asarray(returns, dtype=float)
     values = values[np.isfinite(values)]
     if len(values) < 3 or values.std(ddof=1) == 0:
         return 0.5
     mean = values.mean()
     std = values.std(ddof=1)
-    sharpe = mean / std * sqrt(periods_per_year)
+    sample_sharpe = mean / std
+    benchmark_sample_sharpe = benchmark_sharpe / sqrt(periods_per_year)
     centered = (values - mean) / std
     skew = float(np.mean(centered**3))
     kurtosis = float(np.mean(centered**4))
     denominator = sqrt(
-        max(1e-12, 1.0 - skew * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe**2)
+        max(
+            1e-12,
+            1.0
+            - skew * sample_sharpe
+            + ((kurtosis - 1.0) / 4.0) * sample_sharpe**2,
+        )
     )
-    statistic = (sharpe - benchmark_sharpe) * sqrt(len(values) - 1) / denominator
+    statistic = (
+        (sample_sharpe - benchmark_sample_sharpe)
+        * sqrt(len(values) - 1)
+        / denominator
+    )
     return float(_normal_cdf(statistic))
 
 
@@ -175,10 +187,10 @@ def generate_statistical_diagnostic(
                 "# Statistical honesty diagnostics",
                 "",
                 "- Status: **POST_SELECTION_DIAGNOSTIC_NOT_SEALED_OOS**",
-                f"- Trials disclosed: **96 training configurations / 117 candidate backtests**",
+                "- Trials disclosed: **96 training configurations / 117 candidate backtests**",
                 f"- PSR vs zero: **{result['probabilistic_sharpe_ratio_vs_zero']:.3f}**",
                 f"- Deflated Sharpe Ratio: **{result['deflated_sharpe_ratio']:.3f}**",
-                f"- PBO: **INSUFFICIENT_DATA**",
+                "- PBO: **INSUFFICIENT_DATA**",
                 f"- Mean-return bootstrap: `{result['mean_return_block_bootstrap_95']}`",
                 f"- Sharpe bootstrap: `{result['sharpe_block_bootstrap_95']}`",
                 "",

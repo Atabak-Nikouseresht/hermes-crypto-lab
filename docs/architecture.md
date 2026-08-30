@@ -55,7 +55,7 @@ Downloaded market data, ingestion databases, logs, and generated reports are loc
 - `src/portfolio.py` converts selections into capped inverse-volatility target weights with explicit residual cash.
 - `src/backtest.py` queues decisions and fills them on the next available daily row under the sealed historical convention.
 - `src/benchmarks.py` and `src/metrics.py` provide consistent comparisons and risk/return metrics.
-- `run_experiments.py` controls train, validation, walk-forward, lock, and final-test access.
+- `run_experiments.py` controls train, validation, fixed-finalist rolling pre-test evaluation (historically labeled `walk_forward`), lock, and final-test access.
 - `src/experiment_ledger.py` records append-only, hash-chained stage evidence.
 
 The two tracked experiment directories are preserved historical records, not current optimization inputs.

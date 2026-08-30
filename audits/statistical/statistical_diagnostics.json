@@ -21,7 +21,7 @@
     }
   },
   "deflated_sharpe_benchmark": 1.9328173060155738,
-  "deflated_sharpe_ratio": 0.0,
+  "deflated_sharpe_ratio": 0.012314525539555088,
   "limitations": [
     "DSR is an approximate post-selection diagnostic and does not restore a fresh holdout.",
     "PBO is intentionally not computed without a valid subperiod matrix.",
@@ -86,7 +86,7 @@
     "reason": "No candidate-by-subperiod return matrix was preserved for all 96 configurations; forcing PBO would be invalid.",
     "status": "INSUFFICIENT_DATA"
   },
-  "probabilistic_sharpe_ratio_vs_zero": 0.9967215235727684,
+  "probabilistic_sharpe_ratio_vs_zero": 0.5603306177454201,
   "regime_attribution": {
     "reason": "Sealed artifacts do not preserve daily regime labels aligned to return attribution.",
     "status": "INSUFFICIENT_DATA"

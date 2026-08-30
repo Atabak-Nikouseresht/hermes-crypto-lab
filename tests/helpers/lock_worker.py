@@ -17,4 +17,4 @@ try:
             time.sleep(0.5)
 except AlreadyRunningError:
     print("CONTENDED", flush=True)
-    raise SystemExit(23)
+    raise SystemExit(23) from None

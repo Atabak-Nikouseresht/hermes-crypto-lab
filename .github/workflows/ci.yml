@@ -85,3 +85,12 @@ jobs:
           --cov-branch
           --cov-report=term
           --cov-fail-under=75
+
+      - name: Enforce critical-path coverage floors
+        run: |
+          python -m coverage report --precision=2 --include=run_paper.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/paper_forward.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/paper_broker.py --fail-under=85
+          python -m coverage report --precision=2 --include=src/paper_store.py --fail-under=85
+          python -m coverage report --precision=2 --include=src/forward_operations.py --fail-under=85
+          python -m coverage report --precision=2 --include=src/statistical_diagnostics.py --fail-under=80

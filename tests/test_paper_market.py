@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from src.paper_broker import PaperConfig
+from src.paper_broker import PaperConfig, PaperTradingSystem
 from src.paper_market import create_public_market_client, fetch_public_market_snapshot
 
 
@@ -129,6 +129,77 @@ def test_public_snapshot_derives_informational_last_from_valid_bid_ask():
     )
 
     assert snapshot.quotes["BTC/USDT"].last == 100.0
+
+
+@pytest.mark.parametrize("informational_last", [0.0, -1.0, float("nan"), float("inf")])
+def test_public_snapshot_replaces_invalid_informational_last_with_midpoint(
+    informational_last,
+):
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    dates = pd.date_range(end="2024-08-04", periods=160, freq="D", tz="UTC")
+    rows = [
+        [int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0]
+        for timestamp in dates
+    ]
+
+    class InvalidLastExchange(FakePublicExchange):
+        def fetch_ticker(self, symbol):
+            self.calls.append(("fetch_ticker", symbol))
+            return {
+                "bid": 99.0,
+                "ask": 101.0,
+                "last": informational_last,
+                "timestamp": self.now_ms,
+            }
+
+    snapshot = fetch_public_market_snapshot(
+        PaperConfig(assets=("BTC/USDT",)),
+        exchange=InvalidLastExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
+        now=now,
+        lookback_days=200,
+        max_retries=0,
+    )
+
+    assert snapshot.quotes["BTC/USDT"].last == 100.0
+
+
+@pytest.mark.parametrize(
+    ("bid", "ask"),
+    [
+        (0.0, 101.0),
+        (-1.0, 101.0),
+        (float("nan"), 101.0),
+        (99.0, 0.0),
+        (99.0, float("inf")),
+        (101.0, 99.0),
+        (1e308, 1e308),
+    ],
+)
+def test_public_snapshot_still_rejects_invalid_executable_quote_sides(tmp_path, bid, ask):
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    dates = pd.date_range(end="2024-08-04", periods=160, freq="D", tz="UTC")
+    rows = [
+        [int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0]
+        for timestamp in dates
+    ]
+
+    class InvalidExecutableSideExchange(FakePublicExchange):
+        def fetch_ticker(self, symbol):
+            self.calls.append(("fetch_ticker", symbol))
+            return {"bid": bid, "ask": ask, "last": 100.0, "timestamp": self.now_ms}
+
+    snapshot = fetch_public_market_snapshot(
+        PaperConfig(assets=("BTC/USDT",)),
+        exchange=InvalidExecutableSideExchange(
+            rows, int(pd.Timestamp(now).timestamp() * 1000)
+        ),
+        now=now,
+        lookback_days=200,
+        max_retries=0,
+    )
+
+    system = PaperTradingSystem(tmp_path / "paper.duckdb", PaperConfig(assets=("BTC/USDT",)))
+    assert system._validate_snapshot(snapshot, pd.Timestamp(now)) is not None
 
 
 @pytest.mark.parametrize("missing_field", ["bid", "ask"])

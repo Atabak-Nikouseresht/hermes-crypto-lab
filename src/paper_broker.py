@@ -267,7 +267,9 @@ class PaperTradingSystem:
             if quote is None:
                 return f"Missing data: quote missing for {asset}"
             if (
-                not all(math.isfinite(value) and value > 0 for value in (quote.bid, quote.ask, quote.last))
+                not all(math.isfinite(value) and value > 0 for value in (quote.bid, quote.ask))
+                or not math.isfinite(quote.mid)
+                or quote.mid <= 0
                 or quote.bid > quote.ask
             ):
                 return f"Invalid data: malformed quote for {asset}"
@@ -472,6 +474,7 @@ class PaperTradingSystem:
         proposals: list[dict[str, Any]],
         snapshot: MarketSnapshot,
         now: pd.Timestamp,
+        forward_diagnostics: dict[str, Any] | None = None,
     ) -> float:
         with self.store.connect() as connection:
             connection.execute("BEGIN TRANSACTION")
@@ -713,6 +716,18 @@ class PaperTradingSystem:
                         now,
                     ],
                 )
+            if forward_diagnostics is not None:
+                committed_diagnostics = dict(forward_diagnostics)
+                committed_diagnostics["rejected_orders"] = list(self._last_rejections)
+                self.store.record_committed_forward_evidence(
+                    connection,
+                    run_id=run_id,
+                    diagnostics=committed_diagnostics,
+                    observed_prices={
+                        asset: snapshot.quotes[asset].mid for asset in self.config.assets
+                    },
+                    observed_at=now.to_pydatetime(),
+                )
             connection.execute("COMMIT")
         return equity
 
@@ -722,6 +737,7 @@ class PaperTradingSystem:
         *,
         now: datetime,
         dry_run: bool,
+        forward_diagnostics: dict[str, Any] | None = None,
     ) -> PaperRunResult:
         now_ts = self._utc(now)
         run_id = (
@@ -850,6 +866,7 @@ class PaperTradingSystem:
             proposals=proposals,
             snapshot=snapshot,
             now=now_ts,
+            forward_diagnostics=forward_diagnostics,
         )
         with self.store.connect(read_only=True) as connection:
             executed_orders = int(

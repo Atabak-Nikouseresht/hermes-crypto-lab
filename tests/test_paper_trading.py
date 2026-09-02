@@ -16,6 +16,7 @@ from src.paper_broker import (
     PaperTradingSystem,
     Quote,
     SymbolRules,
+    classify_execution_outcome,
 )
 
 ASSETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT"]
@@ -61,6 +62,33 @@ def _config() -> PaperConfig:
         max_data_staleness_minutes=720,
         max_quote_staleness_minutes=5,
     )
+
+
+def test_quote_timestamp_skew_fails_closed(tmp_path):
+    now = pd.Timestamp("2024-08-05T09:10:00Z")
+    system = PaperTradingSystem(
+        tmp_path / "quote-skew.duckdb",
+        replace(_config(), max_quote_timestamp_skew_seconds=30),
+    )
+    snapshot = _snapshot(now.to_pydatetime())
+    snapshot.quotes["ETH/USDT"] = replace(
+        snapshot.quotes["ETH/USDT"], timestamp=now - pd.Timedelta(seconds=31)
+    )
+
+    assert "timestamp skew" in system._validate_snapshot(snapshot, now).lower()
+
+
+@pytest.mark.parametrize(
+    ("proposed", "executed", "rejected", "expected"),
+    [
+        (0, 0, 0, "NO_REBALANCE_REQUIRED"),
+        (2, 2, 0, "FULL_EXECUTION"),
+        (2, 1, 1, "PARTIAL_EXECUTION"),
+        (2, 0, 2, "EXECUTION_REJECTED"),
+    ],
+)
+def test_execution_outcomes_are_explicit(proposed, executed, rejected, expected):
+    assert classify_execution_outcome(proposed, executed, rejected) == expected
 
 
 def test_paper_config_factory_derives_all_economic_parameters_from_candidate_id():
@@ -267,6 +295,90 @@ def test_reconciliation_rejects_current_ledger_quantity_mismatch(tmp_path):
 
     assert not reconciliation.valid
     assert "quantity mismatch" in reconciliation.message.lower()
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "delta"),
+    [
+        ("position_ledger", "quantity_delta", 0.01),
+        ("cash_ledger", "amount", 1.0),
+        ("paper_fills", "execution_price", 1.0),
+        ("paper_fills", "fee", 1.0),
+        ("paper_fills", "spread_cost", 1.0),
+        ("paper_fills", "slippage_cost", 1.0),
+    ],
+)
+def test_reconciliation_independently_rejects_fill_accounting_tampering(
+    tmp_path, table, column, delta
+):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        connection.execute(f"UPDATE {table} SET {column}={column}+?", [delta])
+
+    assert not system.store.reconcile().valid
+
+
+def test_reconciliation_rejects_coordinated_bogus_protocol_provenance(tmp_path):
+    system, _result = _execute_scaled_buy(
+        tmp_path, initial_cash=83.0, min_quantity=0.1, min_notional=1.0
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_orders SET execution_protocol_version='bogus-protocol'"
+        )
+        connection.execute(
+            "UPDATE paper_fills SET execution_protocol_version='bogus-protocol'"
+        )
+        connection.execute(
+            "UPDATE paper_execution_context SET execution_protocol_version='bogus-protocol'"
+        )
+
+    assert not system.store.reconcile().valid
+
+
+def test_reconciliation_rejects_ledger_provenance_link_tampering(tmp_path):
+    system, _result = _execute_scaled_buy(
+        tmp_path, initial_cash=83.0, min_quantity=0.1, min_notional=1.0
+    )
+    with system.store.connect() as connection:
+        connection.execute("UPDATE cash_ledger SET account_id='other-account'")
+
+    assert not system.store.reconcile().valid
+
+
+def test_reconciliation_recomputes_costs_instead_of_accepting_coordinated_tampering(tmp_path):
+    system, _ = _execute_scaled_buy(
+        tmp_path,
+        initial_cash=83.0,
+        min_quantity=0.1,
+        min_notional=1.0,
+    )
+    with system.store.connect() as connection:
+        fill_id, quantity, price = connection.execute(
+            "SELECT fill_id, filled_quantity, execution_price FROM paper_fills"
+        ).fetchone()
+        changed_price = float(price) + 1.0
+        changed_fee = float(quantity) * changed_price * system.config.fee_rate
+        connection.execute(
+            "UPDATE paper_fills SET execution_price=?, fee=?, slippage_cost=slippage_cost+?",
+            [changed_price, changed_fee, float(quantity)],
+        )
+        connection.execute(
+            "UPDATE cash_ledger SET amount=-(? * ? + ?) WHERE event_id=?",
+            [float(quantity), changed_price, changed_fee, f"cash_{fill_id}"],
+        )
+        cash = connection.execute("SELECT SUM(amount) FROM cash_ledger").fetchone()[0]
+        connection.execute("UPDATE paper_accounts SET cash=?", [cash])
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "spread/slippage" in reconciliation.message.lower()
 
 
 def test_reconciliation_rejects_unknown_ledger_semantics_marker(tmp_path):
@@ -588,13 +700,21 @@ def test_run_message_counts_pre_execution_and_final_rejections(tmp_path, monkeyp
                 "side": "BUY",
                 "reason": "below_min_notional",
                 "notional": 0.5,
+                "requested_quantity": 0.05,
+                "target_weight": 0.5,
+                "idempotency_key": "proposal-rejection",
             }
         ]
         return pd.Timestamp("2024-08-04T00:00:00Z"), [proposal]
 
     monkeypatch.setattr(system, "_proposals", proposals)
 
-    result = system.run(snapshot, now=now.to_pydatetime(), dry_run=False)
+    result = system.run(
+        snapshot,
+        now=now.to_pydatetime(),
+        dry_run=False,
+        forward_diagnostics={"target_weights": {"BTC/USDT": 1.0}},
+    )
     from src.paper_forward import finalize_forward_run
 
     finalize_forward_run(
@@ -607,7 +727,8 @@ def test_run_message_counts_pre_execution_and_final_rejections(tmp_path, monkeyp
     with system.store.connect(read_only=True) as connection:
         rejection_rows = connection.execute(
             """
-            SELECT symbol, side, stage, reason, notional
+            SELECT symbol, side, stage, reason, notional,
+                   requested_quantity, target_weight, idempotency_key
             FROM paper_order_rejections WHERE run_id=? ORDER BY rejection_index
             """,
             [result.run_id],
@@ -618,12 +739,38 @@ def test_run_message_counts_pre_execution_and_final_rejections(tmp_path, monkeyp
                 [result.run_id],
             ).fetchone()[0]
         )
+        execution_outcome = connection.execute(
+            "SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id=?",
+            [result.run_id],
+        ).fetchone()[0]
+        target_deviation = json.loads(
+            connection.execute(
+                "SELECT target_deviation FROM paper_run_diagnostics WHERE run_id=?",
+                [result.run_id],
+            ).fetchone()[0]
+        )
 
     assert "rejected 2" in result.message
-    assert rejection_rows == [
-        ("OTHER/USDT", "BUY", "PROPOSAL", "below_min_notional", 0.5),
-        ("BTC/USDT", "BUY", "FINAL", "below_min_quantity", 15.0),
-    ]
+    assert result.outcome == "EXECUTION_REJECTED"
+    assert execution_outcome == "EXECUTION_REJECTED"
+    assert rejection_rows[0][:5] == (
+        "OTHER/USDT",
+        "BUY",
+        "PROPOSAL",
+        "below_min_notional",
+        0.5,
+    )
+    assert all(value is not None for value in rejection_rows[0][5:])
+    assert rejection_rows[1] == (
+        "BTC/USDT",
+        "BUY",
+        "FINAL",
+        "below_min_quantity",
+        15.0,
+        1.0,
+        1.0,
+        "final-rejection",
+    )
     assert [item["reason"] for item in persisted_rejections] == [
         "below_min_notional",
         "below_min_quantity",
@@ -632,13 +779,17 @@ def test_run_message_counts_pre_execution_and_final_rejections(tmp_path, monkeyp
         "below_min_notional",
         "below_min_quantity",
     }
+    assert target_deviation["realized_weights"]["CASH"] == pytest.approx(1.0)
+    assert target_deviation["l1_weight_error"] == pytest.approx(2.0)
 
 
 def test_reconciliation_rejects_orphan_order_rejection_audit_rows(tmp_path):
     system = PaperTradingSystem(tmp_path / "orphan-rejection.duckdb", _config())
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_order_rejections VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO paper_order_rejections "
+            "(run_id, rejection_index, symbol, side, stage, reason, notional, rejected_at_utc) "
+            "VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
             [
                 "missing-run",
                 "BTC/USDT",
@@ -847,6 +998,21 @@ def test_duplicate_scheduled_run_cannot_create_duplicate_orders_or_fills(tmp_pat
     assert minimum_cash >= -1e-9
 
 
+def test_duplicate_schedule_rejects_before_proposal_generation(tmp_path, monkeypatch):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "paper.duckdb", _config())
+    assert system.run(_snapshot(now), now=now, dry_run=False).status == "EXECUTED"
+    monkeypatch.setattr(
+        system,
+        "_proposals",
+        lambda _snapshot: (_ for _ in ()).throw(AssertionError("proposal work ran")),
+    )
+
+    result = system.run(_snapshot(now), now=now, dry_run=False)
+
+    assert result.status == "DUPLICATE_SCHEDULE"
+
+
 def test_quote_timestamp_after_execution_time_fails_closed(tmp_path):
     now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     snapshot = _snapshot(now)
@@ -861,8 +1027,9 @@ def test_quote_timestamp_after_execution_time_fails_closed(tmp_path):
 
     result = system.run(snapshot, now=now, dry_run=True)
 
-    assert result.status == "KILL_SWITCH"
+    assert result.status == "DATA_HALT"
     assert "future quote timestamp" in result.message
+    assert system.store.account()["status"] == "ACTIVE"
 
 
 @pytest.mark.parametrize(
@@ -888,7 +1055,7 @@ def test_quote_timestamp_after_execution_time_fails_closed(tmp_path):
         ),
     ],
 )
-def test_invalid_executable_quote_evidence_activates_kill_switch(tmp_path, quote, expected):
+def test_invalid_executable_quote_evidence_causes_retryable_data_halt(tmp_path, quote, expected):
     now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     snapshot = _snapshot(now)
     snapshot.quotes["BTC/USDT"] = quote
@@ -896,8 +1063,9 @@ def test_invalid_executable_quote_evidence_activates_kill_switch(tmp_path, quote
 
     result = system.run(snapshot, now=now, dry_run=False)
 
-    assert result.status == "KILL_SWITCH"
+    assert result.status == "DATA_HALT"
     assert expected in result.message
+    assert system.store.account()["status"] == "ACTIVE"
 
 
 def test_corrupted_persistent_cash_state_activates_kill_switch_before_orders(tmp_path):
@@ -968,14 +1136,39 @@ def test_scheduled_dry_run_does_not_consume_real_paper_window(tmp_path):
         assert connection.execute("SELECT COUNT(*) FROM paper_fills").fetchone()[0] > 0
 
 
-def test_stale_market_data_activates_kill_switch(tmp_path):
+def test_stale_market_data_causes_retryable_data_halt(tmp_path):
     now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     system = PaperTradingSystem(tmp_path / "paper.duckdb", _config())
 
     result = system.run(_snapshot(now, stale_days=2), now=now, dry_run=False)
 
-    assert result.status == "KILL_SWITCH"
+    assert result.status == "DATA_HALT"
     assert "stale" in result.message.lower()
+    assert system.store.account()["status"] == "ACTIVE"
+
+
+def test_data_halt_does_not_persist_synthetic_forward_observation_or_baseline(tmp_path):
+    from src.paper_forward import finalize_forward_run
+
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "data_halt.duckdb", _config())
+    snapshot = _snapshot(now, stale_days=2)
+    result = system.run(snapshot, now=now, dry_run=False)
+
+    finalized = finalize_forward_run(system, result, snapshot, now=now, diagnostics={})
+
+    assert finalized.outcome == "DATA_QUALITY_FAILURE"
+    assert system.store.committed_forward_evidence(result.run_id) is None
+    with system.store.connect(read_only=True) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT table_name FROM information_schema.tables"
+            ).fetchall()
+        }
+    assert "forward_observations" not in tables
+    with system.store.connect(read_only=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM forward_baselines").fetchone()[0] == 0
 
 
 def test_restart_recovers_abandoned_running_record(tmp_path):
@@ -1056,7 +1249,13 @@ def test_outside_schedule_health_check_persists_equity_without_trade(tmp_path):
             "(SELECT COUNT(*) FROM equity_snapshots WHERE run_id=?)",
             [result.run_id],
         ).fetchone()
+        outcome = connection.execute(
+            "SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id=?",
+            [result.run_id],
+        ).fetchone()[0]
     assert result.status == "NO_REBALANCE", result.message
+    assert result.outcome == "NO_REBALANCE_REQUIRED"
+    assert outcome == "NO_REBALANCE_REQUIRED"
     assert (orders, fills, equity) == (0, 0, 1)
 
 
@@ -1112,7 +1311,7 @@ def test_operational_failure_is_terminal_idempotent_schedule_evidence(tmp_path):
     assert first.status == "DATA_QUALITY_FAILURE"
     assert second.status == "DUPLICATE_SCHEDULE"
     assert (run_count, window_count, incident_count) == (1, 1, 1)
-    assert system.store.account()["status"] == "HALTED"
+    assert system.store.account()["status"] == "ACTIVE"
 
 
 @pytest.mark.parametrize(
@@ -1120,6 +1319,7 @@ def test_operational_failure_is_terminal_idempotent_schedule_evidence(tmp_path):
     [
         ("KILL_SWITCH", "persistent state mismatch", {}, "RECONCILIATION_FAILURE"),
         ("KILL_SWITCH", "stale quote data", {}, "DATA_QUALITY_FAILURE"),
+        ("DATA_HALT", "stale quote data", {}, "DATA_QUALITY_FAILURE"),
         ("KILL_SWITCH", "operator halt", {}, "KILL_SWITCH_ACTIVATED"),
         ("DUPLICATE_SCHEDULE", "duplicate", {}, "NO_REBALANCE"),
         ("DRY_RUN", "proposal", {"proposed_orders": [{}]}, "NO_ELIGIBLE_ASSET"),
@@ -1191,6 +1391,10 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
         outcome = connection.execute(
             "SELECT outcome FROM paper_run_diagnostics WHERE run_id=?", [run_id]
         ).fetchone()[0]
+        execution_outcome = connection.execute(
+            "SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id=?",
+            [run_id],
+        ).fetchone()[0]
         window = connection.execute(
             "SELECT run_id, outcome FROM forward_schedule_windows"
         ).fetchone()
@@ -1208,6 +1412,7 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
     assert fill_ids_after == fill_ids_before
     assert equity_count_before == equity_count_after == 1
     assert outcome == "PAPER_TRADE_COMPLETED"
+    assert execution_outcome == "FULL_EXECUTION"
     assert window == (run_id, "PAPER_TRADE_COMPLETED")
     assert observations == len(system.config.assets)
     assert incomplete_incidents == 0

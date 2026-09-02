@@ -27,6 +27,25 @@ def test_validation_detects_missing_duplicate_invalid_ohlc_and_non_positive_pric
     assert result.is_valid is False
 
 
+def test_validation_rejects_empty_nonfinite_negative_volume_and_off_midnight_rows():
+    columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    assert validate_ohlcv(pd.DataFrame(columns=columns)).is_valid is False
+    frame = pd.DataFrame(
+        [
+            [pd.Timestamp("2024-01-01T01:00:00Z"), 10.0, 11.0, 9.0, 10.0, -1.0],
+            [pd.Timestamp("2024-01-02T00:00:00Z"), 10.0, float("inf"), 9.0, 10.0, 1.0],
+        ],
+        columns=columns,
+    )
+
+    result = validate_ohlcv(frame)
+
+    assert result.summary["misaligned_timestamp_rows"] == 1
+    assert result.summary["invalid_volume_rows"] == 1
+    assert result.summary["non_finite_rows"] == 1
+    assert result.is_valid is False
+
+
 def test_cleaning_sorts_deduplicates_and_removes_invalid_rows():
     frame = _frame(
         [

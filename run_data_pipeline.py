@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import ccxt
@@ -17,7 +19,7 @@ from src.database import (
 from src.download_data import create_exchange, download_daily_ohlcv
 from src.logging_config import configure_logging
 from src.report import write_quality_report
-from src.storage import save_clean_parquet, save_raw_json
+from src.storage import save_clean_parquet, save_json_atomic, save_raw_json
 from src.validate_data import clean_ohlcv, rows_to_frame, validate_ohlcv
 
 LOGGER = logging.getLogger(__name__)
@@ -28,6 +30,14 @@ def _safe_symbol(symbol: str) -> str:
     return symbol.replace("/", "_").replace(":", "_")
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def run_pipeline(
     *,
     settings: Settings,
@@ -36,6 +46,8 @@ def run_pipeline(
     exchange: ccxt.Exchange | object | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any]:
+    if settings.timeframe != "1d":
+        raise ValueError("Canonical research ingestion requires the 1d timeframe")
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     initialize_database(settings.database_path)
     start_run(settings.database_path, run_id)
@@ -58,11 +70,13 @@ def run_pipeline(
 
             filename = f"{_safe_symbol(symbol)}_{settings.timeframe}"
             raw_path = settings.raw_dir / run_id / f"{filename}.json"
-            parquet_path = settings.processed_dir / f"{filename}.parquet"
+            parquet_path = settings.processed_dir / run_id / f"{filename}.parquet"
             save_raw_json(rows, raw_path)
 
             normalized = rows_to_frame(rows)
             quality = validate_ohlcv(normalized)
+            if not quality.is_valid:
+                raise ValueError(f"Canonical data quality validation failed for {symbol}: {quality.summary}")
             cleaned = clean_ohlcv(normalized)
             save_clean_parquet(cleaned, parquet_path)
             start_utc = cleaned["timestamp"].min().isoformat() if not cleaned.empty else None
@@ -73,6 +87,8 @@ def run_pipeline(
             }
             result = {
                 "symbol": symbol,
+                "parquet_path": str(parquet_path),
+                "sha256": _sha256(parquet_path),
                 "raw_rows": len(rows),
                 "clean_rows": len(cleaned),
                 "start_utc": start_utc,
@@ -101,12 +117,41 @@ def run_pipeline(
                 quality.summary,
             )
 
+        dataset_manifest = {
+            "run_id": run_id,
+            "timeframe": settings.timeframe,
+            "version_manifest_path": f"{run_id}/dataset_manifest.json",
+            "datasets": {
+                result["symbol"]: {
+                    "path": (
+                        Path(result["parquet_path"])
+                        .relative_to(settings.processed_dir)
+                        .as_posix()
+                    ),
+                    "sha256": result["sha256"],
+                    "rows": result["clean_rows"],
+                    "start_utc": result["start_utc"],
+                    "end_utc": result["end_utc"],
+                }
+                for result in results
+            },
+        }
+        version_manifest_path = save_json_atomic(
+            dataset_manifest,
+            settings.processed_dir / run_id / "dataset_manifest.json",
+            immutable=True,
+        )
         markdown_path, json_path = write_quality_report(results, settings.reports_dir, run_id)
         finish_run(settings.database_path, run_id, "completed")
+        manifest_path = save_json_atomic(
+            dataset_manifest, settings.processed_dir / "dataset_manifest.json"
+        )
         LOGGER.info("Pipeline completed; report=%s", markdown_path)
         return {
             "run_id": run_id,
             "datasets": results,
+            "dataset_manifest": str(manifest_path),
+            "version_dataset_manifest": str(version_manifest_path),
             "markdown_report": str(markdown_path),
             "json_report": str(json_path),
         }

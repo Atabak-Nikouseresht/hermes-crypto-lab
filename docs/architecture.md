@@ -43,9 +43,15 @@ Hermes Crypto Lab separates public-data ingestion, historical research, locked f
 2. credential-free CCXT public market access in `src/download_data.py`;
 3. immutable run-specific raw JSON persistence before normalization;
 4. UTC conversion and quality checks in `src/validate_data.py`;
-5. processed Parquet output in `src/storage.py`;
+5. atomically written, run-versioned processed Parquet plus an immutable
+   per-version manifest and atomic current-manifest pointer in `src/storage.py`;
 6. ingestion metadata in a local DuckDB database;
 7. Markdown and JSON quality reports.
+
+Canonical research accepts only complete, aligned `1d` UTC calendars. It rejects
+missing/duplicate/misaligned candles and invalid OHLCV before publication; it
+never repairs calendars with forward filling or inner-join compression. New run
+artifacts persist the exact manifest and dataset hashes they consumed.
 
 Downloaded market data, ingestion databases, logs, and generated reports are local artifacts and are ignored by Git.
 

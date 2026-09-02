@@ -82,6 +82,12 @@ the already selected finalists over sequential pre-test periods using all price
 history available through each fold end. This is rolling pre-test evaluation, not
 a true expanding retrain→test walk-forward process.
 
+For future experiment runs, methodology `future-selection-v2-nonoverlap-oos`
+uses disjoint training, validation, and final-test calendars. Validation is the
+only scored OOS input to candidate locking; non-overlapping validation folds are
+retained as diagnostics and are not scored again. Historical sealed runs retain
+their original methodology and artifacts unchanged.
+
 ## Historical execution
 
 The sealed historical engine:
@@ -100,7 +106,10 @@ Orders, fills, positions, cash, and equity are stored as separate artifacts.
 
 Historical reports include CAGR, annualized volatility, Sharpe, Sortino, maximum drawdown, Calmar, CVaR, turnover, recovery duration, fees, and ending equity.
 
-Benchmarks include BTC buy-and-hold, static equal weight, static BTC/ETH, and cash under explicitly documented timing and cost assumptions.
+Benchmarks include BTC buy-and-hold, static equal weight, static BTC/ETH, and
+`Cash (USDT, zero modeled yield)` under explicitly documented timing and cost
+assumptions. Cash is reporting-only and does not enter candidate scoring or
+selection.
 
 ## Forward measurement
 

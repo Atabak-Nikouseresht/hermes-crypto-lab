@@ -69,6 +69,7 @@ class PaperConfig:
     schedule_window_minutes: int = 15
     max_data_staleness_minutes: int = 30
     max_quote_staleness_minutes: int = 5
+    max_quote_timestamp_skew_seconds: int = 30
     quantity_tolerance: float = 1e-12
     rebalance_days: int = 7
     locked_candidate_id: str = "mw120_sw00_ma150_n2_r07_v30"
@@ -146,6 +147,8 @@ class PaperConfig:
             raise ValueError(
                 "max_quote_staleness_minutes cannot exceed max_data_staleness_minutes"
             )
+        if self.max_quote_timestamp_skew_seconds <= 0:
+            raise ValueError("max_quote_timestamp_skew_seconds must be positive")
         minimum_lookback = (
             max(
                 self.strategy_config.momentum_long_days
@@ -176,6 +179,16 @@ class PaperRunResult:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+def classify_execution_outcome(proposed: int, executed: int, rejected: int) -> str:
+    if proposed == 0:
+        return "NO_REBALANCE_REQUIRED"
+    if executed == 0:
+        return "EXECUTION_REJECTED"
+    if rejected or executed < proposed:
+        return "PARTIAL_EXECUTION"
+    return "FULL_EXECUTION"
+
+
 class PaperTradingSystem:
     def __init__(self, database_path: Path, config: PaperConfig):
         self.config = config
@@ -185,6 +198,9 @@ class PaperTradingSystem:
             account_id=config.account_id,
             initial_cash=config.initial_cash,
             quantity_tolerance=config.quantity_tolerance,
+            fee_rate=config.fee_rate,
+            minimum_spread_rate=config.minimum_spread_rate,
+            slippage_rate=config.slippage_rate,
         )
 
     @staticmethod
@@ -280,6 +296,11 @@ class PaperTradingSystem:
                 minutes=self.config.max_quote_staleness_minutes
             ):
                 return f"Stale data: quote for {asset}"
+        quote_times = [self._utc(snapshot.quotes[asset].timestamp) for asset in self.config.assets]
+        if max(quote_times) - min(quote_times) > pd.Timedelta(
+            seconds=self.config.max_quote_timestamp_skew_seconds
+        ):
+            return "Invalid data: cross-sectional quote timestamp skew exceeds limit"
         return None
 
     def _mark_to_market(self, snapshot: MarketSnapshot) -> tuple[float, float, float]:
@@ -364,6 +385,9 @@ class PaperTradingSystem:
                 "stage": stage,
                 "reason": reason,
                 "notional": notional,
+                "requested_quantity": proposal.get("requested_quantity"),
+                "target_weight": proposal.get("target_weight"),
+                "idempotency_key": proposal.get("idempotency_key"),
             }
         )
 
@@ -390,6 +414,11 @@ class PaperTradingSystem:
             if abs(delta) <= self.config.quantity_tolerance:
                 continue
             side = "BUY" if delta > 0 else "SELL"
+            raw_key = (
+                f"{self.config.account_id}|{signal_timestamp.isoformat()}|{asset}|"
+                f"{self.config.locked_candidate_id}"
+            )
+            idempotency_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
             quantity, invalid_reason = self._normalize_exchange_quantity(
                 symbol=asset,
                 quantity=abs(delta),
@@ -398,18 +427,19 @@ class PaperTradingSystem:
             )
             if invalid_reason:
                 self._reject_quantity(
-                    proposal={"symbol": asset, "side": side},
+                    proposal={
+                        "symbol": asset,
+                        "side": side,
+                        "requested_quantity": abs(delta),
+                        "target_weight": target_weight,
+                        "idempotency_key": idempotency_key,
+                    },
                     reason=invalid_reason,
                     notional=abs(delta) * snapshot.quotes[asset].mid,
                     stage="PROPOSAL",
                 )
                 continue
             assert quantity is not None
-            raw_key = (
-                f"{self.config.account_id}|{signal_timestamp.isoformat()}|{asset}|"
-                f"{self.config.locked_candidate_id}"
-            )
-            idempotency_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
             proposals.append(
                 {
                     "idempotency_key": idempotency_key,
@@ -700,10 +730,38 @@ class PaperTradingSystem:
             equity = self._persist_equity(
                 connection, run_id=run_id, snapshot=snapshot, now=now
             )
+            target_weights = (forward_diagnostics or {}).get("target_weights", {})
+            realized_rows = connection.execute(
+                "SELECT symbol, quantity FROM paper_positions WHERE account_id=?",
+                [self.config.account_id],
+            ).fetchall()
+            realized_weights = {
+                symbol: float(quantity) * snapshot.quotes[symbol].mid / equity
+                for symbol, quantity in realized_rows
+                if symbol in snapshot.quotes
+            }
+            realized_weights["CASH"] = cash / equity if equity > 0.0 else 0.0
+            weight_errors = {
+                symbol: realized_weights.get(symbol, 0.0)
+                - float(target_weights.get(symbol, 0.0))
+                for symbol in sorted(set(realized_weights) | set(target_weights))
+            }
+            target_deviation = {
+                "realized_weights": realized_weights,
+                "weight_errors": weight_errors,
+                "l1_weight_error": sum(abs(value) for value in weight_errors.values()),
+                "max_abs_weight_error": max(
+                    (abs(value) for value in weight_errors.values()), default=0.0
+                ),
+            }
             for index, rejection in enumerate(self._last_rejections):
                 connection.execute(
                     """
-                    INSERT INTO paper_order_rejections VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO paper_order_rejections (
+                        run_id, rejection_index, symbol, side, stage, reason,
+                        notional, rejected_at_utc, requested_quantity,
+                        target_weight, idempotency_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         run_id,
@@ -714,11 +772,15 @@ class PaperTradingSystem:
                         rejection["reason"],
                         rejection["notional"],
                         now,
+                        rejection.get("requested_quantity"),
+                        rejection.get("target_weight"),
+                        rejection.get("idempotency_key"),
                     ],
                 )
             if forward_diagnostics is not None:
                 committed_diagnostics = dict(forward_diagnostics)
                 committed_diagnostics["rejected_orders"] = list(self._last_rejections)
+                committed_diagnostics["target_deviation"] = target_deviation
                 self.store.record_committed_forward_evidence(
                     connection,
                     run_id=run_id,
@@ -728,6 +790,20 @@ class PaperTradingSystem:
                     },
                     observed_at=now.to_pydatetime(),
                 )
+            executed_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM paper_orders WHERE run_id=?", [run_id]
+                ).fetchone()[0]
+            )
+            execution_outcome = classify_execution_outcome(
+                executed_count + len(self._last_rejections),
+                executed_count,
+                len(self._last_rejections),
+            )
+            connection.execute(
+                "INSERT INTO paper_execution_outcomes VALUES (?, ?, ?)",
+                [run_id, execution_outcome, now],
+            )
             connection.execute("COMMIT")
         return equity
 
@@ -782,17 +858,14 @@ class PaperTradingSystem:
                 signal_timestamp=None,
                 data_timestamp=snapshot.closes.index[-1].to_pydatetime(),
             )
-            self.store.activate_kill_switch(
-                validation_error, run_id=run_id, now=now_ts.to_pydatetime()
-            )
             self.store.finish_run(
                 run_id=run_id,
-                status="KILL_SWITCH",
+                status="DATA_HALT",
                 completed_at=now_ts.to_pydatetime(),
                 message=validation_error,
                 reconciliation=reconciliation,
             )
-            return PaperRunResult(run_id, "KILL_SWITCH", validation_error)
+            return PaperRunResult(run_id, "DATA_HALT", validation_error)
 
         schedule_key = self._scheduled_key(now_ts)
         if schedule_key is None:
@@ -815,21 +888,23 @@ class PaperTradingSystem:
                 completed_at=now_ts.to_pydatetime(),
                 message="Market health checked; outside scheduled rebalance window",
                 reconciliation=reconciliation,
+                execution_outcome="NO_REBALANCE_REQUIRED",
             )
             return PaperRunResult(
                 run_id,
                 "NO_REBALANCE",
                 "Market health checked; outside scheduled rebalance window",
                 equity=equity,
+                outcome="NO_REBALANCE_REQUIRED",
             )
 
-        signal_timestamp, proposals = self._proposals(snapshot)
         if not dry_run and self.store.schedule_exists(schedule_key):
             return PaperRunResult(
                 run_id,
                 "DUPLICATE_SCHEDULE",
                 f"Schedule {schedule_key} was already executed",
             )
+        signal_timestamp, proposals = self._proposals(snapshot)
 
         self.store.insert_run(
             run_id=run_id,
@@ -875,6 +950,9 @@ class PaperTradingSystem:
                 ).fetchone()[0]
             )
         rejected_orders = len(self.store.order_rejections(run_id))
+        execution_outcome = classify_execution_outcome(
+            executed_orders + rejected_orders, executed_orders, rejected_orders
+        )
         reconciliation = self.store.reconcile()
         if not reconciliation.valid:
             self.store.activate_kill_switch(
@@ -894,7 +972,8 @@ class PaperTradingSystem:
             completed_at=now_ts.to_pydatetime(),
             message=message,
             reconciliation=reconciliation,
+            execution_outcome=execution_outcome,
         )
         return PaperRunResult(
-            run_id, status, message, tuple(proposals), equity
+            run_id, status, message, tuple(proposals), equity, outcome=execution_outcome
         )

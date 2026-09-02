@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
@@ -44,6 +45,10 @@ def validate_ohlcv(frame: pd.DataFrame) -> ValidationResult:
                 "duplicate_rows": 0,
                 "invalid_ohlc_rows": 0,
                 "non_positive_price_rows": 0,
+                "empty_dataset": 1,
+                "misaligned_timestamp_rows": 0,
+                "invalid_volume_rows": 0,
+                "non_finite_rows": 0,
             },
             missing_dates=[],
         )
@@ -52,12 +57,20 @@ def validate_ohlcv(frame: pd.DataFrame) -> ValidationResult:
     expected = pd.date_range(unique_days.min(), unique_days.max(), freq="D", tz="UTC")
     missing = expected.difference(unique_days)
     non_positive, invalid_ohlc = _masks(frame.assign(timestamp=timestamps))
+    numeric = frame[COLUMNS[1:]].apply(pd.to_numeric, errors="coerce")
+    non_finite = ~np.isfinite(numeric).all(axis=1)
+    invalid_volume = numeric["volume"].lt(0)
+    misaligned = timestamps.ne(timestamps.dt.normalize())
     return ValidationResult(
         summary={
             "missing_dates": len(missing),
             "duplicate_rows": int(timestamps.duplicated(keep=False).sum()),
             "invalid_ohlc_rows": int(invalid_ohlc.sum()),
             "non_positive_price_rows": int(non_positive.sum()),
+            "empty_dataset": 0,
+            "misaligned_timestamp_rows": int(misaligned.sum()),
+            "invalid_volume_rows": int(invalid_volume.sum()),
+            "non_finite_rows": int(non_finite.sum()),
         },
         missing_dates=[value.isoformat() for value in missing],
     )
@@ -70,5 +83,11 @@ def clean_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
         cleaned[column] = pd.to_numeric(cleaned[column], errors="coerce")
     cleaned = cleaned.sort_values("timestamp").drop_duplicates("timestamp", keep="first")
     non_positive, invalid_ohlc = _masks(cleaned)
-    cleaned = cleaned.loc[~(non_positive | invalid_ohlc)].reset_index(drop=True)
+    numeric = cleaned[COLUMNS[1:]]
+    non_finite = ~np.isfinite(numeric).all(axis=1)
+    invalid_volume = numeric["volume"].lt(0)
+    misaligned = cleaned["timestamp"].ne(cleaned["timestamp"].dt.normalize())
+    cleaned = cleaned.loc[
+        ~(non_positive | invalid_ohlc | non_finite | invalid_volume | misaligned)
+    ].reset_index(drop=True)
     return cleaned[COLUMNS]

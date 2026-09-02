@@ -1,6 +1,8 @@
 import pandas as pd
 import pytest
 
+from run_experiments import future_lock_score
+
 from src.experiment_manager import (
     Candidate,
     ExperimentGate,
@@ -83,9 +85,28 @@ def test_periods_are_chronological_and_walk_forward_never_enters_final_test():
 
     assert periods.training.start < periods.training.end
     assert periods.training.end < periods.validation.end < periods.final_test.end
-    assert periods.validation.start == periods.training.end
-    assert periods.final_test.start == periods.validation.end
+    assert periods.training.end < periods.validation.start
+    assert periods.validation.end < periods.final_test.start
     assert all(fold.end <= periods.validation.end for fold in periods.walk_forward)
+    assert all(
+        left.end < right.start
+        for left, right in zip(periods.walk_forward, periods.walk_forward[1:], strict=False)
+    )
+    assert all(
+        periods.validation.start <= fold.start <= fold.end
+        for fold in periods.walk_forward
+    )
+    covered = pd.DatetimeIndex([])
+    for fold in periods.walk_forward:
+        covered = covered.union(index[(index >= fold.start) & (index <= fold.end)])
+    expected = index[(index >= periods.validation.start) & (index <= periods.validation.end)]
+    assert covered.equals(expected)
+
+
+def test_future_lock_score_does_not_double_count_walk_forward_diagnostics():
+    assert future_lock_score(selection_score=1.0, validation_score=2.0) == pytest.approx(
+        0.4 * 1.0 + 0.6 * 2.0 - 0.25 * 1.0
+    )
 
 
 def test_penalized_score_reduces_turnover_and_drawdown_excesses():

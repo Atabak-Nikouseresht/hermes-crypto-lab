@@ -216,7 +216,6 @@ def commit_operational_failure(
         data_timestamp=None,
     )
     if outcome in {
-        "DATA_QUALITY_FAILURE",
         "RECONCILIATION_FAILURE",
         "KILL_SWITCH_ACTIVATED",
     } and system.store.account()["status"] == "ACTIVE":
@@ -320,6 +319,8 @@ def classify_outcome(
     result: PaperRunResult,
     diagnostics: dict[str, Any],
 ) -> str:
+    if result.status == "DATA_HALT":
+        return "DATA_QUALITY_FAILURE"
     if result.status == "KILL_SWITCH":
         message = result.message.lower()
         if "mismatch" in message or "reconcil" in message or "negative persistent" in message:
@@ -376,6 +377,9 @@ def finalize_forward_run(
         ).fetchone()
     if row is None or row[0] == "RUNNING" or row[1] is None:
         raise RuntimeError("Cannot finalize forward diagnostics before paper transaction finalization")
+    if result.status == "DATA_HALT":
+        outcome = "DATA_QUALITY_FAILURE"
+        return replace(result, outcome=outcome, diagnostics={})
     committed_evidence = system.store.committed_forward_evidence(result.run_id)
     if committed_evidence is not None:
         diagnostics, observed_prices, observed_at = committed_evidence

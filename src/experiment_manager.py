@@ -121,24 +121,20 @@ def build_chronological_periods(
     training_end_position = boundary_at(train_fraction)
     validation_end_position = boundary_at(train_fraction + validation_fraction)
     training = Period(ordered[start_position], ordered[training_end_position])
-    validation = Period(ordered[training_end_position], ordered[validation_end_position])
-    final_test = Period(ordered[validation_end_position], ordered[-1])
+    validation_start_position = training_end_position + 1
+    final_test_start_position = validation_end_position + 1
+    validation = Period(ordered[validation_start_position], ordered[validation_end_position])
+    final_test = Period(ordered[final_test_start_position], ordered[-1])
 
-    pretest_span = validation_end_position - start_position + 1
-    edges = np.linspace(0.50, 1.0, walk_forward_folds + 1)
-    walk_forward: list[Period] = []
-    for left, right in zip(edges[:-1], edges[1:], strict=True):
-        fold_start_target = start_position + int(pretest_span * float(left)) - 1
-        fold_end_target = start_position + int(pretest_span * float(right)) - 1
-        fold_start = max(position for position in week_ends if position <= fold_start_target)
-        fold_end_options = [
-            position
-            for position in week_ends
-            if fold_start < position <= min(fold_end_target, validation_end_position)
-        ]
-        if not fold_end_options:
-            raise ValueError("Walk-forward fold is too short")
-        walk_forward.append(Period(ordered[fold_start], ordered[fold_end_options[-1]]))
+    validation_positions = np.arange(validation_start_position, validation_end_position + 1)
+    if len(validation_positions) < walk_forward_folds:
+        raise ValueError("Validation period is too short for non-overlapping folds")
+    chunks = np.array_split(validation_positions, walk_forward_folds)
+    walk_forward = [
+        Period(ordered[int(chunk[0])], ordered[int(chunk[-1])])
+        for chunk in chunks
+        if len(chunk)
+    ]
     return ExperimentPeriods(training, validation, final_test, tuple(walk_forward))
 
 

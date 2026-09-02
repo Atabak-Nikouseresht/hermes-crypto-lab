@@ -4,7 +4,6 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 import logging
-import os
 from pathlib import Path
 
 import pandas as pd
@@ -16,24 +15,14 @@ from src.backtest_report import write_backtest_report
 from src.benchmarks import run_benchmarks
 from src.config import load_assets, load_settings
 from src.logging_config import configure_logging
+from src.research_data import load_canonical_close_prices
 from src.strategy import StrategyConfig, generate_signal
 
 LOGGER = logging.getLogger(__name__)
 
 
 def load_close_prices(processed_dir: Path, assets: list[str], timeframe: str) -> pd.DataFrame:
-    series = []
-    for asset in assets:
-        filename = f"{asset.replace('/', '_').replace(':', '_')}_{timeframe}.parquet"
-        path = processed_dir / filename
-        frame = pd.read_parquet(path, columns=["timestamp", "close"])
-        timestamps = pd.to_datetime(frame["timestamp"], utc=True)
-        values = pd.Series(frame["close"].to_numpy(dtype=float), index=timestamps, name=asset)
-        series.append(values)
-    prices = pd.concat(series, axis=1, join="inner").sort_index()
-    if prices.empty:
-        raise ValueError("No common close-price history across configured assets")
-    return prices
+    return load_canonical_close_prices(processed_dir, assets, timeframe)
 
 
 def load_run_configuration(project_root: Path) -> tuple[StrategyConfig, BacktestConfig]:
@@ -58,11 +47,9 @@ def load_run_configuration(project_root: Path) -> tuple[StrategyConfig, Backtest
     )
     backtest_values = payload["backtest"]
     backtest = BacktestConfig(
-        initial_cash=float(os.getenv("HCL_INITIAL_CASH", backtest_values["initial_cash"])),
-        fee_rate=float(os.getenv("HCL_FEE_RATE", backtest_values["fee_rate"])),
-        slippage_rate=float(
-            os.getenv("HCL_SLIPPAGE_RATE", backtest_values["slippage_rate"])
-        ),
+        initial_cash=float(backtest_values["initial_cash"]),
+        fee_rate=float(backtest_values["fee_rate"]),
+        slippage_rate=float(backtest_values["slippage_rate"]),
     )
     return strategy, backtest
 
@@ -90,8 +77,13 @@ def run_research_backtest(project_root: Path | None = None) -> dict[str, object]
     settings = load_settings(project_root)
     configure_logging(settings.logs_dir, settings.log_level)
     strategy_config, backtest_config = load_run_configuration(settings.project_root)
-    assets = load_assets(settings.assets_config)
-    all_prices = load_close_prices(settings.processed_dir, assets, settings.timeframe)
+    assets = load_assets(settings.project_root / "config" / "assets.yaml")
+    all_prices, dataset_provenance = load_canonical_close_prices(
+        settings.processed_dir,
+        assets,
+        "1d",
+        include_provenance=True,
+    )
     initial_signal_date, first_execution_date = find_common_analysis_start(
         all_prices, strategy_config
     )
@@ -125,6 +117,7 @@ def run_research_backtest(project_root: Path | None = None) -> dict[str, object]
         "analysis_end_utc": analysis_prices.index[-1].isoformat(),
         "initial_signal_utc": initial_signal_date.isoformat(),
         "assets": assets,
+        "dataset_provenance": dataset_provenance,
         "strategy": strategy_payload,
         "backtest": {
             **asdict(backtest_config),
@@ -134,6 +127,15 @@ def run_research_backtest(project_root: Path | None = None) -> dict[str, object]
         "signal_execution_rule": "signal at week-end close t; fill at next available close t+1",
         "benchmark_rule": "static order at analysis start; fill on next bar; hold thereafter",
         "optimization_performed": False,
+        "run_kind": "historical_fixed_baseline_backtest",
+        "locked_forward_candidate_evaluation": False,
+        "canonical_run": True,
+        "effective_configuration": {
+            "strategy": strategy_payload,
+            "backtest": asdict(backtest_config),
+            "assets": assets,
+            "timeframe": "1d",
+        },
     }
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     paths["run_metadata"] = metadata_path
@@ -143,7 +145,8 @@ def run_research_backtest(project_root: Path | None = None) -> dict[str, object]
 
 def main() -> None:
     result = run_research_backtest()
-    print(f"Backtest {result['run_id']} completed")
+    print(f"Historical fixed-baseline backtest {result['run_id']} completed")
+    print("This is not the locked forward candidate evaluation.")
     print(f"Comparison: {result['paths']['comparison_markdown']}")
 
 

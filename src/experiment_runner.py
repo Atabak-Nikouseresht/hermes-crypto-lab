@@ -11,6 +11,7 @@ from src.backtest import BacktestConfig, BacktestResult, EventDrivenBacktester
 from src.benchmarks import run_benchmarks
 from src.experiment_manager import Candidate, Period, penalized_score
 from src.metrics import calculate_performance_metrics
+from src.research_data import load_canonical_close_prices, load_canonical_timestamp_index
 from src.strategy import StrategyConfig, generate_signal
 
 
@@ -33,16 +34,8 @@ def _asset_path(processed_dir: Path, asset: str, timeframe: str) -> Path:
 def load_common_timestamp_index(
     processed_dir: Path, assets: list[str], timeframe: str
 ) -> pd.DatetimeIndex:
-    common: pd.DatetimeIndex | None = None
-    for asset in assets:
-        frame = pd.read_parquet(
-            _asset_path(processed_dir, asset, timeframe), columns=["timestamp"]
-        )
-        index = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True).unique())
-        common = index if common is None else common.intersection(index)
-    if common is None or common.empty:
-        raise ValueError("No common timestamp history across configured assets")
-    return common.sort_values()
+    index, _provenance = load_canonical_timestamp_index(processed_dir, assets, timeframe)
+    return index
 
 
 def load_close_prices_through(
@@ -53,18 +46,9 @@ def load_close_prices_through(
 ) -> pd.DataFrame:
     """Read only rows at or before the stage boundary via Parquet filters."""
     end_utc = pd.Timestamp(end).tz_convert("UTC")
-    series = []
-    for asset in assets:
-        frame = pd.read_parquet(
-            _asset_path(processed_dir, asset, timeframe),
-            columns=["timestamp", "close"],
-            filters=[("timestamp", "<=", end_utc.to_pydatetime())],
-        )
-        timestamps = pd.to_datetime(frame["timestamp"], utc=True)
-        series.append(
-            pd.Series(frame["close"].to_numpy(dtype=float), index=timestamps, name=asset)
-        )
-    prices = pd.concat(series, axis=1, join="inner").sort_index()
+    prices = load_canonical_close_prices(
+        processed_dir, assets, timeframe, end=end_utc
+    )
     if prices.empty or prices.index.max() > end_utc:
         raise ValueError("Stage-bounded Parquet read failed")
     return prices
@@ -86,10 +70,15 @@ def benchmark_metrics_for_period(
 ) -> dict[str, dict[str, float | int]]:
     simulation = _simulation_prices(available_prices, period)
     results = run_benchmarks(simulation, backtest_config)
+    labels = {
+        "BTC Buy and Hold": "BTC Buy and Hold",
+        "Equal Weight": "Equal Weight",
+        "Cash": "Cash (USDT, zero modeled yield)",
+    }
     return {
-        name: calculate_performance_metrics(result.equity_curve, result.fills)
+        labels[name]: calculate_performance_metrics(result.equity_curve, result.fills)
         for name, result in results.items()
-        if name in {"BTC Buy and Hold", "Equal Weight"}
+        if name in labels
     }
 
 

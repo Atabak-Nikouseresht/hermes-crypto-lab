@@ -8,6 +8,7 @@ import pytest
 
 from run_paper import _current_schedule_window_closed
 from scripts import paper_forward_weekly
+from scripts.interpreter import resolve_project_python
 from scripts.paper_forward_weekly import should_launch
 from src.scheduler_contract import SchedulerContractError, verify_scheduler_job
 
@@ -62,6 +63,22 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
             scripts_root=scripts_root,
             expected_script_sha256=digest,
         )
+
+
+def test_interpreter_resolution_prefers_windows_then_unix_and_fails_explicitly(tmp_path):
+    project = tmp_path / "project"
+    unix = project / ".venv" / "bin" / "python"
+    windows = project / ".venv" / "Scripts" / "python.exe"
+    unix.parent.mkdir(parents=True)
+    unix.write_text("unix", encoding="ascii")
+    assert resolve_project_python(project) == unix
+    windows.parent.mkdir(parents=True)
+    windows.write_text("windows", encoding="ascii")
+    assert resolve_project_python(project) == windows
+    windows.unlink()
+    unix.unlink()
+    with pytest.raises(FileNotFoundError, match="project virtual-environment interpreter"):
+        resolve_project_python(project)
 
 
 def test_missed_current_window_returns_before_market_fetch():

@@ -8,3 +8,10 @@ select = ["E4", "E7", "E9", "F", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/generate_hardening_manifest.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true

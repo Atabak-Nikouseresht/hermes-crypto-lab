@@ -18,7 +18,8 @@ Commands below use Windows virtual-environment paths. On Linux/macOS, replace `.
 
 - Weekly paper wrapper: Monday 00:10 UTC; the governed decision window is 00:05–00:20 UTC.
 - Missed-window audit: Monday 00:21 UTC and watchdog startup/resume checks.
-- Monthly report: day 1 at 09:00 UTC.
+- Monthly report: canonical trigger day 1 at 09:00 UTC; the wrapper tolerates
+  delayed startup through 09:15 UTC.
 - Future-order protocol: `paper-exec-v3-ask-bid-minspread-utc0010`.
 - Existing v2 records remain unchanged.
 - Historical and forward execution remain explicitly different; see [Execution model](execution-model.md).
@@ -88,6 +89,15 @@ This retries only an already-committed report. It cannot rerun strategy or paper
 ```
 
 Do not invoke it merely to inspect usage. Use source documentation and scheduler status instead.
+
+The wrapper holds an OS-backed exclusive file lock while dispatching and creates
+the monthly completed marker atomically only after a successful subprocess exit.
+Failure and timeout release the lock for retry inside the bounded launch window;
+process termination releases the operating-system lock without relying on stale
+file deletion. The interpreter resolver prefers
+`.venv/Scripts/python.exe` on Windows and falls back to `.venv/bin/python` on
+Unix. The wrapper can invoke only `run_monthly_report.py`, never a trading entry
+point.
 
 ## Backup and temporary restore verification
 

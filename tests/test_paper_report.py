@@ -34,11 +34,17 @@ def test_weekly_paper_report_is_concise_and_discloses_virtual_only_mode(tmp_path
             "target_weights": {"BTC/USDT": 0.5, "ETH/USDT": 0.5, "CASH": 0.0},
             "proposed_orders": [],
             "turnover": 1.0,
+            "target_deviation": {
+                "l1_weight_error": 0.2,
+                "max_abs_weight_error": 0.1,
+            },
         },
     )
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_order_rejections VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO paper_order_rejections "
+            "(run_id, rejection_index, symbol, side, stage, reason, notional, rejected_at_utc) "
+            "VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
             [
                 result.run_id,
                 "ETH/USDT",
@@ -58,6 +64,7 @@ def test_weekly_paper_report_is_concise_and_discloses_virtual_only_mode(tmp_path
     assert "No real exchange orders" in text
     assert "2,000.00 USDT" in text
     assert result.status in text
+    assert "Post-execution target deviation (L1 / max): **20.00% / 10.00%**" in text
     assert "Europe/Rome" in text
     assert "mw120_sw00_ma150_n2_r07_v30" in text
     assert "MA150" in text

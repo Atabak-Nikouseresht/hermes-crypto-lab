@@ -46,9 +46,22 @@ Forward contract:
 - Additional adverse slippage and proportional fee apply after the base price.
 - Quote timestamp must be no later than execution timestamp.
 - Missing, crossed, non-positive, non-finite, future-dated, or stale quotes fail closed.
+- Transient invalid/stale/missing public-market evidence produces a retryable
+  `DATA_HALT` without mutating paper state or latching the persistent account
+  kill switch. Accounting or reconciliation corruption remains a hard persistent
+  halt requiring review.
+- Cross-sectional quote timestamps must also remain within the deterministic
+  maximum skew; otherwise the entire snapshot fails closed.
 - Public exchange activity, amount, notional, step-size, and precision rules are required.
 - After proportional cash scaling, final buy quantities are quantized down to the public step size and min/max quantity plus minimum-notional rules are rechecked before any order or fill is persisted.
 - New order/fill rows record protocol, strategy hash, quote time, spread, slippage, fee, and execution time.
+- Execution outcomes distinguish `NO_REBALANCE_REQUIRED`, `FULL_EXECUTION`,
+  `PARTIAL_EXECUTION`, and `EXECUTION_REJECTED`. Rejections retain requested
+  order identity and target information, and diagnostics persist realized
+  post-execution deviation from target weights.
+- Reconciliation independently recomputes current-protocol price, fee, spread,
+  slippage, position-ledger, cash-ledger, order/fill identity, and protocol
+  provenance; any mismatch preserves fail-closed kill-switch behavior.
 
 The forward quote is approximately 23 hours 50 minutes earlier than availability of the sealed model's Monday close. Forward sizing also uses execution-time quote midpoints rather than carrying fixed Sunday-close quantities.
 

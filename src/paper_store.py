@@ -12,6 +12,8 @@ from typing import Any
 
 import duckdb
 
+from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
+
 
 FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
 
@@ -30,10 +32,16 @@ class PaperStore:
         account_id: str,
         initial_cash: float,
         quantity_tolerance: float = 1e-7,
+        fee_rate: float = 0.001,
+        minimum_spread_rate: float = 0.0005,
+        slippage_rate: float = 0.0005,
     ):
         self.path = Path(path)
         self.account_id = account_id
         self.quantity_tolerance = quantity_tolerance
+        self.fee_rate = fee_rate
+        self.minimum_spread_rate = minimum_spread_rate
+        self.slippage_rate = slippage_rate
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(initial_cash)
         self.recover_abandoned_runs()
@@ -191,7 +199,8 @@ class PaperStore:
                     kill_switch_active BOOLEAN NOT NULL,
                     reconciliation_valid BOOLEAN NOT NULL,
                     created_at_utc TIMESTAMPTZ NOT NULL,
-                    rejected_orders JSON
+                    rejected_orders JSON,
+                    target_deviation JSON
                 );
                 CREATE TABLE IF NOT EXISTS forward_market_observations (
                     run_id VARCHAR NOT NULL,
@@ -261,12 +270,20 @@ class PaperStore:
                     reason VARCHAR NOT NULL,
                     notional DOUBLE NOT NULL,
                     rejected_at_utc TIMESTAMPTZ NOT NULL,
+                    requested_quantity DOUBLE,
+                    target_weight DOUBLE,
+                    idempotency_key VARCHAR,
                     PRIMARY KEY (run_id, rejection_index)
                 );
                 CREATE TABLE IF NOT EXISTS paper_forward_execution_evidence (
                     run_id VARCHAR PRIMARY KEY,
                     captured_at_utc TIMESTAMPTZ NOT NULL,
                     diagnostics JSON NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS paper_execution_outcomes (
+                    run_id VARCHAR PRIMARY KEY,
+                    execution_outcome VARCHAR NOT NULL,
+                    recorded_at_utc TIMESTAMPTZ NOT NULL
                 );
                 """
             )
@@ -308,6 +325,24 @@ class PaperStore:
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES "
                 "(10, ?, 'atomically persist forward execution evidence')",
+                [now],
+            )
+
+            connection.execute(
+                "ALTER TABLE paper_run_diagnostics ADD COLUMN IF NOT EXISTS target_deviation JSON"
+            )
+            connection.execute(
+                "ALTER TABLE paper_order_rejections ADD COLUMN IF NOT EXISTS requested_quantity DOUBLE"
+            )
+            connection.execute(
+                "ALTER TABLE paper_order_rejections ADD COLUMN IF NOT EXISTS target_weight DOUBLE"
+            )
+            connection.execute(
+                "ALTER TABLE paper_order_rejections ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(11, ?, 'explicit execution outcomes and post-execution deviation audit')",
                 [now],
             )
             connection.execute(
@@ -592,10 +627,128 @@ class PaperStore:
                         order_protocol is None
                         or fill_protocol != order_protocol
                         or context_protocol != order_protocol
+                        or order_protocol != EXECUTION_PROTOCOL_VERSION
                     ):
                         return ReconciliationResult(
                             False, f"Current ledger protocol provenance mismatch for {order_id}"
                         )
+            accounting_rows = connection.execute(
+                """
+                SELECT o.order_id, o.run_id, o.account_id, o.symbol, o.side,
+                       f.run_id, f.filled_quantity, f.mid_price,
+                       f.execution_price, f.spread_cost, f.slippage_cost, f.fee,
+                       c.bid, c.ask, c.midpoint,
+                       cash.run_id, cash.account_id, cash.amount,
+                       position.run_id, position.account_id, position.symbol,
+                       position.quantity_delta
+                FROM paper_orders o
+                JOIN paper_fills f ON f.order_id=o.order_id
+                JOIN paper_execution_context c
+                  ON c.run_id=o.run_id AND c.symbol=o.symbol
+                LEFT JOIN cash_ledger cash ON cash.event_id='cash_' || f.fill_id
+                LEFT JOIN position_ledger position ON position.event_id='pos_' || f.fill_id
+                WHERE o.ledger_semantics_version=?
+                """,
+                [FINAL_EXECUTABLE_LEDGER_SEMANTICS],
+            ).fetchall()
+            for row in accounting_rows:
+                (
+                    order_id,
+                    order_run_id,
+                    order_account_id,
+                    order_symbol,
+                    side,
+                    fill_run_id,
+                    quantity,
+                    fill_mid,
+                    execution_price,
+                    spread_cost,
+                    slippage_cost,
+                    fee,
+                    bid,
+                    ask,
+                    context_mid,
+                    cash_run_id,
+                    cash_account_id,
+                    cash_delta,
+                    position_run_id,
+                    position_account_id,
+                    position_symbol,
+                    position_delta,
+                ) = row
+                if (
+                    fill_run_id != order_run_id
+                    or cash_run_id != order_run_id
+                    or position_run_id != order_run_id
+                    or cash_account_id != order_account_id
+                    or position_account_id != order_account_id
+                    or position_symbol != order_symbol
+                ):
+                    return ReconciliationResult(
+                        False, f"Fill/ledger provenance mismatch for {order_id}"
+                    )
+                values = (
+                    quantity,
+                    fill_mid,
+                    execution_price,
+                    spread_cost,
+                    slippage_cost,
+                    fee,
+                    bid,
+                    ask,
+                    context_mid,
+                    cash_delta,
+                    position_delta,
+                )
+                if any(value is None or not math.isfinite(float(value)) for value in values):
+                    return ReconciliationResult(False, f"Non-finite fill accounting for {order_id}")
+                quantity = float(quantity)
+                fill_mid = float(fill_mid)
+                execution_price = float(execution_price)
+                spread_cost = float(spread_cost)
+                slippage_cost = float(slippage_cost)
+                fee = float(fee)
+                context_mid = float(context_mid)
+                expected_position = quantity if side == "BUY" else -quantity
+                expected_cash = (
+                    -(quantity * execution_price + fee)
+                    if side == "BUY"
+                    else quantity * execution_price - fee
+                )
+
+                def differs(actual: float, expected: float) -> bool:
+                    return abs(actual - expected) > tolerance * max(1.0, abs(expected))
+
+                if differs(fill_mid, context_mid):
+                    return ReconciliationResult(False, f"Fill midpoint mismatch for {order_id}")
+                if differs(float(position_delta), expected_position):
+                    return ReconciliationResult(False, f"Fill/position ledger mismatch for {order_id}")
+                if differs(float(cash_delta), expected_cash):
+                    return ReconciliationResult(False, f"Fill/cash ledger mismatch for {order_id}")
+                if min(execution_price, spread_cost, slippage_cost, fee) < 0:
+                    return ReconciliationResult(False, f"Invalid fill cost for {order_id}")
+                if side == "BUY":
+                    expected_spread_price = max(
+                        float(ask), context_mid * (1.0 + self.minimum_spread_rate)
+                    )
+                    expected_execution_price = expected_spread_price * (1.0 + self.slippage_rate)
+                else:
+                    expected_spread_price = min(
+                        float(bid), context_mid * (1.0 - self.minimum_spread_rate)
+                    )
+                    expected_execution_price = expected_spread_price * (1.0 - self.slippage_rate)
+                expected_spread = quantity * abs(expected_spread_price - context_mid)
+                expected_slippage = quantity * abs(
+                    expected_execution_price - expected_spread_price
+                )
+                expected_fee = quantity * expected_execution_price * self.fee_rate
+                if (
+                    differs(execution_price, expected_execution_price)
+                    or differs(spread_cost, expected_spread)
+                    or differs(slippage_cost, expected_slippage)
+                    or differs(fee, expected_fee)
+                ):
+                    return ReconciliationResult(False, f"Fill spread/slippage mismatch for {order_id}")
         return ReconciliationResult(True, "cash, positions, orders and fills reconcile")
 
     def activate_kill_switch(
@@ -868,8 +1021,8 @@ class PaperStore:
                     run_id, outcome, regime, btc_vs_trend, momentum, eligibility,
                     selected_assets, current_weights, target_weights, proposed_orders,
                     turnover, kill_switch_active, reconciliation_valid, created_at_utc,
-                    rejected_orders
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    rejected_orders, target_deviation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     run_id,
@@ -887,6 +1040,7 @@ class PaperStore:
                     reconciliation_valid,
                     observed_at,
                     json.dumps(diagnostics.get("rejected_orders", []), sort_keys=True),
+                    json.dumps(diagnostics.get("target_deviation", {}), sort_keys=True),
                 ],
             )
             for symbol, price in observed_prices.items():
@@ -996,11 +1150,13 @@ class PaperStore:
         completed_at: datetime,
         message: str,
         reconciliation: ReconciliationResult,
+        execution_outcome: str | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
-                UPDATE paper_runs SET completed_at_utc=?, status=?, message=?, reconciliation=?
+                UPDATE paper_runs
+                SET completed_at_utc=?, status=?, message=?, reconciliation=?
                 WHERE run_id=?
                 """,
                 [
@@ -1011,6 +1167,11 @@ class PaperStore:
                     run_id,
                 ],
             )
+            if execution_outcome is not None:
+                connection.execute(
+                    "INSERT OR REPLACE INTO paper_execution_outcomes VALUES (?, ?, ?)",
+                    [run_id, execution_outcome, completed_at],
+                )
 
 
 def asdict_reconciliation(result: ReconciliationResult) -> dict[str, Any]:

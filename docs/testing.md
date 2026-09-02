@@ -40,15 +40,22 @@ The frozen functional baseline at historical pre-rewrite commit `ebeac389b1c309f
 
 Coverage output is generated locally and ignored. It is a testing diagnostic, not permanent governance evidence.
 
-CI also enforces branch-aware critical-path floors after the full suite: `run_paper.py` and `src/paper_forward.py` at 80%, and `src/paper_broker.py`, `src/paper_store.py`, and `src/forward_operations.py` at 85%. These gates emphasize failure, recovery, idempotency, reconciliation, and notification-isolation behavior rather than synthetic line execution.
+CI also enforces branch-aware critical-path floors after the full suite:
+`run_paper.py`, `src/paper_forward.py`, `src/statistical_diagnostics.py`,
+`src/download_data.py`, `src/experiment_runner.py`, and the monthly wrapper at
+80%; `src/paper_broker.py`, `src/paper_store.py`, and
+`src/forward_operations.py` remain at 85%. These gates emphasize real failure,
+recovery, idempotency, reconciliation, data-boundary, and retry behavior.
 The branch-aware baseline measured for this hardening release is 83% across
 `src` and `run_paper.py`. CI uses a 75% floor: a three-point margin avoids a
 fragile vanity threshold while still catching material coverage regressions.
 
 Ruff enforces syntax/indentation (`E4`, `E7`, `E9`), Pyflakes (`F`), and
-correctness-oriented Bugbear (`B`) rules. Pyright/Mypy remains deferred: the
-current pandas, DuckDB, and dynamically shaped diagnostics surfaces would require
-substantial annotation or suppression churn unrelated to operational safety.
+correctness-oriented Bugbear (`B`) rules. CI also runs Ruff's selected security
+rules over production code while retaining the domain-specific public-only
+scanner. Mypy is intentionally scoped to stable validation, storage, and
+hardening-manifest modules; dynamic pandas/DuckDB diagnostics remain outside the
+initial gate rather than being hidden behind broad ignores.
 
 ## Integrity checks
 

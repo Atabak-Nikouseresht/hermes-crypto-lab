@@ -91,6 +91,7 @@ def write_weekly_paper_report(
         if equity
         else 0.0
     )
+    target_deviation = diagnostics.get("target_deviation", {})
 
     path = reports_dir / f"paper_weekly_{utc_now.strftime('%Y-%m-%d')}_{result.run_id}.md"
     lines = [
@@ -180,6 +181,9 @@ def write_weekly_paper_report(
             "",
             f"- Proposed turnover: **{float(diagnostics.get('turnover', 0.0)):.2%}**",
             f"- Executed turnover: **{actual_turnover:.2%}**",
+            "- Post-execution target deviation (L1 / max): "
+            f"**{float(target_deviation.get('l1_weight_error', 0.0)):.2%} / "
+            f"{float(target_deviation.get('max_abs_weight_error', 0.0)):.2%}**",
             f"- Fee / spread / slippage: **{float(fill_summary[1]):.4f} / {float(fill_summary[2]):.4f} / {float(fill_summary[3]):.4f} USDT**",
             f"- Cash: **{account['cash']:,.2f} USDT**",
             f"- Ending equity: **{equity:,.2f} USDT**",

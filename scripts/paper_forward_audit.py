@@ -5,8 +5,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from scripts.interpreter import resolve_project_python
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    from interpreter import resolve_project_python
+
 PROJECT = Path(__file__).resolve().parents[1]
-PYTHON = PROJECT / ".venv" / "Scripts" / "python.exe"
+PYTHON = resolve_project_python(PROJECT)
 SCRIPT = PROJECT / "run_paper.py"
 COMMAND = [str(PYTHON), str(SCRIPT), "--audit-missed"]
 

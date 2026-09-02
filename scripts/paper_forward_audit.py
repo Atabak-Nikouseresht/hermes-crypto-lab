@@ -11,9 +11,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from interpreter import resolve_project_python
 
 PROJECT = Path(__file__).resolve().parents[1]
-PYTHON = resolve_project_python(PROJECT)
 SCRIPT = PROJECT / "run_paper.py"
-COMMAND = [str(PYTHON), str(SCRIPT), "--audit-missed"]
 
 
 def should_launch(now: datetime) -> bool:
@@ -24,9 +22,10 @@ def should_launch(now: datetime) -> bool:
 def main() -> int:
     if not should_launch(datetime.now(timezone.utc)):
         return 0
+    command = [str(resolve_project_python(PROJECT)), str(SCRIPT), "--audit-missed"]
     try:
         completed = subprocess.run(
-            COMMAND,
+            command,
             cwd=str(PROJECT),
             text=True,
             capture_output=True,

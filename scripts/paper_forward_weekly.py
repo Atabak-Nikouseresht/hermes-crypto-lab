@@ -13,9 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from interpreter import resolve_project_python
 
 PROJECT = Path(__file__).resolve().parents[1]
-PYTHON = resolve_project_python(PROJECT)
 SCRIPT = PROJECT / "run_paper.py"
-COMMAND = [str(PYTHON), str(SCRIPT), "--paper"]
 MAX_ATTEMPTS = 3
 RETRY_SECONDS = 60
 
@@ -34,11 +32,12 @@ def main(
     current = now or clock()
     if not should_launch(current):
         return 0
+    command = [str(resolve_project_python(PROJECT)), str(SCRIPT), "--paper"]
     last_code = 1
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             completed = subprocess.run(
-                COMMAND,
+                command,
                 cwd=str(PROJECT),
                 text=True,
                 capture_output=True,

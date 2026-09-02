@@ -31,7 +31,7 @@
     "forward_experiment/governance_amendment_v2.json": "5d4a9077dec6cca6ed590694fb34d5c6804295654656fe1c752294378dc64517",
     "forward_experiment/governance_amendment_v3_economic_spec.json": "0b85b8dc4b90e304dfb7ac900d25dcdeca8adf06e4f96ce55a4798eea94bd424",
     "forward_experiment/paper_schema.sql": "62b7f403bfcf1656d604ff74e768036b78070fd86034917204c7952aa9ac3693",
-    "forward_experiment/scheduler_manifest.json": "105dbd4d48ef1e5271a37da9d5d1fc3b2b74464784b1f237eaaa62bf90b4fe6f",
+    "forward_experiment/scheduler_manifest.json": "df2b98e01a7995d88c9514abbedf9e0bcbb0c2dbd35cf736892fc416dfbafd10",
     "pyproject.toml": "22efb8710a2712d7afa40085daa9567e8b17676b764acfc06eebb625ac594f57",
     "requirements.lock": "979b34da490f7f862bf263104718dcd82c6cd70cb74809b9660193d1375fb547",
     "requirements.txt": "82ce257b749755e726847eba70abb8318e01f6a90929d38ba10810461317b7b0",
@@ -45,9 +45,9 @@
     "scripts/generate_hardening_manifest.py": "730819fb62d87d7bf4daa59a61af4d0c50a44a476c3b5014dad3a4e5297acbe1",
     "scripts/hermes_gateway_watchdog.ps1": "895a57ca0b416433df829cdca46f29561e56a289ce3f86a0b4baf4a95fa867ce",
     "scripts/interpreter.py": "f80ad20d5b80f8f3e0974ad74b5774f80511fbcb77b7234746e7e7849a386a30",
-    "scripts/paper_forward_audit.py": "87f7db887fb14aaee95c075e20f1b5c4b7185aeb619ec92cc19605c3490e9f63",
+    "scripts/paper_forward_audit.py": "abb7fcb11405f4b6da5ab1da8b68df661000b20765ecb64895c00aa6fe4715b5",
     "scripts/paper_forward_monthly.py": "aba208a95e702b49f365bf1c4e2b2fda46decbe3cd514021ebbf2d8dc4e82495",
-    "scripts/paper_forward_weekly.py": "3ad27a217ac1f0f07fce7cdd541565d01151eeaa925a0cb6d383079786baa4c0",
+    "scripts/paper_forward_weekly.py": "f66082c04a094ae977c1326b3ecf1e464f280919ce0ddfe9aa0f331231314573",
     "scripts/verify_safety.py": "5d3c8554762ee23fa73e7413c720b4448d62ed404aaf9ce04cb1dde9cff19309",
     "scripts/verify_scheduler_manifest.py": "19d0794fa96841e0b5579cf77f6b7846aaa9917b9b56aa3eeba6abea295ae2a1",
     "src/backtest.py": "48d0c84efd8f04326803c815ba2f3f1b69eb8fd092b4bbf26d31f7a6eba8f6ef",
@@ -97,7 +97,7 @@
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-02T13:27:33.132716+00:00",
+  "generated_at_utc": "2026-09-02T13:37:15.091047+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

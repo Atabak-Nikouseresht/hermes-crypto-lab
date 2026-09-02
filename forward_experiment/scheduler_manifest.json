@@ -17,7 +17,7 @@
     "safety": "Audit-only: no market fetch, signal generation, equity snapshot, execution, or backdated trade",
     "script": "paper_forward_audit.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "87f7db887fb14aaee95c075e20f1b5c4b7185aeb619ec92cc19605c3490e9f63"
+    "wrapper_sha256": "abb7fcb11405f4b6da5ab1da8b68df661000b20765ecb64895c00aa6fe4715b5"
   },
   "monthly_job": {
     "deliver": "local",
@@ -42,7 +42,7 @@
     "permitted_window_utc": "Monday 00:05-00:20",
     "script": "paper_forward_weekly.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "3ad27a217ac1f0f07fce7cdd541565d01151eeaa925a0cb6d383079786baa4c0"
+    "wrapper_sha256": "f66082c04a094ae977c1326b3ecf1e464f280919ce0ddfe9aa0f331231314573"
   },
   "windows_task_scheduler_watchdog": {
     "multiple_instances": "IgnoreNew",

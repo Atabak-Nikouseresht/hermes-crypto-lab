@@ -1,0 +1,14 @@
+{
+  "created_at_utc": "2026-09-02T14:07:41Z",
+  "economic_spec_changed": false,
+  "execution_protocol_v3_sha256": "cd118b83b8428d4c2eccaa92360ca0f1aa14a85463221f75241797a48bbf7989",
+  "historical_protocol_records_rewritten": false,
+  "parameter_retuning": false,
+  "prior_economic_governance_amendment_sha256": "0b85b8dc4b90e304dfb7ac900d25dcdeca8adf06e4f96ce55a4798eea94bd424",
+  "purpose": "Future-only fail-closed cross-asset quote timestamp coherence admission. It changes whether incomplete market evidence may be executed, not strategy, candidate selection, price formation, fees, spread, slippage, or sealed history.",
+  "quote_coherence_contract_sha256": "8646abfb7664252db276965c6422ff33d8398d58093ba64a45ccecaf90b5f064",
+  "research_results_changed": false,
+  "status": "active future-only operational amendment",
+  "strategy_reselection": false,
+  "version": "forward-governance-quote-coherence-amendment-v4"
+}

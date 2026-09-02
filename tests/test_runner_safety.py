@@ -19,6 +19,48 @@ from src.paper_broker import PaperConfig
 ASSETS = ("BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT")
 
 
+def test_canonical_backtest_ignores_economic_environment_overrides(tmp_path, monkeypatch):
+    import yaml
+
+    from run_backtest import load_run_configuration
+
+    source = Path(__file__).resolve().parents[1] / "config" / "strategy.yaml"
+    target = tmp_path / "config"
+    target.mkdir()
+    target.joinpath("strategy.yaml").write_text(
+        source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    expected = yaml.safe_load(source.read_text(encoding="utf-8"))["backtest"]
+    monkeypatch.setenv("HCL_INITIAL_CASH", "999999")
+    monkeypatch.setenv("HCL_FEE_RATE", "0")
+    monkeypatch.setenv("HCL_SLIPPAGE_RATE", "0")
+
+    _strategy, backtest = load_run_configuration(tmp_path)
+
+    assert backtest.initial_cash == float(expected["initial_cash"])
+    assert backtest.fee_rate == float(expected["fee_rate"])
+    assert backtest.slippage_rate == float(expected["slippage_rate"])
+
+
+def test_backtest_cli_identifies_fixed_baseline_not_locked_candidate(monkeypatch, capsys):
+    import run_backtest
+
+    monkeypatch.setattr(
+        run_backtest,
+        "run_research_backtest",
+        lambda: {
+            "run_id": "run-1",
+            "paths": {"comparison_markdown": "comparison.md"},
+        },
+    )
+
+    run_backtest.main()
+
+    output = capsys.readouterr().out
+    assert "Historical fixed-baseline backtest" in output
+    assert "not the locked forward candidate evaluation" in output
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
@@ -377,10 +419,12 @@ def test_dry_run_success_orchestrates_public_snapshot_and_report_without_notific
     system = SimpleNamespace(
         store=store,
         _scheduled_key=lambda _now: None,
+        _validate_snapshot=lambda *_args: None,
         run=lambda *_args, **_kwargs: result,
     )
     snapshot = SimpleNamespace(fetched_at=run_paper.pd.Timestamp("2026-01-06T00:01:00Z"))
     report = tmp_path / "reports" / "dry.md"
+    monkeypatch.setattr(run_paper, "_current_schedule_window_closed", lambda *_args: False)
 
     @contextmanager
     def open_fake(**_kwargs):
@@ -435,6 +479,7 @@ def test_dry_run_market_failure_commits_auditable_failure_without_notification(
     )
     system = SimpleNamespace(store=store, _scheduled_key=lambda _now: None)
     committed = []
+    monkeypatch.setattr(run_paper, "_current_schedule_window_closed", lambda *_args: False)
 
     @contextmanager
     def open_fake(**_kwargs):

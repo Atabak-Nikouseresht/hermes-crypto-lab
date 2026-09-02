@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import sys
@@ -26,7 +27,7 @@ REWRITTEN_PUBLIC_BASELINE_COMMIT = "1ae75af22c1cf09cf3179823647f7f5a40f845c7"
 LOCKED_STRATEGY_SHA256 = "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6"
 EXECUTION_PROTOCOL = "paper-exec-v3-ask-bid-minspread-utc0010"
 
-CRITICAL_FILES = (
+STATIC_CRITICAL_FILES = (
     ".env.example",
     ".gitattributes",
     ".github/workflows/ci.yml",
@@ -54,7 +55,9 @@ CRITICAL_FILES = (
     "forward_experiment/governance.json",
     "forward_experiment/governance_amendment_v2.json",
     "forward_experiment/governance_amendment_v3_economic_spec.json",
+    "forward_experiment/governance_amendment_v4_quote_coherence.json",
     "forward_experiment/paper_schema.sql",
+    "forward_experiment/quote_coherence_contract_v1.json",
     "forward_experiment/scheduler_manifest.json",
     "requirements.lock",
     "requirements.txt",
@@ -70,6 +73,7 @@ CRITICAL_FILES = (
     "scripts/hermes_gateway_watchdog.ps1",
     "scripts/paper_forward_audit.py",
     "scripts/paper_forward_monthly.py",
+    "scripts/interpreter.py",
     "scripts/paper_forward_weekly.py",
     "scripts/verify_safety.py",
     "scripts/verify_scheduler_manifest.py",
@@ -102,6 +106,47 @@ CRITICAL_FILES = (
     "tests/test_statistical_diagnostics.py",
     "tests/test_runner_safety.py",
     "tests/test_scheduler_contract.py",
+)
+
+ECONOMIC_ENTRYPOINTS = (
+    "run_data_pipeline.py",
+    "run_backtest.py",
+    "run_experiments.py",
+    "run_paper.py",
+)
+
+
+def _local_imports(project_root: Path, relative: str) -> set[str]:
+    tree = ast.parse((project_root / relative).read_text(encoding="utf-8"), filename=relative)
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        module = node.module if isinstance(node, ast.ImportFrom) else None
+        names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else []
+        candidates = ([module] if module else []) + names
+        for candidate in candidates:
+            if not candidate or not candidate.startswith("src."):
+                continue
+            path = candidate.replace(".", "/") + ".py"
+            if (project_root / path).is_file():
+                imports.add(path)
+    return imports
+
+
+def discover_critical_source_files(project_root: Path) -> tuple[str, ...]:
+    """Return the transitive local dependencies of economic entry points."""
+    pending = list(ECONOMIC_ENTRYPOINTS)
+    discovered: set[str] = set()
+    while pending:
+        relative = pending.pop()
+        for dependency in _local_imports(project_root, relative):
+            if dependency not in discovered:
+                discovered.add(dependency)
+                pending.append(dependency)
+    return tuple(sorted(discovered))
+
+
+CRITICAL_FILES = tuple(
+    dict.fromkeys((*STATIC_CRITICAL_FILES, *discover_critical_source_files(PROJECT_ROOT)))
 )
 
 

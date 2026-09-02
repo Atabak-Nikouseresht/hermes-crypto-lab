@@ -530,8 +530,13 @@ def main() -> None:
                     "retrieval; no signal calculation, equity snapshot, or trade was performed"
                 )
                 return
+            snapshot_is_valid = system._validate_snapshot(
+                snapshot, pd.Timestamp(execution_now).tz_convert("UTC")
+            ) is None
             diagnostics = (
-                build_forward_diagnostics(system, snapshot) if schedule_key else {}
+                build_forward_diagnostics(system, snapshot)
+                if schedule_key and snapshot_is_valid
+                else {}
             )
             result = system.run(
                 snapshot,

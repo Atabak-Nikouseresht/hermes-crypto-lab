@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 EXECUTION_PROTOCOL_VERSION = "paper-exec-v3-ask-bid-minspread-utc0010"
+QUOTE_COHERENCE_CONTRACT_VERSION = "quote-coherence-v1-cross-asset-utc"
 ORIGINAL_BACKTEST_PROTOCOL = "sealed-backtest-v1-next-daily-close"
 
 

@@ -26,6 +26,12 @@ ECONOMIC_SPEC_HASH_V2_SHA256 = (
 ECONOMIC_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
     "0b85b8dc4b90e304dfb7ac900d25dcdeca8adf06e4f96ce55a4798eea94bd424"
 )
+QUOTE_COHERENCE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
+    "7413c0683a747c60f261795d20d318d0556f028f878c9441955cbd9bb5a73da6"
+)
+QUOTE_COHERENCE_CONTRACT_HASH_SHA256 = (
+    "8646abfb7664252db276965c6422ff33d8398d58093ba64a45ccecaf90b5f064"
+)
 
 
 def locked_strategy_spec(config: PaperConfig) -> dict[str, Any]:
@@ -170,6 +176,12 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         / "forward_experiment"
         / "governance_amendment_v3_economic_spec.json"
     )
+    quote_coherence_amendment = (
+        project_root / "forward_experiment" / "governance_amendment_v4_quote_coherence.json"
+    )
+    quote_coherence_contract = (
+        project_root / "forward_experiment" / "quote_coherence_contract_v1.json"
+    )
     actual_checkpoint = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     actual_governance = hashlib.sha256(governance.read_bytes()).hexdigest()
     actual_locked = locked_strategy_hash(config)
@@ -178,6 +190,12 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     actual_economic_amendment = hashlib.sha256(
         economic_amendment.read_bytes()
     ).hexdigest()
+    actual_quote_coherence_amendment = hashlib.sha256(
+        quote_coherence_amendment.read_bytes()
+    ).hexdigest()
+    actual_quote_coherence_contract = hashlib.sha256(
+        quote_coherence_contract.read_bytes()
+    ).hexdigest()
     expected = {
         "checkpoint": CHECKPOINT_MANIFEST_HASH_SHA256,
         "governance": GOVERNANCE_HASH_SHA256,
@@ -185,6 +203,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "governance_amendment": GOVERNANCE_AMENDMENT_HASH_SHA256,
         "economic_spec_v2": ECONOMIC_SPEC_HASH_V2_SHA256,
         "economic_governance_amendment": ECONOMIC_GOVERNANCE_AMENDMENT_HASH_SHA256,
+        "quote_coherence_governance_amendment": QUOTE_COHERENCE_GOVERNANCE_AMENDMENT_HASH_SHA256,
+        "quote_coherence_contract": QUOTE_COHERENCE_CONTRACT_HASH_SHA256,
     }
     actual = {
         "checkpoint": actual_checkpoint,
@@ -193,6 +213,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "governance_amendment": actual_amendment,
         "economic_spec_v2": actual_economic_spec,
         "economic_governance_amendment": actual_economic_amendment,
+        "quote_coherence_governance_amendment": actual_quote_coherence_amendment,
+        "quote_coherence_contract": actual_quote_coherence_contract,
     }
     if actual != expected:
         raise ValueError(f"Forward trust-anchor mismatch: expected={expected}, actual={actual}")
@@ -211,6 +233,14 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         project_root
         / "forward_experiment"
         / "governance_amendment_v3_economic_spec.json.sha256",
+    )
+    verify_immutable_manifest(
+        quote_coherence_amendment,
+        project_root / "forward_experiment" / "governance_amendment_v4_quote_coherence.json.sha256",
+    )
+    verify_immutable_manifest(
+        quote_coherence_contract,
+        project_root / "forward_experiment" / "quote_coherence_contract_v1.json.sha256",
     )
     amendment_payload = json.loads(amendment.read_text(encoding="utf-8"))
     if amendment_payload["base_governance_sha256"] != actual_governance:
@@ -237,6 +267,22 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         )
     ):
         raise ValueError("Economic integrity amendment declares a prohibited research change")
+    quote_payload = json.loads(quote_coherence_amendment.read_text(encoding="utf-8"))
+    if quote_payload["prior_economic_governance_amendment_sha256"] != actual_economic_amendment:
+        raise ValueError("Quote coherence amendment does not anchor economic governance")
+    if quote_payload["quote_coherence_contract_sha256"] != actual_quote_coherence_contract:
+        raise ValueError("Quote coherence amendment does not anchor its future-only contract")
+    if any(
+        quote_payload[field]
+        for field in (
+            "strategy_reselection",
+            "parameter_retuning",
+            "research_results_changed",
+            "historical_protocol_records_rewritten",
+            "economic_spec_changed",
+        )
+    ):
+        raise ValueError("Quote coherence amendment declares a prohibited historical or economic change")
     declared_schedule = amendment_payload["operational_schedule"]
     actual_schedule = {
         "schedule_weekday": config.schedule_weekday,

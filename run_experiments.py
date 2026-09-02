@@ -27,19 +27,27 @@ from src.experiment_runner import (
     benchmark_metrics_for_period,
     evaluate_candidate_period,
     load_close_prices_through,
-    load_common_timestamp_index,
 )
 from src.logging_config import configure_logging
+from src.research_data import load_canonical_timestamp_index
 
 LOGGER = logging.getLogger(__name__)
 SCORING_RULE = (
     "stage score = Sharpe + 0.25*Calmar - 0.75*max_drawdown "
     "- 0.02*annualized_turnover; training selection = 0.25*candidate score "
     "+ 0.75*one-parameter-neighborhood median - 0.50*neighborhood dispersion; "
-    "lock score = 0.25*training region score + 0.35*validation score "
-    "+ 0.40*walk-forward median - 0.25*|training-validation| "
-    "- 0.25*walk-forward dispersion"
+    "future lock score = 0.40*training region score + 0.60*validation score "
+    "- 0.25*|training-validation|; non-overlapping walk-forward folds are diagnostics only"
 )
+METHODOLOGY_VERSION = "future-selection-v2-nonoverlap-oos"
+
+
+def future_lock_score(*, selection_score: float, validation_score: float) -> float:
+    return float(
+        0.40 * selection_score
+        + 0.60 * validation_score
+        - 0.25 * abs(selection_score - validation_score)
+    )
 
 
 def _period_payload(period: Period) -> dict[str, str]:
@@ -62,6 +70,7 @@ def _evaluation_record(
     }
     if fold is not None:
         record["fold"] = fold
+        record["scored_for_lock"] = False
     return record
 
 
@@ -93,7 +102,7 @@ def _evaluate_stage_candidate(
 def run_controlled_experiments(project_root: Path | None = None) -> dict[str, Any]:
     settings = load_settings(project_root)
     configure_logging(settings.logs_dir, settings.log_level)
-    assets = load_assets(settings.assets_config)
+    assets = load_assets(settings.project_root / "config" / "assets.yaml")
     strategy_config, backtest_config = load_run_configuration(settings.project_root)
     config_payload = yaml.safe_load(
         (settings.project_root / "config" / "strategy.yaml").read_text(encoding="utf-8")
@@ -105,8 +114,8 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
         raise PermissionError("Live trading must remain disabled")
 
     candidates = generate_candidate_grid(config_payload["parameter_grid"])
-    common_index = load_common_timestamp_index(
-        settings.processed_dir, assets, settings.timeframe
+    common_index, dataset_provenance = load_canonical_timestamp_index(
+        settings.processed_dir, assets, "1d"
     )
     periods = build_chronological_periods(
         common_index,
@@ -125,6 +134,16 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
         {
             "event": "run_started",
             "run_id": run_id,
+            "methodology_version": METHODOLOGY_VERSION,
+            "canonical_run": True,
+            "dataset_provenance": dataset_provenance,
+            "effective_configuration": {
+                "strategy": config_payload["strategy"],
+                "backtest": asdict(backtest_config),
+                "assets": assets,
+                "timeframe": "1d",
+                "experiment": experiment_config,
+            },
             "unique_candidate_count": len(candidates),
             "backtest": {
                 **asdict(backtest_config),
@@ -146,7 +165,7 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
 
     # Stage 1: the Parquet reader is physically bounded at training_end.
     training_prices = load_close_prices_through(
-        settings.processed_dir, assets, settings.timeframe, periods.training.end
+        settings.processed_dir, assets, "1d", periods.training.end
     )
     ledger.append(
         {
@@ -194,7 +213,7 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
 
     # Stage 2: validation values become available only after finalists are fixed.
     validation_prices = load_close_prices_through(
-        settings.processed_dir, assets, settings.timeframe, periods.validation.end
+        settings.processed_dir, assets, "1d", periods.validation.end
     )
     ledger.append(
         {
@@ -240,7 +259,7 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
                 strategy_config=strategy_config,
                 backtest_config=backtest_config,
                 benchmark_metrics=fold_benchmarks,
-                stage="walk_forward",
+                stage="rolling_pretest_evaluation",
                 fold=fold_number,
                 ledger=ledger,
             )
@@ -255,16 +274,12 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
         fold_scores = walk_forward_scores[candidate_id]
         walk_median = float(median(fold_scores))
         walk_dispersion = float(pstdev(fold_scores)) if len(fold_scores) > 1 else 0.0
-        train_base = training_scores[candidate_id]
         validation_score = validation_scores[candidate_id]
-        instability_penalty = (
-            0.25 * abs(train_base - validation_score) + 0.25 * walk_dispersion
-        )
-        lock_score = (
-            0.25 * float(stability[candidate_id]["selection_score"])
-            + 0.35 * validation_score
-            + 0.40 * walk_median
-            - instability_penalty
+        selection_score = float(stability[candidate_id]["selection_score"])
+        instability_penalty = 0.25 * abs(selection_score - validation_score)
+        lock_score = future_lock_score(
+            selection_score=selection_score,
+            validation_score=validation_score,
         )
         finalist_summaries.append(
             {
@@ -276,6 +291,10 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
                 "validation_score": validation_score,
                 "walk_forward_median": walk_median,
                 "walk_forward_dispersion": walk_dispersion,
+                "walk_forward_scored_for_lock": False,
+                "rolling_pretest_median": walk_median,
+                "rolling_pretest_dispersion": walk_dispersion,
+                "rolling_pretest_scored_for_lock": False,
                 "instability_penalty": instability_penalty,
                 "lock_score": lock_score,
             }
@@ -300,7 +319,7 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
     # Stage 3: this is the first close-value read that includes the final test.
     gate.assert_test_access(locked_candidate.candidate_id)
     test_prices = load_close_prices_through(
-        settings.processed_dir, assets, settings.timeframe, periods.final_test.end
+        settings.processed_dir, assets, "1d", periods.final_test.end
     )
     ledger.append(
         {
@@ -373,15 +392,30 @@ def run_controlled_experiments(project_root: Path | None = None) -> dict[str, An
             "walk_forward": [
                 _period_payload(period) for period in periods.walk_forward
             ],
+            "rolling_pretest_evaluation": [
+                _period_payload(period) for period in periods.walk_forward
+            ],
         },
         "training_records": training_records,
         "validation_records": validation_records,
         "walk_forward_records": walk_forward_records,
+        "rolling_pretest_evaluation_records": walk_forward_records,
+        "walk_forward_fields_are_legacy_compatibility_labels": True,
         "finalists": finalist_summaries,
         "locked_candidate": locked_summary,
         "final_test": final_test_record,
         "live_promotion": False,
         "scoring_rule": SCORING_RULE,
+        "methodology_version": METHODOLOGY_VERSION,
+        "canonical_run": True,
+        "dataset_provenance": dataset_provenance,
+        "effective_configuration": {
+            "strategy": config_payload["strategy"],
+            "backtest": asdict(backtest_config),
+            "assets": assets,
+            "timeframe": "1d",
+            "experiment": experiment_config,
+        },
         "fees_and_slippage_included": True,
     }
     paths = write_experiment_reports(output_dir, summary)

@@ -194,6 +194,11 @@ def test_repository_governance_uses_code_anchored_release_hashes():
     assert "governance_amendment" in verified
     assert verified["economic_spec_v2"] == economic_spec_hash_v2(config)
     assert "economic_governance_amendment" in verified
+    assert "quote_coherence_governance_amendment" in verified
+    assert "quote_coherence_contract" in verified
+    assert economic_spec_hash_v2(
+        replace(config, max_quote_timestamp_skew_seconds=31)
+    ) == economic_spec_hash_v2(config)
 
 
 def test_repository_governance_amendment_rejects_schedule_drift():

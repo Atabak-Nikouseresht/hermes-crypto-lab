@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import uuid
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -197,8 +198,13 @@ def commit_operational_failure(
 ) -> PaperRunResult:
     """Commit an operational failure as a terminal run without trading."""
     now_ts = pd.Timestamp(now).tz_convert("UTC")
-    run_id = "paper_failure_" + now_ts.strftime("%Y%m%dT%H%M%S%fZ")
+    run_id = "paper_failure_" + now_ts.strftime("%Y%m%dT%H%M%S%fZ") + "_" + uuid.uuid4().hex[:8]
     schedule_key = system._scheduled_key(now_ts)
+    transient_data_halt = outcome == "DATA_QUALITY_FAILURE"
+    if transient_data_halt:
+        # Invalid public evidence is not a committed schedule outcome: a valid
+        # retry remains permissible until the governed window closes.
+        schedule_key = None
     if schedule_key and system.store.schedule_exists(schedule_key):
         return PaperRunResult(
             run_id,
@@ -216,7 +222,6 @@ def commit_operational_failure(
         data_timestamp=None,
     )
     if outcome in {
-        "DATA_QUALITY_FAILURE",
         "RECONCILIATION_FAILURE",
         "KILL_SWITCH_ACTIVATED",
     } and system.store.account()["status"] == "ACTIVE":
@@ -245,13 +250,14 @@ def commit_operational_failure(
         scheduled_for = target.to_pydatetime()
     else:
         scheduled_for = None
-    system.store.record_forward_incident(
-        incident_type=outcome,
-        reason=message,
-        now=now_ts.to_pydatetime(),
-        run_id=run_id,
-        scheduled_for=scheduled_for,
-    )
+    if not transient_data_halt:
+        system.store.record_forward_incident(
+            incident_type=outcome,
+            reason=message,
+            now=now_ts.to_pydatetime(),
+            run_id=run_id,
+            scheduled_for=scheduled_for,
+        )
     return PaperRunResult(run_id, outcome, message, outcome=outcome)
 
 
@@ -320,6 +326,8 @@ def classify_outcome(
     result: PaperRunResult,
     diagnostics: dict[str, Any],
 ) -> str:
+    if result.status == "DATA_HALT":
+        return "DATA_QUALITY_FAILURE"
     if result.status == "KILL_SWITCH":
         message = result.message.lower()
         if "mismatch" in message or "reconcil" in message or "negative persistent" in message:
@@ -376,6 +384,9 @@ def finalize_forward_run(
         ).fetchone()
     if row is None or row[0] == "RUNNING" or row[1] is None:
         raise RuntimeError("Cannot finalize forward diagnostics before paper transaction finalization")
+    if result.status == "DATA_HALT":
+        outcome = "DATA_QUALITY_FAILURE"
+        return replace(result, outcome=outcome, diagnostics={})
     committed_evidence = system.store.committed_forward_evidence(result.run_id)
     if committed_evidence is not None:
         diagnostics, observed_prices, observed_at = committed_evidence

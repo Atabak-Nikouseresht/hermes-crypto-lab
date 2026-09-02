@@ -46,11 +46,12 @@ def write_experiment_reports(
 
     walk_forward_report = output_dir / "walk_forward_validation.md"
     wf_lines = [
-        "# Walk-forward validation",
+        "# Rolling pre-test evaluation",
         "",
         f"- Run ID: `{summary['run_id']}`",
         f"- Finalists: `{len(summary.get('finalists', []))}`",
-        "- Final test data was excluded from every walk-forward fold.",
+        "- Historical artifact fields and filenames retain the legacy `walk_forward` compatibility label.",
+        "- Final test data was excluded from every rolling pre-test fold.",
         "- Fees and adverse slippage are included in every evaluation.",
         "",
         "| Candidate | Fold | Start | End | Penalized score | CAGR | Sharpe | Max drawdown | Turnover |",
@@ -86,7 +87,7 @@ def write_experiment_reports(
         "",
         "## Stable-region finalists",
         "",
-        "| Candidate | Training region score | Validation score | Walk-forward median | Instability penalty | Lock score |",
+        "| Candidate | Training region score | Validation score | Rolling pre-test median | Instability penalty | Lock score |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for finalist in summary.get("finalists", []):

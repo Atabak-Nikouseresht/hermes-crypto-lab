@@ -144,6 +144,9 @@ Commands below are executed from the repository root and use Windows virtual-env
 .venv/Scripts/python.exe run_backtest.py
 ```
 
+This command runs the historical fixed baseline. It is not automatically the
+canonical evaluation of the locked forward candidate.
+
 ### Inspect paper state without trading
 
 ```bash
@@ -242,6 +245,7 @@ See [Forward validation](docs/forward-validation.md) and [Governance](docs/gover
 - [Testing and verification](docs/testing.md)
 - [Audit evidence index](audits/README.md)
 - [Repository and artifact policy](docs/repository-policy.md)
+- [Future research version requirements](docs/future-research-v2.md)
 - [Public history rewrite and commit mapping](docs/public-history-rewrite.md)
 - [Security policy](SECURITY.md)
 

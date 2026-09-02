@@ -17,7 +17,7 @@
     "safety": "Audit-only: no market fetch, signal generation, equity snapshot, execution, or backdated trade",
     "script": "paper_forward_audit.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "c1bc25a58c4df0a2e0317e1fe1043b8e574d596fe3af99b6bbac4e5a00a552e9"
+    "wrapper_sha256": "abb7fcb11405f4b6da5ab1da8b68df661000b20765ecb64895c00aa6fe4715b5"
   },
   "monthly_job": {
     "deliver": "local",
@@ -25,9 +25,10 @@
     "hermes_trigger": "0 9 1 * *",
     "name": "crypto-paper-forward-monthly",
     "no_agent": true,
+    "permitted_window_utc": "Day 1 09:00-09:15",
     "script": "paper_forward_monthly.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "fb2c76f58dbd4eb9c5176f159fac41b76390454d66b87420b8ce3e038b8b2fe7"
+    "wrapper_sha256": "aba208a95e702b49f365bf1c4e2b2fda46decbe3cd514021ebbf2d8dc4e82495"
   },
   "publication_note": "Portable static source contract; runtime deployment observations remain local. Historical scheduler-state changes remain visible in ordinary Git history, while sealed baseline hash commitments remain untouched.",
   "scheduler_design": "All deterministic jobs are Hermes no-agent scripts. Weekly launches may retry inside Monday 00:05-00:20 UTC after transient or pre-execution failure; DB schedule idempotency and the global writer lock prevent duplicate committed trades. The 00:21 audit records missed windows without market access or trading. Wrapper paths and hashes are checked against installed copies. The laptop must be powered on and the interactive user session available; this is not high-availability infrastructure.",
@@ -41,7 +42,7 @@
     "permitted_window_utc": "Monday 00:05-00:20",
     "script": "paper_forward_weekly.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "115143e5d4aa85b9a2d847bb5eeae2b1b9b9499c9ac0f86cdafeafa9af5f5a97"
+    "wrapper_sha256": "6a95c8c035082cf585dedb76bd9c202c21dffd5dfc18a1cc40e3169d9292cfc0"
   },
   "windows_task_scheduler_watchdog": {
     "multiple_instances": "IgnoreNew",

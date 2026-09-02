@@ -31,6 +31,9 @@ def test_experiment_reports_include_trial_count_walk_forward_and_no_live_promoti
     paths = write_experiment_reports(tmp_path, summary)
 
     assert paths["walk_forward_report"].exists()
+    report = paths["walk_forward_report"].read_text(encoding="utf-8")
+    assert "# Rolling pre-test evaluation" in report
+    assert "legacy `walk_forward` compatibility" in report
     assert paths["robustness_report"].exists()
     assert paths["summary_json"].exists()
     robustness = paths["robustness_report"].read_text(encoding="utf-8")

@@ -47,6 +47,15 @@ jobs:
       - name: Run static quality gate
         run: python -m ruff check .
 
+      - name: Run scoped static typing
+        run: python -m mypy src/validate_data.py src/storage.py src/hardening_manifest.py
+
+      - name: Run standard security lint
+        run: >-
+          python -m ruff check src run_backtest.py run_data_pipeline.py
+          run_experiments.py run_monthly_report.py run_paper.py scripts
+          --select S --ignore S101,S603,S607,S310
+
       - name: Verify public-only execution boundary
         run: python scripts/verify_safety.py
 
@@ -82,6 +91,7 @@ jobs:
           python -m pytest tests -q
           --cov=src
           --cov=run_paper
+          --cov=scripts.paper_forward_monthly
           --cov-branch
           --cov-report=term
           --cov-fail-under=75
@@ -94,3 +104,6 @@ jobs:
           python -m coverage report --precision=2 --include=src/paper_store.py --fail-under=85
           python -m coverage report --precision=2 --include=src/forward_operations.py --fail-under=85
           python -m coverage report --precision=2 --include=src/statistical_diagnostics.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/download_data.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/experiment_runner.py --fail-under=80
+          python -m coverage report --precision=2 --include=scripts/paper_forward_monthly.py --fail-under=80

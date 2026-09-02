@@ -42,7 +42,7 @@
     "permitted_window_utc": "Monday 00:05-00:20",
     "script": "paper_forward_weekly.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "f66082c04a094ae977c1326b3ecf1e464f280919ce0ddfe9aa0f331231314573"
+    "wrapper_sha256": "6a95c8c035082cf585dedb76bd9c202c21dffd5dfc18a1cc40e3169d9292cfc0"
   },
   "windows_task_scheduler_watchdog": {
     "multiple_instances": "IgnoreNew",

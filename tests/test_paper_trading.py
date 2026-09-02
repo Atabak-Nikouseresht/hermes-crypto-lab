@@ -78,6 +78,21 @@ def test_quote_timestamp_skew_fails_closed(tmp_path):
     assert "timestamp skew" in system._validate_snapshot(snapshot, now).lower()
 
 
+def test_quote_skew_contract_is_persisted_for_new_execution_context(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "quote-contract.duckdb", _config())
+
+    result = system.run(_snapshot(now), now=now, dry_run=False)
+
+    with system.store.connect(read_only=True) as connection:
+        row = connection.execute(
+            "SELECT contract_version, max_timestamp_skew_seconds "
+            "FROM paper_quote_coherence_context WHERE run_id=?",
+            [result.run_id],
+        ).fetchone()
+    assert row == ("quote-coherence-v1-cross-asset-utc", 30)
+
+
 @pytest.mark.parametrize(
     ("proposed", "executed", "rejected", "expected"),
     [
@@ -1147,6 +1162,52 @@ def test_stale_market_data_causes_retryable_data_halt(tmp_path):
     assert system.store.account()["status"] == "ACTIVE"
 
 
+def test_transient_operational_data_halt_does_not_consume_governed_schedule(tmp_path):
+    from src.paper_forward import commit_operational_failure
+
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "transient-data-halt.duckdb", _config())
+
+    result = commit_operational_failure(
+        system,
+        outcome="DATA_QUALITY_FAILURE",
+        message="public ticker unavailable",
+        now=now,
+    )
+
+    assert result.outcome == "DATA_QUALITY_FAILURE"
+    assert not system.store.schedule_exists("2024-08-05T09:05Z")
+    assert not system.store.forward_window_exists("2024-08-05T09:05Z")
+    assert system.store.account()["status"] == "ACTIVE"
+
+
+def test_data_halt_allows_valid_retry_inside_same_governed_window(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    retry_at = datetime(2024, 8, 5, 9, 11, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "data-halt-retry.duckdb", _config())
+
+    halted = system.run(_snapshot(now, stale_days=2), now=now, dry_run=False)
+    succeeded = system.run(_snapshot(retry_at), now=retry_at, dry_run=False)
+
+    assert halted.status == "DATA_HALT"
+    assert succeeded.status == "EXECUTED"
+    assert system.store.schedule_exists("2024-08-05T09:05Z")
+
+
+def test_repeated_data_halts_never_create_orders_or_consume_schedule(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "repeated-data-halt.duckdb", _config())
+
+    for minute in (10, 11):
+        attempt = now.replace(minute=minute)
+        halted = system.run(_snapshot(attempt, stale_days=2), now=attempt, dry_run=False)
+        assert halted.status == "DATA_HALT"
+
+    with system.store.connect(read_only=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM paper_orders").fetchone()[0] == 0
+    assert not system.store.schedule_exists("2024-08-05T09:05Z")
+
+
 def test_data_halt_does_not_persist_synthetic_forward_observation_or_baseline(tmp_path):
     from src.paper_forward import finalize_forward_run
 
@@ -1278,7 +1339,7 @@ def test_snapshot_validation_reports_structural_market_data_failures(tmp_path):
         assert expected in message
 
 
-def test_operational_failure_is_terminal_idempotent_schedule_evidence(tmp_path):
+def test_repeated_transient_operational_failures_remain_retryable(tmp_path):
     from src.paper_forward import commit_operational_failure
 
     now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
@@ -1309,8 +1370,8 @@ def test_operational_failure_is_terminal_idempotent_schedule_evidence(tmp_path):
             "(SELECT COUNT(*) FROM forward_incidents)"
         ).fetchone()
     assert first.status == "DATA_QUALITY_FAILURE"
-    assert second.status == "DUPLICATE_SCHEDULE"
-    assert (run_count, window_count, incident_count) == (1, 1, 1)
+    assert second.status == "DATA_QUALITY_FAILURE"
+    assert (run_count, window_count, incident_count) == (2, 0, 0)
     assert system.store.account()["status"] == "ACTIVE"
 
 

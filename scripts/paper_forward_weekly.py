@@ -28,11 +28,12 @@ def main(
     *,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     sleeper: Callable[[float], None] = time.sleep,
+    python_resolver: Callable[[Path], Path] = resolve_project_python,
 ) -> int:
     current = now or clock()
     if not should_launch(current):
         return 0
-    command = [str(resolve_project_python(PROJECT)), str(SCRIPT), "--paper"]
+    command = [str(python_resolver(PROJECT)), str(SCRIPT), "--paper"]
     last_code = 1
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:

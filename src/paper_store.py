@@ -285,6 +285,14 @@ class PaperStore:
                     execution_outcome VARCHAR NOT NULL,
                     recorded_at_utc TIMESTAMPTZ NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS paper_quote_coherence_context (
+                    run_id VARCHAR PRIMARY KEY,
+                    contract_version VARCHAR NOT NULL,
+                    max_timestamp_skew_seconds INTEGER NOT NULL,
+                    earliest_quote_timestamp_utc TIMESTAMPTZ NOT NULL,
+                    latest_quote_timestamp_utc TIMESTAMPTZ NOT NULL,
+                    recorded_at_utc TIMESTAMPTZ NOT NULL
+                );
                 """
             )
             connection.execute(
@@ -297,6 +305,10 @@ class PaperStore:
             )
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES (4, ?, 'experiment-scoped windows and incidents')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (5, ?, 'quote coherence contract provenance')",
                 [now],
             )
             connection.execute(

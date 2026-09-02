@@ -14,7 +14,10 @@ from typing import Any
 
 import pandas as pd
 
-from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
+from src.execution_protocol import (
+    EXECUTION_PROTOCOL_VERSION,
+    QUOTE_COHERENCE_CONTRACT_VERSION,
+)
 from src.paper_store import FINAL_EXECUTABLE_LEDGER_SEMANTICS, PaperStore
 from src.strategy import StrategyConfig, generate_signal
 from src.validate_data import validate_ohlcv
@@ -523,6 +526,18 @@ class PaperTradingSystem:
                 for symbol, quantity, average_cost in position_rows
             }
             finalized_close = signal_timestamp + pd.Timedelta(days=1)
+            quote_timestamps = [snapshot.quotes[asset].timestamp for asset in self.config.assets]
+            connection.execute(
+                "INSERT INTO paper_quote_coherence_context VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    run_id,
+                    QUOTE_COHERENCE_CONTRACT_VERSION,
+                    self.config.max_quote_timestamp_skew_seconds,
+                    min(quote_timestamps),
+                    max(quote_timestamps),
+                    now,
+                ],
+            )
             for proposal in proposals:
                 quote = snapshot.quotes[proposal["symbol"]]
                 connection.execute(

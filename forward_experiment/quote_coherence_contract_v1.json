@@ -1,0 +1,15 @@
+{
+  "classification": "additive quote-evidence coherence contract; not a reinterpretation of v3 price, fee, spread, or slippage semantics",
+  "economic_spec_changed": false,
+  "effective_for_new_runs_only": true,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "historical_v3_records_rewritten": false,
+  "rule": {
+    "comparison": "max(quote_timestamp)-min(quote_timestamp) <= tolerance",
+    "failure_mode": "DATA_HALT before proposals, orders, fills, or forward observations",
+    "max_quote_timestamp_skew_seconds": 30
+  },
+  "status": "future-only operational market-evidence admissibility contract",
+  "strategy_or_candidate_changed": false,
+  "version": "quote-coherence-v1-cross-asset-utc"
+}

@@ -41,6 +41,9 @@ CREATE TABLE paper_forward_execution_evidence(run_id VARCHAR PRIMARY KEY, captur
 -- paper_execution_outcomes
 CREATE TABLE paper_execution_outcomes(run_id VARCHAR PRIMARY KEY, execution_outcome VARCHAR NOT NULL, recorded_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
 
+-- paper_quote_coherence_context (future-only; v3 records remain unchanged)
+CREATE TABLE paper_quote_coherence_context(run_id VARCHAR PRIMARY KEY, contract_version VARCHAR NOT NULL, max_timestamp_skew_seconds INTEGER NOT NULL, earliest_quote_timestamp_utc TIMESTAMP WITH TIME ZONE NOT NULL, latest_quote_timestamp_utc TIMESTAMP WITH TIME ZONE NOT NULL, recorded_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
+
 -- paper_fills
 CREATE TABLE paper_fills(fill_id VARCHAR PRIMARY KEY, order_id VARCHAR NOT NULL UNIQUE, run_id VARCHAR NOT NULL, symbol VARCHAR NOT NULL, side VARCHAR NOT NULL, filled_quantity DOUBLE NOT NULL, mid_price DOUBLE NOT NULL, execution_price DOUBLE NOT NULL, spread_cost DOUBLE NOT NULL, slippage_cost DOUBLE NOT NULL, fee DOUBLE NOT NULL, filled_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, execution_protocol_version VARCHAR);;
 

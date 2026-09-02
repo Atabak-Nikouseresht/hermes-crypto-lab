@@ -109,7 +109,8 @@ def test_weekly_dispatch_succeeds_inside_full_governed_window(monkeypatch):
     monkeypatch.setattr(paper_forward_weekly.subprocess, "run", run)
 
     assert paper_forward_weekly.main(
-        datetime(2026, 1, 5, 0, 5, tzinfo=timezone.utc)
+        datetime(2026, 1, 5, 0, 5, tzinfo=timezone.utc),
+        python_resolver=lambda _project: Path("scheduler-python"),
     ) == 0
     assert len(calls) == 1
 
@@ -138,6 +139,7 @@ def test_weekly_dispatch_retries_after_transient_failure_in_same_window(monkeypa
     result = paper_forward_weekly.main(
         clock=lambda: next(times),
         sleeper=lambda _seconds: None,
+        python_resolver=lambda _project: Path("scheduler-python"),
     )
 
     assert result == 0
@@ -155,10 +157,12 @@ def test_weekly_dispatch_delegates_duplicate_prevention_to_committed_run(monkeyp
     monkeypatch.setattr(paper_forward_weekly.subprocess, "run", run)
 
     assert paper_forward_weekly.main(
-        datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc)
+        datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc),
+        python_resolver=lambda _project: Path("scheduler-python"),
     ) == 0
     assert paper_forward_weekly.main(
-        datetime(2026, 1, 5, 0, 12, tzinfo=timezone.utc)
+        datetime(2026, 1, 5, 0, 12, tzinfo=timezone.utc),
+        python_resolver=lambda _project: Path("scheduler-python"),
     ) == 0
     assert len(calls) == 2
 

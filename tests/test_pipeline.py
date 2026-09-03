@@ -45,6 +45,17 @@ def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
         )
     )
     assert manifest["datasets"]["BTC/USDT"]["path"] == "test-run/BTC_USDT_1d.parquet"
+    assert manifest["manifest_schema_version"] == 2
+    assert manifest["source"]["exchange_id"] == "binance"
+    assert manifest["source"]["ccxt_version"]
+    assert manifest["source"]["since"] == settings.since
+    assert manifest["source"]["fetch_limit"] == settings.fetch_limit
+    assert manifest["datasets"]["BTC/USDT"]["raw_path"] == "raw/test-run/BTC_USDT_1d.json"
+    assert manifest["datasets"]["BTC/USDT"]["raw_sha256"]
+    assert manifest["datasets"]["BTC/USDT"]["raw_rows"] == 2
+    assert manifest["datasets"]["BTC/USDT"]["rows"] == 2
+    assert manifest["datasets"]["BTC/USDT"]["start_utc"]
+    assert manifest["datasets"]["BTC/USDT"]["end_utc"]
     immutable_manifest = (
         tmp_path / "data" / "processed" / "test-run" / "dataset_manifest.json"
     )

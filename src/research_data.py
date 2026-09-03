@@ -54,6 +54,7 @@ def _paths_and_manifest(
         datasets = manifest.get("datasets")
         if not isinstance(datasets, dict):
             raise ValueError("Canonical dataset manifest is invalid")
+        provenance_v2 = manifest.get("manifest_schema_version") == 2
         paths: dict[str, Path] = {}
         for asset in assets:
             entry = datasets.get(asset)
@@ -68,8 +69,22 @@ def _paths_and_manifest(
                 candidate.relative_to(processed_dir.resolve())
             except ValueError as error:
                 raise ValueError("Canonical dataset path escapes processed directory") from error
+            if not candidate.is_file():
+                raise ValueError(f"Canonical referenced dataset is missing for {asset}")
             if _sha256(candidate) != entry["sha256"]:
                 raise ValueError(f"Canonical dataset hash mismatch for {asset}")
+            if provenance_v2:
+                raw_path = entry.get("raw_path")
+                raw_sha256 = entry.get("raw_sha256")
+                if not isinstance(raw_path, str) or not isinstance(raw_sha256, str):
+                    raise ValueError(f"Canonical raw provenance is missing for {asset}")
+                raw_candidate = (processed_dir.parent / raw_path).resolve()
+                try:
+                    raw_candidate.relative_to(processed_dir.parent.resolve())
+                except ValueError as error:
+                    raise ValueError("Canonical raw evidence path escapes data directory") from error
+                if not raw_candidate.is_file() or _sha256(raw_candidate) != raw_sha256:
+                    raise ValueError(f"Canonical raw evidence hash mismatch for {asset}")
             paths[asset] = candidate
         return paths, manifest, manifest_path
     raise ValueError("canonical dataset manifest is required")
@@ -98,7 +113,10 @@ def load_canonical_close_prices(
             if end_utc is not None
             else None
         )
-        frame = pd.read_parquet(path, columns=COLUMNS, filters=filters)
+        try:
+            frame = pd.read_parquet(path, columns=COLUMNS, filters=filters)
+        except Exception as error:
+            raise ValueError(f"Canonical Parquet is unreadable for {asset}") from error
         quality = validate_ohlcv(frame)
         numeric = frame[COLUMNS[1:]].apply(pd.to_numeric, errors="coerce")
         finite = numeric.map(lambda value: math.isfinite(float(value))).all(axis=None)
@@ -148,7 +166,10 @@ def load_canonical_timestamp_index(
     datasets: dict[str, dict[str, Any]] = {}
     for asset in assets:
         path = paths[asset]
-        frame = pd.read_parquet(path, columns=["timestamp"])
+        try:
+            frame = pd.read_parquet(path, columns=["timestamp"])
+        except Exception as error:
+            raise ValueError(f"Canonical Parquet is unreadable for {asset}") from error
         index = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
         if not index.is_monotonic_increasing or index.has_duplicates:
             raise ValueError(f"Canonical timestamp validation failed for {asset}")

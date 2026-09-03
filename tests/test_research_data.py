@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from src.research_data import load_canonical_close_prices
+from src.research_data import load_canonical_timestamp_index
 
 
 def _write_asset(path: Path, dates: list[str], closes: list[float]) -> None:
@@ -189,4 +190,225 @@ def test_canonical_loader_rejects_self_referential_manifest_pointer(tmp_path):
     )
 
     with pytest.raises(ValueError, match="immutable version manifest"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+def test_provenance_v2_rejects_tampered_raw_evidence(tmp_path):
+    data = tmp_path / "data"
+    processed = data / "processed"
+    raw = data / "raw" / "run-1" / "BTC_USDT_1d.json"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("[[1704067200000,10,11,9,10,100]]", encoding="utf-8")
+    parquet = processed / "run-1" / "BTC_USDT_1d.parquet"
+    _write_asset(parquet, ["2024-01-01"], [10.0])
+    manifest = {
+        "manifest_schema_version": 2,
+        "run_id": "run-1",
+        "timeframe": "1d",
+        "version_manifest_path": "run-1/dataset_manifest.json",
+        "datasets": {
+            "BTC/USDT": {
+                "path": "run-1/BTC_USDT_1d.parquet",
+                "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest(),
+                "raw_path": "raw/run-1/BTC_USDT_1d.json",
+                "raw_sha256": "0" * 64,
+            }
+        },
+    }
+    immutable = processed / "run-1" / "dataset_manifest.json"
+    immutable.write_text(json.dumps(manifest), encoding="utf-8")
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="raw evidence hash mismatch"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda manifest: manifest.update(version_manifest_path="missing/dataset_manifest.json"), "immutable version manifest"),
+        (lambda manifest: manifest["datasets"]["BTC/USDT"].update(path="../escape.parquet"), "path escapes"),
+        (lambda manifest: manifest["datasets"].pop("BTC/USDT"), "missing BTC/USDT"),
+        (lambda manifest: manifest.update(timeframe="4h"), "timeframe mismatch"),
+    ],
+)
+def test_canonical_loader_rejects_manifest_boundary_mutations(tmp_path, mutate, message):
+    processed = tmp_path / "processed"
+    parquet = processed / "run-1" / "BTC_USDT_1d.parquet"
+    _write_asset(parquet, ["2024-01-01"], [10.0])
+    manifest = {
+        "run_id": "run-1",
+        "timeframe": "1d",
+        "version_manifest_path": "run-1/dataset_manifest.json",
+        "datasets": {
+            "BTC/USDT": {
+                "path": "run-1/BTC_USDT_1d.parquet",
+                "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest(),
+            }
+        },
+    }
+    mutate(manifest)
+    immutable = processed / "run-1" / "dataset_manifest.json"
+    immutable.write_text(json.dumps(manifest), encoding="utf-8")
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+def test_canonical_loader_rejects_malformed_manifest_and_unreadable_parquet(tmp_path):
+    processed = tmp_path / "processed"
+    (processed / "dataset_manifest.json").parent.mkdir(parents=True)
+    (processed / "dataset_manifest.json").write_text("{not-json", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+    parquet = processed / "run-1" / "BTC_USDT_1d.parquet"
+    parquet.parent.mkdir(parents=True, exist_ok=True)
+    parquet.write_bytes(b"not parquet")
+    manifest = {
+        "run_id": "run-1",
+        "timeframe": "1d",
+        "version_manifest_path": "run-1/dataset_manifest.json",
+        "datasets": {"BTC/USDT": {"path": "run-1/BTC_USDT_1d.parquet", "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest()}},
+    }
+    (processed / "run-1" / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="Parquet is unreadable"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+def test_canonical_timestamp_loader_rejects_empty_end_filter_and_negative_volume(tmp_path):
+    processed = tmp_path / "processed"
+    _write_asset(processed / "BTC_USDT_1d.parquet", ["2024-01-01"], [10.0])
+    _write_manifest(processed)
+    with pytest.raises(ValueError, match="empty_dataset"):
+        load_canonical_close_prices(
+            processed, ["BTC/USDT"], "1d", end=pd.Timestamp("2023-12-31T00:00:00Z")
+        )
+    index, _provenance = load_canonical_timestamp_index(processed, ["BTC/USDT"], "1d")
+    assert index[0] == pd.Timestamp("2024-01-01T00:00:00Z")
+
+    frame = pd.read_parquet(processed / "BTC_USDT_1d.parquet")
+    frame.loc[0, "volume"] = -1.0
+    frame.to_parquet(processed / "BTC_USDT_1d.parquet", index=False)
+    _write_manifest(processed)
+    with pytest.raises(ValueError, match="canonical OHLCV validation failed"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+def test_timestamp_index_loader_rejects_non_daily_and_calendar_mismatch(tmp_path):
+    processed = tmp_path / "processed"
+    _write_asset(
+        processed / "BTC_USDT_1d.parquet",
+        ["2024-01-01", "2024-01-02", "2024-01-03"],
+        [10.0, 11.0, 12.0],
+    )
+    _write_asset(
+        processed / "ETH_USDT_1d.parquet",
+        ["2024-01-01", "2024-01-03"],
+        [20.0, 22.0],
+    )
+    _write_manifest(processed)
+
+    with pytest.raises(ValueError, match="1d timeframe"):
+        load_canonical_timestamp_index(processed, ["BTC/USDT"], "4h")
+    with pytest.raises(ValueError, match="missing daily candles"):
+        load_canonical_timestamp_index(processed, ["BTC/USDT", "ETH/USDT"], "1d")
+
+
+def test_canonical_loader_rejects_missing_referenced_dataset(tmp_path):
+    processed = tmp_path / "processed"
+    manifest = {
+        "run_id": "run-1",
+        "timeframe": "1d",
+        "version_manifest_path": "run-1/dataset_manifest.json",
+        "datasets": {"BTC/USDT": {"path": "run-1/missing.parquet", "sha256": "0" * 64}},
+    }
+    immutable = processed / "run-1" / "dataset_manifest.json"
+    immutable.parent.mkdir(parents=True)
+    immutable.write_text(json.dumps(manifest), encoding="utf-8")
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="referenced dataset is missing"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+def test_canonical_loader_rejects_pointer_mismatch_and_manifest_path_escape(tmp_path):
+    processed = tmp_path / "processed"
+    parquet = processed / "run-1" / "BTC_USDT_1d.parquet"
+    _write_asset(parquet, ["2024-01-01"], [10.0])
+    manifest = {
+        "run_id": "run-1",
+        "timeframe": "1d",
+        "version_manifest_path": "run-1/dataset_manifest.json",
+        "datasets": {
+            "BTC/USDT": {
+                "path": "run-1/BTC_USDT_1d.parquet",
+                "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest(),
+            }
+        },
+    }
+    immutable = processed / "run-1" / "dataset_manifest.json"
+    immutable.write_text(json.dumps({**manifest, "run_id": "other"}), encoding="utf-8")
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="pointer and immutable manifest mismatch"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+    manifest["version_manifest_path"] = "../escape.json"
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest path escapes"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+def test_canonical_loader_rejects_missing_schema_and_nonmonotonic_timestamps(tmp_path):
+    processed = tmp_path / "processed"
+    parquet = processed / "BTC_USDT_1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    pd.DataFrame({"timestamp": [pd.Timestamp("2024-01-01T00:00:00Z")]}).to_parquet(
+        parquet, index=False
+    )
+    _write_manifest(processed)
+    with pytest.raises(ValueError, match="Parquet is unreadable"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+    _write_asset(
+        parquet,
+        ["2024-01-02", "2024-01-01"],
+        [11.0, 10.0],
+    )
+    _write_manifest(processed)
+    with pytest.raises(ValueError, match="timestamp order"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+def test_provenance_v2_rejects_missing_or_escaped_raw_evidence(tmp_path):
+    data = tmp_path / "data"
+    processed = data / "processed"
+    parquet = processed / "run-1" / "BTC_USDT_1d.parquet"
+    _write_asset(parquet, ["2024-01-01"], [10.0])
+    manifest = {
+        "manifest_schema_version": 2,
+        "run_id": "run-1",
+        "timeframe": "1d",
+        "version_manifest_path": "run-1/dataset_manifest.json",
+        "datasets": {
+            "BTC/USDT": {
+                "path": "run-1/BTC_USDT_1d.parquet",
+                "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest(),
+                "raw_path": "raw/run-1/missing.json",
+                "raw_sha256": "0" * 64,
+            }
+        },
+    }
+    immutable = processed / "run-1" / "dataset_manifest.json"
+    immutable.write_text(json.dumps(manifest), encoding="utf-8")
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="raw evidence hash mismatch"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+    manifest["datasets"]["BTC/USDT"]["raw_path"] = "../escape.json"
+    immutable.write_text(json.dumps(manifest), encoding="utf-8")
+    (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="raw evidence path escapes"):
         load_canonical_close_prices(processed, ["BTC/USDT"], "1d")

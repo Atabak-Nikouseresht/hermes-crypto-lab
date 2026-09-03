@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import subprocess
 
 import duckdb
 import pytest
@@ -7,6 +8,7 @@ import pytest
 import run_data_pipeline
 from run_data_pipeline import run_pipeline
 from src.config import Settings
+
 
 
 def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
@@ -34,6 +36,7 @@ def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
         downloader=lambda _exchange, _symbol, **_kwargs: rows,
         exchange=object(),
         run_id="test-run",
+        git_provenance=lambda _root: ("a" * 40, False),
     )
 
     assert (tmp_path / "data" / "raw" / "test-run" / "BTC_USDT_1d.json").exists()
@@ -50,6 +53,8 @@ def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
     assert manifest["source"]["ccxt_version"]
     assert manifest["source"]["since"] == settings.since
     assert manifest["source"]["fetch_limit"] == settings.fetch_limit
+    assert manifest["ingestion_git_commit"] == "a" * 40
+    assert manifest["git_dirty"] is False
     assert manifest["datasets"]["BTC/USDT"]["raw_path"] == "raw/test-run/BTC_USDT_1d.json"
     assert manifest["datasets"]["BTC/USDT"]["raw_sha256"]
     assert manifest["datasets"]["BTC/USDT"]["raw_rows"] == 2
@@ -65,6 +70,29 @@ def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
     with duckdb.connect(str(settings.database_path), read_only=True) as connection:
         assert connection.execute("SELECT status FROM ingestion_runs").fetchone()[0] == "completed"
         assert connection.execute("SELECT COUNT(*) FROM dataset_metadata").fetchone()[0] == 1
+
+
+def test_git_provenance_supports_clean_dirty_and_unavailable(monkeypatch, tmp_path):
+    clean = iter(
+        [
+            subprocess.CompletedProcess([], 0, "a" * 40 + "\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+    )
+    monkeypatch.setattr(run_data_pipeline.subprocess, "run", lambda *_args, **_kwargs: next(clean))
+    assert run_data_pipeline._git_provenance(tmp_path) == ("a" * 40, False)
+
+    dirty = iter(
+        [
+            subprocess.CompletedProcess([], 0, "b" * 40 + "\n", ""),
+            subprocess.CompletedProcess([], 0, " M data/file\n", ""),
+        ]
+    )
+    monkeypatch.setattr(run_data_pipeline.subprocess, "run", lambda *_args, **_kwargs: next(dirty))
+    assert run_data_pipeline._git_provenance(tmp_path) == ("b" * 40, True)
+
+    monkeypatch.setattr(run_data_pipeline.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no git")))
+    assert run_data_pipeline._git_provenance(tmp_path) == ("unavailable", None)
 
 
 def test_pipeline_rejects_non_daily_canonical_data(tmp_path):

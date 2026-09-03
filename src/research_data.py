@@ -6,11 +6,16 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
 
 from src.validate_data import COLUMNS, validate_ohlcv
+
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def _sha256(path: Path) -> str:
@@ -23,6 +28,62 @@ def _sha256(path: Path) -> str:
 
 def _safe(asset: str) -> str:
     return asset.replace("/", "_").replace(":", "_")
+
+
+def _validate_schema_v2(manifest: dict[str, Any], processed_dir: Path) -> None:
+    source = manifest.get("source")
+    if (
+        not isinstance(manifest.get("run_id"), str)
+        or not manifest["run_id"]
+        or not isinstance(source, dict)
+        or not all(
+            isinstance(source.get(field), str) and source[field]
+            for field in ("exchange_id", "ccxt_version", "since")
+        )
+    ):
+        raise ValueError("Canonical schema-v2 manifest has invalid required provenance")
+    commit = manifest.get("ingestion_git_commit")
+    dirty = manifest.get("git_dirty")
+    if commit == "unavailable":
+        if dirty is not None:
+            raise ValueError("Canonical schema-v2 unavailable Git provenance must use null git_dirty")
+    elif not isinstance(commit, str) or _GIT_COMMIT_RE.fullmatch(commit) is None or not isinstance(dirty, bool):
+        raise ValueError("Canonical schema-v2 manifest has invalid Git provenance")
+    datasets = manifest.get("datasets")
+    if not isinstance(datasets, dict) or not datasets:
+        raise ValueError("Canonical schema-v2 manifest has invalid datasets")
+    data_root = processed_dir.parent.resolve()
+    for asset, entry in datasets.items():
+        if not isinstance(asset, str) or not isinstance(entry, dict):
+            raise ValueError("Canonical schema-v2 manifest has invalid dataset entry")
+        for field in ("path", "raw_path", "start_utc", "end_utc"):
+            if not isinstance(entry.get(field), str) or not entry[field]:
+                raise ValueError(f"Canonical schema-v2 manifest is missing {field} for {asset}")
+        for field in ("sha256", "raw_sha256"):
+            if not isinstance(entry.get(field), str) or _SHA256_RE.fullmatch(entry[field]) is None:
+                raise ValueError(f"Canonical schema-v2 manifest has invalid {field} for {asset}")
+        if (
+            not isinstance(entry.get("rows"), int)
+            or not isinstance(entry.get("raw_rows"), int)
+            or entry["rows"] <= 0
+            or entry["raw_rows"] < entry["rows"]
+        ):
+            raise ValueError(f"Canonical schema-v2 manifest has invalid row counts for {asset}")
+        try:
+            start = pd.Timestamp(entry["start_utc"])
+            end = pd.Timestamp(entry["end_utc"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Canonical schema-v2 manifest has invalid UTC bounds for {asset}") from error
+        if start.tzinfo is None or end.tzinfo is None or start > end:
+            raise ValueError(f"Canonical schema-v2 manifest has invalid UTC bounds for {asset}")
+        for root, relative, label in (
+            (processed_dir.resolve(), entry["path"], "dataset"),
+            (data_root, entry["raw_path"], "raw evidence"),
+        ):
+            try:
+                (root / relative).resolve().relative_to(root)
+            except ValueError as error:
+                raise ValueError(f"Canonical schema-v2 {label} path escapes data directory") from error
 
 
 def _paths_and_manifest(
@@ -51,10 +112,16 @@ def _paths_and_manifest(
         manifest_path = candidate_manifest
         if manifest.get("timeframe") != timeframe:
             raise ValueError("Canonical dataset manifest timeframe mismatch")
+        schema_version = manifest.get("manifest_schema_version")
+        if schema_version not in (None, 2):
+            raise ValueError(f"Unsupported canonical dataset manifest schema version: {schema_version}")
+        provenance_v2 = schema_version == 2
+        if provenance_v2:
+            _validate_schema_v2(manifest, processed_dir)
         datasets = manifest.get("datasets")
         if not isinstance(datasets, dict):
             raise ValueError("Canonical dataset manifest is invalid")
-        provenance_v2 = manifest.get("manifest_schema_version") == 2
+
         paths: dict[str, Path] = {}
         for asset in assets:
             entry = datasets.get(asset)

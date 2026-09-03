@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from src.config import load_settings
+from src.config import load_canonical_research_config, load_settings
 
 
 @pytest.mark.parametrize(
@@ -71,3 +71,29 @@ def test_invalid_runtime_setting_fails_before_network(
 
     with pytest.raises(ValueError, match=f"^{message}$"):
         load_settings(tmp_path)
+
+
+def test_canonical_research_config_rejects_exploratory_source_drift(monkeypatch, tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "assets.yaml").write_text("assets: [BTC/USDT]\n", encoding="utf-8")
+    monkeypatch.setenv("HCL_EXCHANGE", "other-public-exchange")
+
+    with pytest.raises(ValueError, match="canonical research exchange"):
+        load_canonical_research_config(tmp_path)
+
+    monkeypatch.setenv("HCL_EXCHANGE", "binance")
+    monkeypatch.setenv("HCL_TIMEFRAME", "4h")
+    with pytest.raises(ValueError, match="canonical research timeframe"):
+        load_canonical_research_config(tmp_path)
+
+
+def test_canonical_research_config_uses_governed_daily_assets(monkeypatch, tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "assets.yaml").write_text("assets: [BTC/USDT]\n", encoding="utf-8")
+    monkeypatch.delenv("HCL_EXCHANGE", raising=False)
+    monkeypatch.delenv("HCL_TIMEFRAME", raising=False)
+
+    canonical = load_canonical_research_config(tmp_path)
+
+    assert canonical.settings.timeframe == "1d"
+    assert canonical.assets == ("BTC/USDT",)

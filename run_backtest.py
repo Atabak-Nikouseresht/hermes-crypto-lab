@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from src.backtest import BacktestConfig, EventDrivenBacktester
 from src.backtest_report import write_backtest_report
 from src.benchmarks import run_benchmarks
-from src.config import load_assets, load_settings
+from src.config import load_canonical_research_config
 from src.logging_config import configure_logging
 from src.research_data import load_canonical_close_prices
 from src.strategy import StrategyConfig, generate_signal
@@ -74,10 +74,11 @@ def find_common_analysis_start(
 
 
 def run_research_backtest(project_root: Path | None = None) -> dict[str, object]:
-    settings = load_settings(project_root)
+    canonical = load_canonical_research_config(project_root)
+    settings = canonical.settings
     configure_logging(settings.logs_dir, settings.log_level)
     strategy_config, backtest_config = load_run_configuration(settings.project_root)
-    assets = load_assets(settings.project_root / "config" / "assets.yaml")
+    assets = list(canonical.assets)
     all_prices, dataset_provenance = load_canonical_close_prices(
         settings.processed_dir,
         assets,

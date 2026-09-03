@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import subprocess
+from dataclasses import replace
 
 import duckdb
 import pytest
@@ -9,6 +10,12 @@ import run_data_pipeline
 from run_data_pipeline import run_pipeline
 from src.config import Settings
 
+
+@pytest.fixture(autouse=True)
+def governed_assets(tmp_path):
+    path = tmp_path / "config" / "assets.yaml"
+    path.parent.mkdir()
+    path.write_text("assets: [BTC/USDT]\n", encoding="utf-8")
 
 
 def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
@@ -112,6 +119,37 @@ def test_pipeline_rejects_non_daily_canonical_data(tmp_path):
 
     with pytest.raises(ValueError, match="1d"):
         run_pipeline(settings=settings, assets=["BTC/USDT"], exchange=object())
+
+
+@pytest.mark.parametrize(
+    ("settings_change", "assets", "message"),
+    [
+        ({"exchange": "other-public-exchange"}, ["BTC/USDT"], "exchange binance"),
+        ({"assets_config": Path("other-assets.yaml")}, ["BTC/USDT"], "config/assets.yaml"),
+        ({}, ["ETH/USDT"], "assets differ"),
+    ],
+)
+def test_pipeline_rejects_exploratory_configuration_bypass(
+    tmp_path, settings_change, assets, message
+):
+    base = Settings(
+        project_root=tmp_path,
+        exchange="binance",
+        timeframe="1d",
+        since="2024-01-01T00:00:00Z",
+        fetch_limit=1000,
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1000,
+        assets_config=tmp_path / "config" / "assets.yaml",
+        database_path=tmp_path / "database" / "trading.duckdb",
+        log_level="INFO",
+    )
+    if "assets_config" in settings_change:
+        settings_change = {**settings_change, "assets_config": tmp_path / settings_change["assets_config"]}
+
+    with pytest.raises(ValueError, match=message):
+        run_pipeline(settings=replace(base, **settings_change), assets=assets, exchange=object())
 
 
 def test_pipeline_fails_closed_instead_of_cleaning_invalid_rows(tmp_path):

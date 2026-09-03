@@ -81,13 +81,14 @@ def test_canonical_loader_enforces_daily_timeframe(tmp_path):
         load_canonical_close_prices(tmp_path, ["BTC/USDT"], "4h")
 
 
-def test_canonical_loader_rejects_unknown_manifest_schema_version(tmp_path):
+@pytest.mark.parametrize("version", [3, 2.0, "2", True])
+def test_canonical_loader_rejects_unknown_manifest_schema_version(tmp_path, version):
     processed = tmp_path / "processed"
     _write_asset(processed / "BTC_USDT_1d.parquet", ["2024-01-01"], [10.0])
     _write_manifest(processed)
     for path in (processed / "dataset_manifest.json", processed / "fixture" / "dataset_manifest.json"):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        payload["manifest_schema_version"] = 3
+        payload["manifest_schema_version"] = version
         path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="Unsupported canonical dataset manifest schema version"):
@@ -445,6 +446,7 @@ def test_provenance_v2_rejects_missing_or_escaped_raw_evidence(tmp_path):
     ("mutate", "message"),
     [
         (lambda payload: payload.pop("source"), "required provenance"),
+        (lambda payload: payload["source"].update(exchange_id="other"), "required provenance"),
         (lambda payload: payload["datasets"]["BTC/USDT"].update(sha256="bad"), "invalid sha256"),
         (lambda payload: payload["datasets"]["BTC/USDT"].update(rows="1"), "invalid row counts"),
         (lambda payload: payload.update(ingestion_git_commit="bad"), "invalid Git provenance"),

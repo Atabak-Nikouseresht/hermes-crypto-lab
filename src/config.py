@@ -40,6 +40,14 @@ class Settings:
         return self.project_root / "logs"
 
 
+@dataclass(frozen=True)
+class CanonicalResearchConfig:
+    """Governed, non-exploratory data assumptions for canonical research."""
+
+    settings: Settings
+    assets: tuple[str, ...]
+
+
 def load_settings(project_root: Path | None = None) -> Settings:
     root = (project_root or Path(__file__).resolve().parents[1]).resolve()
     load_dotenv(root / ".env", override=False)
@@ -95,3 +103,17 @@ def load_assets(path: Path) -> list[str]:
     if not assets or not all(isinstance(symbol, str) for symbol in assets):
         raise ValueError(f"No valid assets configured in {path}")
     return assets
+
+
+def load_canonical_research_config(
+    project_root: Path | None = None,
+) -> CanonicalResearchConfig:
+    settings = load_settings(project_root)
+    governed_assets = settings.project_root / "config" / "assets.yaml"
+    if settings.exchange != "binance":
+        raise ValueError("canonical research exchange must be binance")
+    if settings.timeframe != "1d":
+        raise ValueError("canonical research timeframe must be 1d")
+    if settings.assets_config.resolve() != governed_assets.resolve():
+        raise ValueError("canonical research assets must use config/assets.yaml")
+    return CanonicalResearchConfig(settings=settings, assets=tuple(load_assets(governed_assets)))

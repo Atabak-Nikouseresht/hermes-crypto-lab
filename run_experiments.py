@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from run_backtest import load_run_configuration
-from src.config import load_assets, load_settings
+from src.config import load_canonical_research_config
 from src.experiment_ledger import ExperimentLedger
 from src.experiment_manager import (
     Candidate,
@@ -100,9 +100,10 @@ def _evaluate_stage_candidate(
 
 
 def run_controlled_experiments(project_root: Path | None = None) -> dict[str, Any]:
-    settings = load_settings(project_root)
+    canonical = load_canonical_research_config(project_root)
+    settings = canonical.settings
     configure_logging(settings.logs_dir, settings.log_level)
-    assets = load_assets(settings.project_root / "config" / "assets.yaml")
+    assets = list(canonical.assets)
     strategy_config, backtest_config = load_run_configuration(settings.project_root)
     config_payload = yaml.safe_load(
         (settings.project_root / "config" / "strategy.yaml").read_text(encoding="utf-8")

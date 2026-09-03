@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
+import subprocess
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +11,7 @@ from typing import Any
 
 import ccxt
 
-from src.config import Settings, load_assets, load_settings
+from src.config import Settings, load_canonical_research_config
 from src.database import (
     finish_run,
     initialize_database,
@@ -24,6 +26,7 @@ from src.validate_data import clean_ohlcv, rows_to_frame, validate_ohlcv
 
 LOGGER = logging.getLogger(__name__)
 Downloader = Callable[..., list[list[float]]]
+GitProvenance = Callable[[Path], tuple[str, bool | None]]
 
 
 def _safe_symbol(symbol: str) -> str:
@@ -38,6 +41,29 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _git_provenance(project_root: Path) -> tuple[str, bool | None]:
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            return "unavailable", None
+        dirty = bool(
+            subprocess.run(
+                ["git", "-C", str(project_root), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        return commit, dirty
+    except (OSError, subprocess.CalledProcessError):
+        return "unavailable", None
+
+
 def run_pipeline(
     *,
     settings: Settings,
@@ -45,6 +71,7 @@ def run_pipeline(
     downloader: Downloader = download_daily_ohlcv,
     exchange: ccxt.Exchange | object | None = None,
     run_id: str | None = None,
+    git_provenance: GitProvenance = _git_provenance,
 ) -> dict[str, Any]:
     if settings.timeframe != "1d":
         raise ValueError("Canonical research ingestion requires the 1d timeframe")
@@ -53,6 +80,7 @@ def run_pipeline(
     start_run(settings.database_path, run_id)
     market = exchange or create_exchange(settings.exchange, settings.request_timeout_ms)
     results: list[dict[str, Any]] = []
+    ingestion_git_commit, git_dirty = git_provenance(settings.project_root)
 
     try:
         for symbol in assets:
@@ -133,6 +161,8 @@ def run_pipeline(
                 "backoff_base_seconds": settings.backoff_base_seconds,
                 "request_timeout_ms": settings.request_timeout_ms,
             },
+            "ingestion_git_commit": ingestion_git_commit,
+            "git_dirty": git_dirty,
             "datasets": {
                 result["symbol"]: {
                     "path": (
@@ -185,9 +215,10 @@ def run_pipeline(
 
 
 def main() -> None:
-    settings = load_settings()
+    canonical = load_canonical_research_config()
+    settings = canonical.settings
     configure_logging(settings.logs_dir, settings.log_level)
-    assets = load_assets(settings.assets_config)
+    assets = list(canonical.assets)
     LOGGER.info("Starting public-data pipeline for %s", ", ".join(assets))
     result = run_pipeline(settings=settings, assets=assets)
     print(f"Run {result['run_id']} completed")

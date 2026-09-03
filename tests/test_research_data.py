@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.research_data import load_canonical_close_prices
+from src.research_data import _validate_schema_v2, load_canonical_close_prices
 from src.research_data import load_canonical_timestamp_index
 
 
@@ -79,6 +79,19 @@ def test_canonical_loader_rejects_duplicate_or_invalid_ohlcv(tmp_path):
 def test_canonical_loader_enforces_daily_timeframe(tmp_path):
     with pytest.raises(ValueError, match="1d"):
         load_canonical_close_prices(tmp_path, ["BTC/USDT"], "4h")
+
+
+def test_canonical_loader_rejects_unknown_manifest_schema_version(tmp_path):
+    processed = tmp_path / "processed"
+    _write_asset(processed / "BTC_USDT_1d.parquet", ["2024-01-01"], [10.0])
+    _write_manifest(processed)
+    for path in (processed / "dataset_manifest.json", processed / "fixture" / "dataset_manifest.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["manifest_schema_version"] = 3
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported canonical dataset manifest schema version"):
+        load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
 
 
 def test_canonical_loader_requires_immutable_manifest_provenance(tmp_path):
@@ -206,12 +219,19 @@ def test_provenance_v2_rejects_tampered_raw_evidence(tmp_path):
         "run_id": "run-1",
         "timeframe": "1d",
         "version_manifest_path": "run-1/dataset_manifest.json",
+        "source": {"exchange_id": "binance", "ccxt_version": "test", "since": "2024-01-01T00:00:00Z"},
+        "ingestion_git_commit": "a" * 40,
+        "git_dirty": False,
         "datasets": {
             "BTC/USDT": {
                 "path": "run-1/BTC_USDT_1d.parquet",
                 "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest(),
                 "raw_path": "raw/run-1/BTC_USDT_1d.json",
                 "raw_sha256": "0" * 64,
+                "rows": 1,
+                "raw_rows": 1,
+                "start_utc": "2024-01-01T00:00:00Z",
+                "end_utc": "2024-01-01T00:00:00Z",
             }
         },
     }
@@ -392,12 +412,19 @@ def test_provenance_v2_rejects_missing_or_escaped_raw_evidence(tmp_path):
         "run_id": "run-1",
         "timeframe": "1d",
         "version_manifest_path": "run-1/dataset_manifest.json",
+        "source": {"exchange_id": "binance", "ccxt_version": "test", "since": "2024-01-01T00:00:00Z"},
+        "ingestion_git_commit": "a" * 40,
+        "git_dirty": False,
         "datasets": {
             "BTC/USDT": {
                 "path": "run-1/BTC_USDT_1d.parquet",
                 "sha256": hashlib.sha256(parquet.read_bytes()).hexdigest(),
                 "raw_path": "raw/run-1/missing.json",
                 "raw_sha256": "0" * 64,
+                "rows": 1,
+                "raw_rows": 1,
+                "start_utc": "2024-01-01T00:00:00Z",
+                "end_utc": "2024-01-01T00:00:00Z",
             }
         },
     }
@@ -412,3 +439,61 @@ def test_provenance_v2_rejects_missing_or_escaped_raw_evidence(tmp_path):
     (processed / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="raw evidence path escapes"):
         load_canonical_close_prices(processed, ["BTC/USDT"], "1d")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda payload: payload.pop("source"), "required provenance"),
+        (lambda payload: payload["datasets"]["BTC/USDT"].update(sha256="bad"), "invalid sha256"),
+        (lambda payload: payload["datasets"]["BTC/USDT"].update(rows="1"), "invalid row counts"),
+        (lambda payload: payload.update(ingestion_git_commit="bad"), "invalid Git provenance"),
+        (lambda payload: payload.update(ingestion_git_commit="unavailable", git_dirty=False), "unavailable Git provenance"),
+        (lambda payload: payload.update(datasets={}), "invalid datasets"),
+        (lambda payload: payload["datasets"]["BTC/USDT"].update(start_utc="bad"), "invalid UTC bounds"),
+    ],
+)
+def test_schema_v2_manifest_required_provenance_is_fail_closed(tmp_path, mutate, message):
+    payload = {
+        "run_id": "run-1",
+        "source": {"exchange_id": "binance", "ccxt_version": "test", "since": "2024-01-01T00:00:00Z"},
+        "ingestion_git_commit": "a" * 40,
+        "git_dirty": False,
+        "datasets": {
+            "BTC/USDT": {
+                "path": "run-1/BTC_USDT_1d.parquet",
+                "sha256": "a" * 64,
+                "raw_path": "raw/run-1/BTC_USDT_1d.json",
+                "raw_sha256": "b" * 64,
+                "rows": 1,
+                "raw_rows": 1,
+                "start_utc": "2024-01-01T00:00:00Z",
+                "end_utc": "2024-01-01T00:00:00Z",
+            }
+        },
+    }
+    mutate(payload)
+    with pytest.raises(ValueError, match=message):
+        _validate_schema_v2(payload, tmp_path / "processed")
+
+
+def test_schema_v2_manifest_accepts_complete_declared_contract(tmp_path):
+    payload = {
+        "run_id": "run-1",
+        "source": {"exchange_id": "binance", "ccxt_version": "test", "since": "2024-01-01T00:00:00Z"},
+        "ingestion_git_commit": "a" * 40,
+        "git_dirty": False,
+        "datasets": {
+            "BTC/USDT": {
+                "path": "run-1/BTC_USDT_1d.parquet",
+                "sha256": "a" * 64,
+                "raw_path": "raw/run-1/BTC_USDT_1d.json",
+                "raw_sha256": "b" * 64,
+                "rows": 1,
+                "raw_rows": 1,
+                "start_utc": "2024-01-01T00:00:00Z",
+                "end_utc": "2024-01-01T00:00:00Z",
+            }
+        },
+    }
+    _validate_schema_v2(payload, tmp_path / "processed")

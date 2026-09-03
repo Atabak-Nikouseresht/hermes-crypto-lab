@@ -89,6 +89,8 @@ def run_pipeline(
                 "symbol": symbol,
                 "parquet_path": str(parquet_path),
                 "sha256": _sha256(parquet_path),
+                "raw_path": str(raw_path),
+                "raw_sha256": _sha256(raw_path),
                 "raw_rows": len(rows),
                 "clean_rows": len(cleaned),
                 "start_utc": start_utc,
@@ -118,9 +120,19 @@ def run_pipeline(
             )
 
         dataset_manifest = {
+            "manifest_schema_version": 2,
             "run_id": run_id,
             "timeframe": settings.timeframe,
             "version_manifest_path": f"{run_id}/dataset_manifest.json",
+            "source": {
+                "exchange_id": settings.exchange,
+                "ccxt_version": ccxt.__version__,
+                "since": settings.since,
+                "fetch_limit": settings.fetch_limit,
+                "max_retries": settings.max_retries,
+                "backoff_base_seconds": settings.backoff_base_seconds,
+                "request_timeout_ms": settings.request_timeout_ms,
+            },
             "datasets": {
                 result["symbol"]: {
                     "path": (
@@ -129,7 +141,14 @@ def run_pipeline(
                         .as_posix()
                     ),
                     "sha256": result["sha256"],
+                    "raw_path": (
+                        Path(result["raw_path"])
+                        .relative_to(settings.processed_dir.parent)
+                        .as_posix()
+                    ),
+                    "raw_sha256": result["raw_sha256"],
                     "rows": result["clean_rows"],
+                    "raw_rows": result["raw_rows"],
                     "start_utc": result["start_utc"],
                     "end_utc": result["end_utc"],
                 }

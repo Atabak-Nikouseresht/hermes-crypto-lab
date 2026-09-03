@@ -106,4 +106,5 @@ jobs:
           python -m coverage report --precision=2 --include=src/statistical_diagnostics.py --fail-under=80
           python -m coverage report --precision=2 --include=src/download_data.py --fail-under=80
           python -m coverage report --precision=2 --include=src/experiment_runner.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/research_data.py --fail-under=85
           python -m coverage report --precision=2 --include=scripts/paper_forward_monthly.py --fail-under=80

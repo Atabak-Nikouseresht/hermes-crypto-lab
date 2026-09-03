@@ -36,6 +36,7 @@ def _validate_schema_v2(manifest: dict[str, Any], processed_dir: Path) -> None:
         not isinstance(manifest.get("run_id"), str)
         or not manifest["run_id"]
         or not isinstance(source, dict)
+        or source.get("exchange_id") != "binance"
         or not all(
             isinstance(source.get(field), str) and source[field]
             for field in ("exchange_id", "ccxt_version", "since")
@@ -113,9 +114,11 @@ def _paths_and_manifest(
         if manifest.get("timeframe") != timeframe:
             raise ValueError("Canonical dataset manifest timeframe mismatch")
         schema_version = manifest.get("manifest_schema_version")
-        if schema_version not in (None, 2):
+        if schema_version is not None and (
+            type(schema_version) is not int or schema_version != 2
+        ):
             raise ValueError(f"Unsupported canonical dataset manifest schema version: {schema_version}")
-        provenance_v2 = schema_version == 2
+        provenance_v2 = type(schema_version) is int and schema_version == 2
         if provenance_v2:
             _validate_schema_v2(manifest, processed_dir)
         datasets = manifest.get("datasets")

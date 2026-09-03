@@ -11,7 +11,7 @@ from typing import Any
 
 import ccxt
 
-from src.config import Settings, load_canonical_research_config
+from src.config import Settings, load_assets, load_canonical_research_config
 from src.database import (
     finish_run,
     initialize_database,
@@ -64,6 +64,18 @@ def _git_provenance(project_root: Path) -> tuple[str, bool | None]:
         return "unavailable", None
 
 
+def _validate_canonical_publication(settings: Settings, assets: list[str]) -> None:
+    governed_assets_path = settings.project_root / "config" / "assets.yaml"
+    if settings.exchange != "binance":
+        raise ValueError("Canonical research publication requires exchange binance")
+    if settings.timeframe != "1d":
+        raise ValueError("Canonical research publication requires timeframe 1d")
+    if settings.assets_config.resolve() != governed_assets_path.resolve():
+        raise ValueError("Canonical research publication requires config/assets.yaml")
+    if assets != load_assets(governed_assets_path):
+        raise ValueError("Canonical research publication assets differ from governed assets")
+
+
 def run_pipeline(
     *,
     settings: Settings,
@@ -73,8 +85,7 @@ def run_pipeline(
     run_id: str | None = None,
     git_provenance: GitProvenance = _git_provenance,
 ) -> dict[str, Any]:
-    if settings.timeframe != "1d":
-        raise ValueError("Canonical research ingestion requires the 1d timeframe")
+    _validate_canonical_publication(settings, assets)
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     initialize_database(settings.database_path)
     start_run(settings.database_path, run_id)

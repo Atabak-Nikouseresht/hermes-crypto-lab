@@ -38,7 +38,7 @@
     "requirements.lock": "979b34da490f7f862bf263104718dcd82c6cd70cb74809b9660193d1375fb547",
     "requirements.txt": "82ce257b749755e726847eba70abb8318e01f6a90929d38ba10810461317b7b0",
     "run_backtest.py": "204bc28c6cd01d75340da4e23558ab99ed6fb9a59b3f470c245208ab44ae511a",
-    "run_data_pipeline.py": "772a891537def5835ba7e940cfeeea1e8eeae20fd5b3a37a605e85e3adc61376",
+    "run_data_pipeline.py": "d25f7e3f24031da5f04f1d00ddbde0c995ffd646f4434b05cecdb56146efe063",
     "run_experiments.py": "2413076477d540fa28528f132ed944f2a91a594090efe58a008bfc8d4c65d20d",
     "run_monthly_report.py": "f6da338843351e29a96bcba9c2662cca0c138bfe721e5e1723e6d86ba4cd5121",
     "run_paper.py": "36d37f1f008bf53eb5b67239a930563d68726e347f92e69f2956460cdfd0226e",
@@ -80,7 +80,7 @@
     "src/paper_store.py": "4d7f88d68a3a266c9c169b79f95f361356e4d3a866a6a15f0190abefde869d8c",
     "src/portfolio.py": "89e393c466d7850eec5f2d82b2944d8bc6871c12952cf5779baa33d7a5985a02",
     "src/report.py": "59923840ff8f3842ac5a10209b7b4d1ef7213b4f41b7f544fa976607b1dbd3b9",
-    "src/research_data.py": "230eb9654af659da78eec67c8b1b9a79a2c838763ae29f8bb083e2b2a684648d",
+    "src/research_data.py": "10058a0d52a79acc74bbc7a0803e53976ece355730bec45a138825bf7d6d05c9",
     "src/statistical_diagnostics.py": "f79359ad165f28135f8a3f0f8ef356a34b10c3370f1aa0403e415500752a0098",
     "src/storage.py": "c0e0a6c7cda9266815a5a6ec1978284fd868617a10c31a70ac3c8518bf2cc68d",
     "src/strategy.py": "a1e79c1059d1b97b127dca80d08daafdb0586d8901181ab0978fe6186a081988",
@@ -99,7 +99,7 @@
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-03T09:10:02.869154+00:00",
+  "generated_at_utc": "2026-09-03T09:36:06.819345+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

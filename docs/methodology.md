@@ -76,6 +76,13 @@ The historical manager enforced:
 
 The repository preserves two deterministic run directories. The first final-period access is canonical for sealed-result interpretation; the later run is retained because deleting it would conceal provenance. Neither is reused for forward retuning.
 
+`forward_experiment/research_lifecycle.json` seals V1 candidate selection and
+final-test access. The V1 entry point fails closed before it can open research
+prices or create a run. Any future research requires separately governed V2
+specification and genuinely untouched out-of-sample data; it cannot reopen V1.
+Every declared finalist must complete validation before the gate permits a
+candidate lock.
+
 The historical reports retain the compatibility label `walk_forward`, but the
 implementation does not retrain or reselect candidates in each fold. It evaluates
 the already selected finalists over sequential pre-test periods using all price

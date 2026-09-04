@@ -99,6 +99,15 @@ file deletion. The interpreter resolver prefers
 Unix. The wrapper can invoke only `run_monthly_report.py`, never a trading entry
 point.
 
+The monthly JSON and Markdown are a single committed report pair. Both are
+written and flushed to same-directory temporary files, then published without
+overwriting a committed pair. A `.complete.json` marker records both hashes and
+is written only after pair validation. Retries reuse a valid committed pair;
+uncommitted partial output is recovered only when it matches the deterministic
+forward-only report, while hash or marker corruption fails closed. Telegram is
+called only after this completion check and monthly recovery never changes paper
+trading state.
+
 ## Backup and temporary restore verification
 
 ```bash

@@ -48,6 +48,60 @@ def test_final_test_access_is_blocked_until_validated_candidate_is_locked():
         gate.assert_test_access("b")
 
 
+def _gate_with_finalists() -> ExperimentGate:
+    gate = ExperimentGate(expected_training_trials=4)
+    for candidate_id in ("a", "b", "c", "d"):
+        gate.record_training(candidate_id)
+    gate.set_finalists(["a", "b", "c"])
+    return gate
+
+
+@pytest.mark.parametrize("validated_ids", [("a",), ("a", "b")])
+def test_lock_requires_validation_of_every_declared_finalist(validated_ids):
+    gate = _gate_with_finalists()
+    for candidate_id in validated_ids:
+        gate.record_validation(candidate_id)
+
+    with pytest.raises(PermissionError, match="All declared finalists"):
+        gate.lock_candidate("a")
+
+
+def test_lock_succeeds_only_after_every_finalist_is_validated():
+    gate = _gate_with_finalists()
+    for candidate_id in ("a", "b", "c"):
+        gate.record_validation(candidate_id)
+
+    gate.lock_candidate("a")
+    assert gate.locked_candidate_id == "a"
+
+
+def test_lock_rejects_non_finalist_after_full_validation():
+    gate = _gate_with_finalists()
+    for candidate_id in ("a", "b", "c"):
+        gate.record_validation(candidate_id)
+
+    with pytest.raises(PermissionError, match="declared finalist"):
+        gate.lock_candidate("d")
+
+
+def test_lock_rejects_before_finalists_are_declared():
+    gate = ExperimentGate(expected_training_trials=1)
+    gate.record_training("a")
+
+    with pytest.raises(PermissionError, match="Finalists must be declared"):
+        gate.lock_candidate("a")
+
+
+def test_lock_rejects_second_candidate_after_a_lock():
+    gate = _gate_with_finalists()
+    for candidate_id in ("a", "b", "c"):
+        gate.record_validation(candidate_id)
+    gate.lock_candidate("a")
+
+    with pytest.raises(PermissionError, match="already locked"):
+        gate.lock_candidate("b")
+
+
 def test_stable_region_beats_isolated_high_score():
     isolated = Candidate(60, 0, 150, 1, 7, 30)
     isolated_neighbor = Candidate(90, 0, 150, 1, 7, 30)

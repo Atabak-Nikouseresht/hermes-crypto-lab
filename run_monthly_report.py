@@ -15,7 +15,10 @@ from run_paper import (
     open_locked_system,
 )
 from src.config import load_settings
-from src.forward_monthly import generate_monthly_forward_report
+from src.forward_monthly import (
+    generate_monthly_forward_report,
+    is_monthly_report_committed,
+)
 from src.forward_operations import record_missed_windows
 from src.paper_notifications import HermesTelegramSender
 
@@ -49,19 +52,18 @@ def main() -> None:
             pd.Timestamp(now).tz_convert("UTC").normalize().replace(day=1)
             - pd.offsets.MonthBegin(1)
         )
-        existing = output_dir / f"forward_monthly_{month_start.strftime('%Y-%m')}.md"
-        if existing.exists():
-            report_path = existing
-        else:
-            result = generate_monthly_forward_report(
-                system.store,
-                experiment_id=governance["experiment_id"],
-                report_date=now,
-                output_dir=output_dir,
-                assets=config.assets,
-                slippage_rate=config.slippage_rate,
-            )
-            report_path = result["report_path"]
+        result = generate_monthly_forward_report(
+            system.store,
+            experiment_id=governance["experiment_id"],
+            report_date=now,
+            output_dir=output_dir,
+            assets=config.assets,
+            slippage_rate=config.slippage_rate,
+        )
+        period = month_start.strftime("%Y-%m")
+        if not is_monthly_report_committed(output_dir, period):
+            raise RuntimeError("Monthly report is not committed; Telegram delivery is blocked")
+        report_path = result["report_path"]
         telegram_target = os.getenv("HCL_TELEGRAM_TARGET")
         if not telegram_target:
             raise ValueError("Monthly delivery requires HCL_TELEGRAM_TARGET")

@@ -2,15 +2,156 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+import uuid
 
 import pandas as pd
 
 from src.paper_store import PaperStore
+
+
+def _sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _publication_paths(output_dir: Path, period: str) -> tuple[Path, Path, Path]:
+    stem = f"forward_monthly_{period}"
+    return (
+        output_dir / f"{stem}.json",
+        output_dir / f"{stem}.md",
+        output_dir / f"{stem}.complete.json",
+    )
+
+
+def _write_temporary(path: Path, content: bytes) -> Path:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    with temporary.open("xb") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return temporary
+
+
+def _publish_temporary(temporary: Path, destination: Path, content: bytes) -> None:
+    try:
+        os.link(temporary, destination)
+    except FileExistsError as error:
+        if destination.read_bytes() != content:
+            raise ValueError(
+                f"Incomplete monthly publication differs at {destination.name}"
+            ) from error
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _load_committed_monthly_report(output_dir: Path, period: str) -> dict[str, Any] | None:
+    json_path, markdown_path, completion_path = _publication_paths(output_dir, period)
+    exists = (json_path.exists(), markdown_path.exists(), completion_path.exists())
+    if not any(exists):
+        return None
+    if not all(exists):
+        if completion_path.exists():
+            raise ValueError("Monthly completion marker exists without a complete report pair")
+        return None
+    try:
+        marker = json.loads(completion_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Monthly completion marker is invalid") from error
+    if (
+        type(marker) is not dict
+        or marker.get("period") != period
+        or type(marker.get("json_sha256")) is not str
+        or type(marker.get("markdown_sha256")) is not str
+        or type(marker.get("committed_at_utc")) is not str
+    ):
+        raise ValueError("Monthly completion marker is invalid")
+    try:
+        committed_at = pd.Timestamp(marker["committed_at_utc"])
+        if committed_at.tzinfo is None:
+            raise ValueError("timestamp is not UTC-aware")
+        committed_at.tz_convert("UTC")
+    except (TypeError, ValueError) as error:
+        raise ValueError("Monthly completion marker is invalid") from error
+    if marker["json_sha256"] != _sha256(json_path.read_bytes()):
+        raise ValueError("Monthly JSON hash does not match completion marker")
+    if marker["markdown_sha256"] != _sha256(markdown_path.read_bytes()):
+        raise ValueError("Monthly Markdown hash does not match completion marker")
+    try:
+        result = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Committed monthly JSON is invalid") from error
+    if type(result) is not dict:
+        raise ValueError("Committed monthly JSON is invalid")
+    return {
+        **result,
+        "json_path": json_path,
+        "report_path": markdown_path,
+        "completion_path": completion_path,
+        "publication_status": "reused",
+    }
+
+
+def is_monthly_report_committed(output_dir: Path, period: str) -> bool:
+    return _load_committed_monthly_report(output_dir, period) is not None
+
+
+def _publish_monthly_report_pair(
+    *,
+    output_dir: Path,
+    period: str,
+    json_content: bytes,
+    markdown_content: bytes,
+    publication_hook: Callable[[str], None] | None,
+) -> tuple[Path, Path, Path, str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path, markdown_path, completion_path = _publication_paths(output_dir, period)
+    had_incomplete_artifact = json_path.exists() or markdown_path.exists()
+    json_temporary = _write_temporary(json_path, json_content)
+    try:
+        if publication_hook is not None:
+            publication_hook("after_json_temp")
+        markdown_temporary = _write_temporary(markdown_path, markdown_content)
+        try:
+            _publish_temporary(json_temporary, json_path, json_content)
+            if publication_hook is not None:
+                publication_hook("after_json_publish")
+            _publish_temporary(markdown_temporary, markdown_path, markdown_content)
+            if publication_hook is not None:
+                publication_hook("after_markdown_publish")
+        finally:
+            markdown_temporary.unlink(missing_ok=True)
+    finally:
+        json_temporary.unlink(missing_ok=True)
+
+    if json_path.read_bytes() != json_content or markdown_path.read_bytes() != markdown_content:
+        raise ValueError("Monthly report pair failed publication validation")
+    if publication_hook is not None:
+        publication_hook("before_completion_marker")
+    marker_content = (
+        json.dumps(
+            {
+                "period": period,
+                "json_sha256": _sha256(json_content),
+                "markdown_sha256": _sha256(markdown_content),
+                "committed_at_utc": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    marker_temporary = _write_temporary(completion_path, marker_content)
+    _publish_temporary(marker_temporary, completion_path, marker_content)
+    _load_committed_monthly_report(output_dir, period)
+    return json_path, markdown_path, completion_path, (
+        "recovered" if had_incomplete_artifact else "committed"
+    )
 
 
 def _iso(value) -> str:
@@ -25,10 +166,15 @@ def generate_monthly_forward_report(
     output_dir: Path,
     assets: tuple[str, ...],
     slippage_rate: float,
+    publication_hook: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     report_ts = pd.Timestamp(report_date).tz_convert("UTC")
     month_end = report_ts.normalize().replace(day=1)
     month_start = month_end - pd.offsets.MonthBegin(1)
+    period = month_start.strftime("%Y-%m")
+    committed = _load_committed_monthly_report(output_dir, period)
+    if committed is not None:
+        return committed
     with store.connect(read_only=True) as connection:
         experiment = connection.execute(
             "SELECT started_at_utc FROM forward_experiments WHERE experiment_id=?",
@@ -262,13 +408,6 @@ def generate_monthly_forward_report(
         "equal_weight_benchmark_timestamps": benchmark_timestamps,
         "sample_warning": "Insufficient forward observations for profitability claims",
     }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"forward_monthly_{month_start.strftime('%Y-%m')}"
-    json_path = output_dir / f"{stem}.json"
-    markdown_path = output_dir / f"{stem}.md"
-    if json_path.exists() or markdown_path.exists():
-        raise FileExistsError(f"Monthly report already exists for {month_start.strftime('%Y-%m')}")
-    json_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     markdown = [
         "# Monthly forward paper-performance report",
         "",
@@ -294,7 +433,17 @@ def generate_monthly_forward_report(
         "> Insufficient forward observations for profitability claims. Human review is required.",
         "",
     ]
-    markdown_path.write_text("\n".join(markdown), encoding="utf-8")
+    json_content = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    markdown_content = "\n".join(markdown).encode("utf-8")
+    json_path, markdown_path, completion_path, publication_status = _publish_monthly_report_pair(
+        output_dir=output_dir,
+        period=period,
+        json_content=json_content,
+        markdown_content=markdown_content,
+        publication_hook=publication_hook,
+    )
     result["report_path"] = markdown_path
     result["json_path"] = json_path
+    result["completion_path"] = completion_path
+    result["publication_status"] = publication_status
     return result

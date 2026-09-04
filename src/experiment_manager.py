@@ -220,10 +220,16 @@ class ExperimentGate:
         self.validated_ids.add(candidate_id)
 
     def lock_candidate(self, candidate_id: str) -> None:
-        if candidate_id not in self.validated_ids:
-            raise PermissionError("Candidate must finish validation before it can be locked")
         if self.locked_candidate_id is not None:
             raise PermissionError("A candidate is already locked")
+        if self.finalist_ids is None:
+            raise PermissionError("Finalists must be declared before a candidate can be locked")
+        if self.validated_ids != self.finalist_ids:
+            raise PermissionError(
+                "All declared finalists must finish validation before a candidate can be locked"
+            )
+        if candidate_id not in self.finalist_ids:
+            raise PermissionError("Only a declared finalist can be locked")
         self.locked_candidate_id = candidate_id
 
     def assert_test_access(self, candidate_id: str) -> None:

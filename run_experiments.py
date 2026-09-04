@@ -30,6 +30,10 @@ from src.experiment_runner import (
 )
 from src.logging_config import configure_logging
 from src.research_data import load_canonical_timestamp_index
+from src.research_lifecycle import (
+    assert_candidate_selection_permitted,
+    load_research_lifecycle,
+)
 
 LOGGER = logging.getLogger(__name__)
 SCORING_RULE = (
@@ -100,6 +104,8 @@ def _evaluate_stage_candidate(
 
 
 def run_controlled_experiments(project_root: Path | None = None) -> dict[str, Any]:
+    root = (project_root or Path(__file__).resolve().parent).resolve()
+    assert_candidate_selection_permitted(load_research_lifecycle(root))
     canonical = load_canonical_research_config(project_root)
     settings = canonical.settings
     configure_logging(settings.logs_dir, settings.log_level)

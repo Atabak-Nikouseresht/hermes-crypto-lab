@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import math
@@ -38,27 +39,43 @@ def _write_temporary(path: Path, content: bytes) -> Path:
     return temporary
 
 
+def _sync_directory(directory: Path) -> None:
+    """Persist directory-entry ordering where the platform supports it."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    except OSError as error:
+        unsupported = {
+            errno.EINVAL,
+            errno.EROFS,
+            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+        }
+        if error.errno not in unsupported:
+            raise
+    finally:
+        os.close(descriptor)
+
+
 def _publish_temporary(temporary: Path, destination: Path, content: bytes) -> None:
+    published = False
     try:
         os.link(temporary, destination)
+        published = True
     except FileExistsError as error:
         if destination.read_bytes() != content:
             raise ValueError(
                 f"Incomplete monthly publication differs at {destination.name}"
             ) from error
+        published = True
     finally:
         temporary.unlink(missing_ok=True)
+    if published:
+        _sync_directory(destination.parent)
 
 
-def _load_committed_monthly_report(output_dir: Path, period: str) -> dict[str, Any] | None:
-    json_path, markdown_path, completion_path = _publication_paths(output_dir, period)
-    exists = (json_path.exists(), markdown_path.exists(), completion_path.exists())
-    if not any(exists):
-        return None
-    if not all(exists):
-        if completion_path.exists():
-            raise ValueError("Monthly completion marker exists without a complete report pair")
-        return None
+def _load_completion_marker(completion_path: Path, period: str) -> dict[str, str]:
     try:
         marker = json.loads(completion_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -78,6 +95,19 @@ def _load_committed_monthly_report(output_dir: Path, period: str) -> dict[str, A
         committed_at.tz_convert("UTC")
     except (TypeError, ValueError) as error:
         raise ValueError("Monthly completion marker is invalid") from error
+    return marker
+
+
+def _load_committed_monthly_report(output_dir: Path, period: str) -> dict[str, Any] | None:
+    json_path, markdown_path, completion_path = _publication_paths(output_dir, period)
+    exists = (json_path.exists(), markdown_path.exists(), completion_path.exists())
+    if not any(exists):
+        return None
+    marker = _load_completion_marker(completion_path, period) if completion_path.exists() else None
+    if not all(exists):
+        return None
+    if marker is None:
+        return None
     if marker["json_sha256"] != _sha256(json_path.read_bytes()):
         raise ValueError("Monthly JSON hash does not match completion marker")
     if marker["markdown_sha256"] != _sha256(markdown_path.read_bytes()):
@@ -146,6 +176,15 @@ def _publish_monthly_report_pair(
         )
         + "\n"
     ).encode("utf-8")
+    if completion_path.exists():
+        marker = _load_completion_marker(completion_path, period)
+        if (
+            marker["json_sha256"] != _sha256(json_content)
+            or marker["markdown_sha256"] != _sha256(markdown_content)
+        ):
+            raise ValueError("Monthly completion marker hashes do not match recovered report")
+        _load_committed_monthly_report(output_dir, period)
+        return json_path, markdown_path, completion_path, "recovered"
     marker_temporary = _write_temporary(completion_path, marker_content)
     _publish_temporary(marker_temporary, completion_path, marker_content)
     _load_committed_monthly_report(output_dir, period)

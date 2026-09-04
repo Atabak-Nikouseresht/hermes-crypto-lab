@@ -82,6 +82,8 @@ prices or create a run. Any future research requires separately governed V2
 specification and genuinely untouched out-of-sample data; it cannot reopen V1.
 Every declared finalist must complete validation before the gate permits a
 candidate lock.
+The historical V1 entrypoint rejects a substituted V2 lifecycle: future research
+requires its own separately governed entrypoint as well as its own contract.
 
 The historical reports retain the compatibility label `walk_forward`, but the
 implementation does not retrain or reselect candidates in each fold. It evaluates

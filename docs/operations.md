@@ -107,6 +107,9 @@ uncommitted partial output is recovered only when it matches the deterministic
 forward-only report, while hash or marker corruption fails closed. Telegram is
 called only after this completion check and monthly recovery never changes paper
 trading state.
+On platforms with directory `fsync` support, each published entry is synced
+before the next publication; an orphaned valid marker is recoverable only when
+regenerated pair hashes match its declared hashes.
 
 ## Backup and temporary restore verification
 

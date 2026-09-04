@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import run_monthly_report
+from src import forward_monthly
 from src.forward_monthly import (
     generate_monthly_forward_report,
     is_monthly_report_committed,
@@ -174,6 +175,28 @@ def test_committed_report_cannot_be_silently_overwritten(tmp_path):
 
     assert reused["publication_status"] == "reused"
     assert {path: path.read_bytes() for path in expected} == expected
+
+
+def test_orphaned_completion_marker_is_repaired_only_when_hashes_match(tmp_path):
+    store = _store_with_forward_data(tmp_path)
+    output_dir = tmp_path / "reports"
+    committed = _generate(store, output_dir)
+    committed["report_path"].unlink()
+
+    recovered = _generate(store, output_dir)
+
+    assert recovered["publication_status"] == "recovered"
+    assert is_monthly_report_committed(output_dir, "2026-08")
+
+
+def test_publication_syncs_directory_after_each_canonical_entry(monkeypatch, tmp_path):
+    synced: list[object] = []
+    monkeypatch.setattr(forward_monthly, "_sync_directory", lambda path: synced.append(path))
+    output_dir = tmp_path / "reports"
+
+    _generate(_store_with_forward_data(tmp_path), output_dir)
+
+    assert synced == [output_dir, output_dir, output_dir]
 
 
 def test_monthly_telegram_is_blocked_until_report_commit(monkeypatch, tmp_path):

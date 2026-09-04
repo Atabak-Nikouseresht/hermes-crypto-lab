@@ -84,3 +84,13 @@ def assert_candidate_selection_permitted(lifecycle: ResearchLifecycle) -> None:
         )
     if lifecycle.research_generation != "V2" or not lifecycle.candidate_reselection_allowed:
         raise PermissionError("Research generation is not permitted to select candidates")
+
+
+def assert_current_v1_entrypoint_is_sealed(lifecycle: ResearchLifecycle) -> None:
+    """Keep the historical V1 entrypoint closed even if its local contract is replaced."""
+    if lifecycle.research_generation != "V1":
+        raise PermissionError(
+            "The current V1 entrypoint cannot execute a future research generation. "
+            "V2 requires a separately governed entrypoint, specification, and untouched OOS."
+        )
+    assert_candidate_selection_permitted(lifecycle)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import subprocess
@@ -13,8 +14,12 @@ import ccxt
 
 from src.config import Settings, load_assets, load_canonical_research_config
 from src.database import (
+    complete_published_run,
     finish_run,
+    incomplete_publications,
     initialize_database,
+    mark_artifacts_ready,
+    mark_publication_published,
     record_dataset_metadata,
     start_run,
 )
@@ -76,6 +81,58 @@ def _validate_canonical_publication(settings: Settings, assets: list[str]) -> No
         raise ValueError("Canonical research publication assets differ from governed assets")
 
 
+def _canonical_pointer_matches(
+    *,
+    processed_dir: Path,
+    run_id: str,
+    immutable_manifest_path: str,
+    immutable_manifest_sha256: str,
+) -> bool:
+    immutable_path = processed_dir / immutable_manifest_path
+    pointer_path = processed_dir / "dataset_manifest.json"
+    try:
+        immutable_payload = immutable_path.read_bytes()
+        pointer_payload = pointer_path.read_bytes()
+        immutable = json.loads(immutable_payload)
+        pointer = json.loads(pointer_payload)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    return (
+        _sha256(immutable_path) == immutable_manifest_sha256
+        and hashlib.sha256(pointer_payload).hexdigest() == immutable_manifest_sha256
+        and immutable == pointer
+        and pointer.get("run_id") == run_id
+        and pointer.get("version_manifest_path") == immutable_manifest_path
+    )
+
+
+def recover_interrupted_publications(settings: Settings) -> None:
+    """Resolve interrupted canonical publications without changing the pointer."""
+    for run_id, state, manifest_path, manifest_sha256 in incomplete_publications(
+        settings.database_path
+    ):
+        if (
+            state in {"artifacts_ready", "published"}
+            and manifest_path is not None
+            and manifest_sha256 is not None
+            and _canonical_pointer_matches(
+                processed_dir=settings.processed_dir,
+                run_id=run_id,
+                immutable_manifest_path=manifest_path,
+                immutable_manifest_sha256=manifest_sha256,
+            )
+        ):
+            mark_publication_published(settings.database_path, run_id)
+            complete_published_run(settings.database_path, run_id)
+        else:
+            finish_run(
+                settings.database_path,
+                run_id,
+                "failed",
+                "Interrupted before canonical publication completed",
+            )
+
+
 def run_pipeline(
     *,
     settings: Settings,
@@ -88,12 +145,14 @@ def run_pipeline(
     _validate_canonical_publication(settings, assets)
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     initialize_database(settings.database_path)
+    recover_interrupted_publications(settings)
     start_run(settings.database_path, run_id)
-    market = exchange or create_exchange(settings.exchange, settings.request_timeout_ms)
+    market: ccxt.Exchange | object | None = None
     results: list[dict[str, Any]] = []
-    ingestion_git_commit, git_dirty = git_provenance(settings.project_root)
 
     try:
+        market = exchange or create_exchange(settings.exchange, settings.request_timeout_ms)
+        ingestion_git_commit, git_dirty = git_provenance(settings.project_root)
         for symbol in assets:
             rows = downloader(
                 market,
@@ -201,11 +260,31 @@ def run_pipeline(
             settings.processed_dir / run_id / "dataset_manifest.json",
             immutable=True,
         )
+        immutable_manifest_path = f"{run_id}/dataset_manifest.json"
+        immutable_manifest_sha256 = _sha256(version_manifest_path)
+        mark_artifacts_ready(
+            settings.database_path,
+            run_id,
+            immutable_manifest_path,
+            immutable_manifest_sha256,
+        )
         markdown_path, json_path = write_quality_report(results, settings.reports_dir, run_id)
-        finish_run(settings.database_path, run_id, "completed")
         manifest_path = save_json_atomic(
             dataset_manifest, settings.processed_dir / "dataset_manifest.json"
         )
+        if not _canonical_pointer_matches(
+            processed_dir=settings.processed_dir,
+            run_id=run_id,
+            immutable_manifest_path=immutable_manifest_path,
+            immutable_manifest_sha256=immutable_manifest_sha256,
+        ):
+            raise RuntimeError("Canonical pointer does not match immutable manifest")
+        mark_publication_published(settings.database_path, run_id)
+        close = getattr(market, "close", None)
+        if callable(close):
+            close()
+        market = None
+        complete_published_run(settings.database_path, run_id)
         LOGGER.info("Pipeline completed; report=%s", markdown_path)
         return {
             "run_id": run_id,
@@ -220,9 +299,13 @@ def run_pipeline(
         LOGGER.exception("Pipeline failed")
         raise
     finally:
-        close = getattr(market, "close", None)
-        if callable(close):
-            close()
+        if market is not None:
+            close = getattr(market, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    LOGGER.exception("Exchange cleanup failed after pipeline failure")
 
 
 def main() -> None:

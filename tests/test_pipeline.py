@@ -256,3 +256,239 @@ def test_pipeline_does_not_advance_current_pointer_before_run_completion(tmp_pat
         (settings.processed_dir / "dataset_manifest.json").read_text(encoding="utf-8")
     )
     assert current["run_id"] == "complete-run"
+
+
+def _pipeline_settings(tmp_path):
+    return Settings(
+        project_root=tmp_path,
+        exchange="binance",
+        timeframe="1d",
+        since="2024-01-01T00:00:00Z",
+        fetch_limit=1000,
+        max_retries=1,
+        backoff_base_seconds=0.0,
+        request_timeout_ms=1000,
+        assets_config=tmp_path / "config" / "assets.yaml",
+        database_path=tmp_path / "database" / "trading.duckdb",
+        log_level="INFO",
+    )
+
+
+def _valid_rows():
+    return [[1704067200000, 10.0, 12.0, 9.0, 11.0, 100.0]]
+
+
+def _run_status(database_path, run_id):
+    with duckdb.connect(str(database_path), read_only=True) as connection:
+        return connection.execute(
+            "SELECT status, completed_at_utc, error_message FROM ingestion_runs WHERE run_id=?",
+            [run_id],
+        ).fetchone()
+
+
+def test_exchange_creation_failure_after_start_terminalizes_ingestion_run(tmp_path, monkeypatch):
+    settings = _pipeline_settings(tmp_path)
+    monkeypatch.setattr(
+        run_data_pipeline,
+        "create_exchange",
+        lambda *_args: (_ for _ in ()).throw(OSError("exchange unavailable")),
+    )
+
+    with pytest.raises(OSError, match="exchange unavailable"):
+        run_pipeline(settings=settings, assets=["BTC/USDT"], run_id="create-fails")
+
+    status, completed_at, error = _run_status(settings.database_path, "create-fails")
+    assert status == "failed"
+    assert completed_at is not None
+    assert "exchange unavailable" in error
+
+
+def test_provenance_failure_after_exchange_creation_terminalizes_and_closes_once(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+
+    class Exchange:
+        closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    market = Exchange()
+    with pytest.raises(RuntimeError, match="provenance unavailable"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            exchange=market,
+            run_id="provenance-fails",
+            git_provenance=lambda _root: (_ for _ in ()).throw(
+                RuntimeError("provenance unavailable")
+            ),
+        )
+
+    status, completed_at, error = _run_status(settings.database_path, "provenance-fails")
+    assert status == "failed"
+    assert completed_at is not None
+    assert "provenance unavailable" in error
+    assert market.closed == 1
+
+
+def test_artifact_failure_leaves_previous_canonical_pointer_and_terminalizes_run(
+    tmp_path, monkeypatch
+):
+    settings = _pipeline_settings(tmp_path)
+    run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_args, **_kwargs: _valid_rows(),
+        exchange=object(),
+        run_id="previous",
+    )
+    monkeypatch.setattr(
+        run_data_pipeline,
+        "save_clean_parquet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("parquet write failed")),
+    )
+
+    with pytest.raises(OSError, match="parquet write failed"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: _valid_rows(),
+            exchange=object(),
+            run_id="artifact-fails",
+        )
+
+    pointer = json.loads(
+        (settings.processed_dir / "dataset_manifest.json").read_text(encoding="utf-8")
+    )
+    assert pointer["run_id"] == "previous"
+    assert _run_status(settings.database_path, "artifact-fails")[0] == "failed"
+
+
+def test_pointer_publication_failure_does_not_complete_or_replace_previous_pointer(
+    tmp_path, monkeypatch
+):
+    settings = _pipeline_settings(tmp_path)
+    run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_args, **_kwargs: _valid_rows(),
+        exchange=object(),
+        run_id="previous",
+    )
+    original_save = run_data_pipeline.save_json_atomic
+
+    def fail_before_pointer(payload, path, **kwargs):
+        if path == settings.processed_dir / "dataset_manifest.json":
+            raise OSError("pointer publication interrupted")
+        return original_save(payload, path, **kwargs)
+
+    monkeypatch.setattr(run_data_pipeline, "save_json_atomic", fail_before_pointer)
+    with pytest.raises(OSError, match="pointer publication interrupted"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: _valid_rows(),
+            exchange=object(),
+            run_id="pointer-fails",
+        )
+
+    pointer = json.loads(
+        (settings.processed_dir / "dataset_manifest.json").read_text(encoding="utf-8")
+    )
+    assert pointer["run_id"] == "previous"
+    assert _run_status(settings.database_path, "pointer-fails")[0] == "failed"
+
+
+def test_recovery_finalizes_exact_run_when_pointer_published_before_completion(
+    tmp_path, monkeypatch
+):
+    settings = _pipeline_settings(tmp_path)
+    original_complete = run_data_pipeline.complete_published_run
+    monkeypatch.setattr(
+        run_data_pipeline,
+        "complete_published_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            KeyboardInterrupt("interrupted after pointer publication")
+        ),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="interrupted after pointer publication"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: _valid_rows(),
+            exchange=object(),
+            run_id="interrupted",
+        )
+
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    immutable_path = settings.processed_dir / "interrupted" / "dataset_manifest.json"
+    pointer_before_recovery = pointer_path.read_bytes()
+    assert json.loads(pointer_before_recovery)["run_id"] == "interrupted"
+    assert _run_status(settings.database_path, "interrupted")[0] == "running"
+
+    monkeypatch.setattr(run_data_pipeline, "complete_published_run", original_complete)
+    run_data_pipeline.recover_interrupted_publications(settings)
+
+    status, completed_at, error = _run_status(settings.database_path, "interrupted")
+    assert (status, error) == ("completed", None)
+    assert completed_at is not None
+    assert pointer_path.read_bytes() == pointer_before_recovery
+    assert json.loads(immutable_path.read_text(encoding="utf-8")) == json.loads(
+        pointer_before_recovery
+    )
+    with duckdb.connect(str(settings.database_path), read_only=True) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM dataset_metadata WHERE run_id='interrupted'"
+        ).fetchone()[0] == 1
+
+
+def test_successful_publication_closes_exchange_and_completes_after_verified_pointer(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+
+    class Exchange:
+        closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    market = Exchange()
+    result = run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_args, **_kwargs: _valid_rows(),
+        exchange=market,
+        run_id="successful",
+    )
+
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    immutable_path = settings.processed_dir / "successful" / "dataset_manifest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert result["run_id"] == "successful"
+    assert pointer["run_id"] == "successful"
+    assert immutable_path.exists()
+    assert pointer == json.loads(immutable_path.read_text(encoding="utf-8"))
+    assert _run_status(settings.database_path, "successful")[0] == "completed"
+    assert market.closed == 1
+
+
+def test_cleanup_failure_does_not_mask_primary_pipeline_failure(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+
+    class Exchange:
+        def close(self):
+            raise OSError("close failure")
+
+    with pytest.raises(RuntimeError, match="No finalized OHLCV rows"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: [],
+            exchange=Exchange(),
+            run_id="primary-failure",
+        )
+
+    status, completed_at, error = _run_status(settings.database_path, "primary-failure")
+    assert status == "failed"
+    assert completed_at is not None
+    assert "No finalized OHLCV rows" in error

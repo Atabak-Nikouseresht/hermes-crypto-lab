@@ -86,3 +86,36 @@ def test_dataset_metadata_is_stored_in_duckdb(tmp_path):
         ).fetchone()
     assert row[:3] == ("BTC/USDT", 10, 9)
     assert json.loads(row[3])["missing_dates"] == 1
+
+
+def test_ingestion_publication_columns_migrate_existing_database_without_rewriting_rows(
+    tmp_path,
+):
+    database_path = tmp_path / "legacy.duckdb"
+    with duckdb.connect(str(database_path)) as connection:
+        connection.execute(
+            """
+            CREATE TABLE ingestion_runs (
+                run_id VARCHAR PRIMARY KEY,
+                started_at_utc TIMESTAMPTZ NOT NULL,
+                completed_at_utc TIMESTAMPTZ,
+                status VARCHAR NOT NULL,
+                error_message VARCHAR
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO ingestion_runs VALUES ('historic', now(), now(), 'completed', NULL)"
+        )
+
+    initialize_database(database_path)
+
+    with duckdb.connect(str(database_path), read_only=True) as connection:
+        row = connection.execute(
+            """
+            SELECT run_id, status, publication_state, immutable_manifest_path,
+                   immutable_manifest_sha256
+            FROM ingestion_runs WHERE run_id='historic'
+            """
+        ).fetchone()
+    assert row == ("historic", "completed", None, None, None)

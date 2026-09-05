@@ -44,6 +44,9 @@ CREATE TABLE paper_execution_outcomes(run_id VARCHAR PRIMARY KEY, execution_outc
 -- paper_quote_coherence_context (future-only; v3 records remain unchanged)
 CREATE TABLE paper_quote_coherence_context(run_id VARCHAR PRIMARY KEY, contract_version VARCHAR NOT NULL, max_timestamp_skew_seconds INTEGER NOT NULL, earliest_quote_timestamp_utc TIMESTAMP WITH TIME ZONE NOT NULL, latest_quote_timestamp_utc TIMESTAMP WITH TIME ZONE NOT NULL, recorded_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
 
+-- paper_run_release_provenance
+CREATE TABLE paper_run_release_provenance(run_id VARCHAR PRIMARY KEY, git_commit VARCHAR NOT NULL, git_dirty BOOLEAN NOT NULL, hardening_manifest_sha256 VARCHAR NOT NULL, execution_protocol_version VARCHAR NOT NULL, captured_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
+
 -- paper_fills
 CREATE TABLE paper_fills(fill_id VARCHAR PRIMARY KEY, order_id VARCHAR NOT NULL UNIQUE, run_id VARCHAR NOT NULL, symbol VARCHAR NOT NULL, side VARCHAR NOT NULL, filled_quantity DOUBLE NOT NULL, mid_price DOUBLE NOT NULL, execution_price DOUBLE NOT NULL, spread_cost DOUBLE NOT NULL, slippage_cost DOUBLE NOT NULL, fee DOUBLE NOT NULL, filled_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, execution_protocol_version VARCHAR);;
 
@@ -78,4 +81,4 @@ CREATE TABLE paper_schema_versions("version" INTEGER PRIMARY KEY, applied_at_utc
 CREATE TABLE position_ledger(event_id VARCHAR PRIMARY KEY, run_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL, symbol VARCHAR NOT NULL, quantity_delta DOUBLE NOT NULL, quantity_after DOUBLE NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
 
 -- schema versions
-[(2, 'forward paper operations'), (3, 'forward baseline and monthly benchmark alignment'), (4, 'experiment-scoped windows and incidents'), (5, 'versioned ask-bid execution context'), (6, 'final executable order quantity ledger semantics'), (7, 'explicit preservation of pre-adoption ledger semantics'), (8, 'persist proposal and final execution rejection diagnostics'), (9, 'persist run-attributable paper order rejection audit trail'), (10, 'atomically persist forward execution evidence'), (11, 'explicit execution outcomes and post-execution deviation audit')]
+[(2, 'forward paper operations'), (3, 'forward baseline and monthly benchmark alignment'), (4, 'experiment-scoped windows and incidents'), (5, 'versioned ask-bid execution context'), (6, 'final executable order quantity ledger semantics'), (7, 'explicit preservation of pre-adoption ledger semantics'), (8, 'persist proposal and final execution rejection diagnostics'), (9, 'persist run-attributable paper order rejection audit trail'), (10, 'atomically persist forward execution evidence'), (11, 'explicit execution outcomes and post-execution deviation audit'), (12, 'quote coherence provenance and legacy v5 normalization'), (13, 'per-forward-run release provenance')]

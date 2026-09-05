@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -293,6 +294,14 @@ class PaperStore:
                     latest_quote_timestamp_utc TIMESTAMPTZ NOT NULL,
                     recorded_at_utc TIMESTAMPTZ NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS paper_run_release_provenance (
+                    run_id VARCHAR PRIMARY KEY,
+                    git_commit VARCHAR NOT NULL,
+                    git_dirty BOOLEAN NOT NULL,
+                    hardening_manifest_sha256 VARCHAR NOT NULL,
+                    execution_protocol_version VARCHAR NOT NULL,
+                    captured_at_utc TIMESTAMPTZ NOT NULL
+                );
                 """
             )
             connection.execute(
@@ -308,7 +317,7 @@ class PaperStore:
                 [now],
             )
             connection.execute(
-                "INSERT OR IGNORE INTO paper_schema_versions VALUES (5, ?, 'quote coherence contract provenance')",
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (5, ?, 'versioned ask-bid execution context')",
                 [now],
             )
             connection.execute(
@@ -358,7 +367,13 @@ class PaperStore:
                 [now],
             )
             connection.execute(
-                "INSERT OR IGNORE INTO paper_schema_versions VALUES (5, ?, 'versioned ask-bid execution context')",
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(12, ?, 'quote coherence provenance and legacy v5 normalization')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(13, ?, 'per-forward-run release provenance')",
                 [now],
             )
             schema_v6 = connection.execute(
@@ -470,6 +485,29 @@ class PaperStore:
 
     def reconcile(self, tolerance: float = 1e-7) -> ReconciliationResult:
         with self.connect(read_only=True) as connection:
+            adoption = connection.execute(
+                "SELECT applied_at_utc FROM paper_schema_versions WHERE version=13"
+            ).fetchone()
+            has_forward_experiment = connection.execute(
+                "SELECT EXISTS (SELECT 1 FROM forward_experiments)"
+            ).fetchone()[0]
+            if adoption is not None and has_forward_experiment:
+                missing_release_provenance = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM paper_runs r
+                    LEFT JOIN paper_run_release_provenance p ON p.run_id=r.run_id
+                    WHERE r.mode='PAPER' AND r.schedule_key IS NOT NULL
+                      AND r.started_at_utc >= ?
+                      AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED', 'RELEASE_PROVENANCE_FAILURE')
+                      AND p.run_id IS NULL
+                    """,
+                    [adoption[0]],
+                ).fetchone()[0]
+                if missing_release_provenance:
+                    return ReconciliationResult(
+                        False, "Missing release provenance for post-adoption forward paper run"
+                    )
             account = connection.execute(
                 "SELECT cash FROM paper_accounts WHERE account_id=?", [self.account_id]
             ).fetchone()
@@ -1119,6 +1157,41 @@ class PaperStore:
                 VALUES (?, ?, NULL, 'RUNNING', ?, ?, ?, ?, NULL, NULL)
                 """,
                 [run_id, started_at, mode, schedule_key, signal_timestamp, data_timestamp],
+            )
+
+    def record_run_release_provenance(
+        self,
+        *,
+        run_id: str,
+        git_commit: str,
+        git_dirty: bool,
+        hardening_manifest_sha256: str,
+        execution_protocol_version: str,
+        captured_at_utc: datetime,
+    ) -> None:
+        if re.fullmatch(r"[0-9a-f]{40}", git_commit) is None:
+            raise ValueError("Release provenance Git commit must be an exact 40-character SHA")
+        if type(git_dirty) is not bool or git_dirty:
+            raise ValueError("Official release provenance must be clean")
+        if re.fullmatch(r"[0-9a-f]{64}", hardening_manifest_sha256) is None:
+            raise ValueError("Release provenance hardening manifest hash is invalid")
+        if execution_protocol_version != EXECUTION_PROTOCOL_VERSION:
+            raise ValueError("Release provenance execution protocol is invalid")
+        with self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM paper_run_release_provenance WHERE run_id=?", [run_id]
+            ).fetchone() is not None:
+                raise FileExistsError(f"Release provenance already exists for run {run_id}")
+            connection.execute(
+                "INSERT INTO paper_run_release_provenance VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    run_id,
+                    git_commit,
+                    git_dirty,
+                    hardening_manifest_sha256,
+                    execution_protocol_version,
+                    captured_at_utc,
+                ],
             )
 
     def order_rejections(self, run_id: str) -> list[dict[str, Any]]:

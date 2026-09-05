@@ -9,7 +9,10 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
+from src.execution_protocol import (
+    EXECUTION_PROTOCOL_VERSION,
+    QUOTE_COHERENCE_CONTRACT_VERSION,
+)
 from src.forward_operations import verify_immutable_manifest
 from src.paper_broker import PaperConfig
 from src.paper_store import PaperStore
@@ -165,6 +168,26 @@ def verify_governance(path: Path, sidecar: Path) -> str:
     return verify_immutable_manifest(path, sidecar)
 
 
+def verify_quote_coherence_runtime_contract(
+    payload: dict[str, Any], config: PaperConfig
+) -> None:
+    """Require runtime quote coherence to exactly match its governed contract."""
+    if type(payload) is not dict:
+        raise ValueError("Quote coherence contract must be an object")
+    if payload.get("version") != QUOTE_COHERENCE_CONTRACT_VERSION:
+        raise ValueError("Quote coherence contract version is not governed")
+    if payload.get("execution_protocol_version") != EXECUTION_PROTOCOL_VERSION:
+        raise ValueError("Quote coherence execution protocol is not governed")
+    rule = payload.get("rule")
+    if type(rule) is not dict:
+        raise ValueError("Quote coherence contract rule is missing")
+    skew = rule.get("max_quote_timestamp_skew_seconds")
+    if type(skew) is not int or skew <= 0:
+        raise ValueError("Quote coherence contract skew must be a positive exact integer")
+    if config.max_quote_timestamp_skew_seconds != skew:
+        raise ValueError("Runtime quote timestamp skew differs from governed contract")
+
+
 def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, str]:
     """Verify files against code-anchored release digests, not mutable sidecars alone."""
     project_root = Path(project_root)
@@ -268,6 +291,7 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     ):
         raise ValueError("Economic integrity amendment declares a prohibited research change")
     quote_payload = json.loads(quote_coherence_amendment.read_text(encoding="utf-8"))
+    quote_contract_payload = json.loads(quote_coherence_contract.read_text(encoding="utf-8"))
     if quote_payload["prior_economic_governance_amendment_sha256"] != actual_economic_amendment:
         raise ValueError("Quote coherence amendment does not anchor economic governance")
     if quote_payload["quote_coherence_contract_sha256"] != actual_quote_coherence_contract:
@@ -283,6 +307,7 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         )
     ):
         raise ValueError("Quote coherence amendment declares a prohibited historical or economic change")
+    verify_quote_coherence_runtime_contract(quote_contract_payload, config)
     declared_schedule = amendment_payload["operational_schedule"]
     actual_schedule = {
         "schedule_weekday": config.schedule_weekday,

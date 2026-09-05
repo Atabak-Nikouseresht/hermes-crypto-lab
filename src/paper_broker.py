@@ -834,6 +834,7 @@ class PaperTradingSystem:
         forward_diagnostics: dict[str, Any] | None = None,
         release_provenance: ReleaseProvenance | None = None,
         require_release_provenance: bool = False,
+        official_scheduled: bool = False,
     ) -> PaperRunResult:
         now_ts = self._utc(now)
         run_id = (
@@ -842,9 +843,51 @@ class PaperTradingSystem:
             + "_"
             + uuid.uuid4().hex[:8]
         )
+        official_scheduled = official_scheduled or require_release_provenance
+        scheduled_key = self._scheduled_key(now_ts) if official_scheduled else None
+        if require_release_provenance and release_provenance is None:
+            reconciliation = self.store.reconcile()
+            self.store.insert_run(
+                run_id=run_id,
+                started_at=now_ts.to_pydatetime(),
+                mode="DRY_RUN" if dry_run else "PAPER",
+                schedule_key=scheduled_key,
+                signal_timestamp=None,
+                data_timestamp=None,
+                official_scheduled=official_scheduled,
+                allow_missing_release_provenance=True,
+            )
+            message = "Official scheduled paper execution requires verified release provenance"
+            self.store.finish_run(
+                run_id=run_id,
+                status="RELEASE_PROVENANCE_FAILURE",
+                completed_at=now_ts.to_pydatetime(),
+                message=message,
+                reconciliation=reconciliation,
+            )
+            return PaperRunResult(run_id, "RELEASE_PROVENANCE_FAILURE", message)
         account = self.store.account()
         if account["status"] != "ACTIVE":
-            return PaperRunResult(run_id, "KILL_SWITCH", "Paper account is halted")
+            reconciliation = self.store.reconcile()
+            self.store.insert_run(
+                run_id=run_id,
+                started_at=now_ts.to_pydatetime(),
+                mode="DRY_RUN" if dry_run else "PAPER",
+                schedule_key=scheduled_key,
+                signal_timestamp=None,
+                data_timestamp=None,
+                official_scheduled=official_scheduled,
+                release_provenance=release_provenance,
+            )
+            message = "Paper account is halted"
+            self.store.finish_run(
+                run_id=run_id,
+                status="KILL_SWITCH",
+                completed_at=now_ts.to_pydatetime(),
+                message=message,
+                reconciliation=reconciliation,
+            )
+            return PaperRunResult(run_id, "KILL_SWITCH", message)
 
         reconciliation = self.store.reconcile()
         if not reconciliation.valid:
@@ -852,9 +895,11 @@ class PaperTradingSystem:
                 run_id=run_id,
                 started_at=now_ts.to_pydatetime(),
                 mode="DRY_RUN" if dry_run else "PAPER",
-                schedule_key=None,
+                schedule_key=scheduled_key,
                 signal_timestamp=None,
                 data_timestamp=None,
+                official_scheduled=official_scheduled,
+                release_provenance=release_provenance,
             )
             self.store.activate_kill_switch(
                 reconciliation.message, run_id=run_id, now=now_ts.to_pydatetime()
@@ -874,9 +919,11 @@ class PaperTradingSystem:
                 run_id=run_id,
                 started_at=now_ts.to_pydatetime(),
                 mode="DRY_RUN" if dry_run else "PAPER",
-                schedule_key=None,
+                schedule_key=scheduled_key,
                 signal_timestamp=None,
                 data_timestamp=snapshot.closes.index[-1].to_pydatetime(),
+                official_scheduled=official_scheduled,
+                release_provenance=release_provenance,
             )
             self.store.finish_run(
                 run_id=run_id,
@@ -896,6 +943,8 @@ class PaperTradingSystem:
                 schedule_key=None,
                 signal_timestamp=None,
                 data_timestamp=snapshot.closes.index[-1].to_pydatetime(),
+                official_scheduled=official_scheduled,
+                release_provenance=release_provenance,
             )
             with self.store.connect() as connection:
                 equity = self._persist_equity(
@@ -924,12 +973,6 @@ class PaperTradingSystem:
                 "DUPLICATE_SCHEDULE",
                 f"Schedule {schedule_key} was already executed",
             )
-        if not dry_run and require_release_provenance and release_provenance is None:
-            return PaperRunResult(
-                run_id,
-                "RELEASE_PROVENANCE_FAILURE",
-                "Official scheduled paper execution requires verified release provenance",
-            )
         signal_timestamp, proposals = self._proposals(snapshot)
 
         self.store.insert_run(
@@ -939,26 +982,9 @@ class PaperTradingSystem:
             schedule_key=None if dry_run else schedule_key,
             signal_timestamp=signal_timestamp.to_pydatetime(),
             data_timestamp=snapshot.closes.index[-1].to_pydatetime(),
+            official_scheduled=official_scheduled,
+            release_provenance=None if dry_run else release_provenance,
         )
-        if not dry_run and release_provenance is not None:
-            try:
-                self.store.record_run_release_provenance(
-                    run_id=run_id,
-                    git_commit=release_provenance.git_commit,
-                    git_dirty=release_provenance.git_dirty,
-                    hardening_manifest_sha256=release_provenance.hardening_manifest_sha256,
-                    execution_protocol_version=release_provenance.execution_protocol_version,
-                    captured_at_utc=release_provenance.captured_at_utc,
-                )
-            except (FileExistsError, ValueError) as error:
-                self.store.finish_run(
-                    run_id=run_id,
-                    status="RELEASE_PROVENANCE_FAILURE",
-                    completed_at=now_ts.to_pydatetime(),
-                    message=str(error),
-                    reconciliation=reconciliation,
-                )
-                return PaperRunResult(run_id, "RELEASE_PROVENANCE_FAILURE", str(error))
         if dry_run:
             with self.store.connect() as connection:
                 equity = self._persist_equity(

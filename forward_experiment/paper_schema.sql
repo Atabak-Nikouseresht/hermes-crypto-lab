@@ -72,7 +72,7 @@ CREATE TABLE paper_positions(account_id VARCHAR, symbol VARCHAR, quantity DOUBLE
 CREATE TABLE paper_run_diagnostics(run_id VARCHAR PRIMARY KEY, outcome VARCHAR NOT NULL, regime VARCHAR, btc_vs_trend DOUBLE, momentum JSON, eligibility JSON, selected_assets JSON, current_weights JSON, target_weights JSON, proposed_orders JSON, turnover DOUBLE, kill_switch_active BOOLEAN NOT NULL, reconciliation_valid BOOLEAN NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, rejected_orders JSON, target_deviation JSON);;
 
 -- paper_runs
-CREATE TABLE paper_runs(run_id VARCHAR PRIMARY KEY, started_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, completed_at_utc TIMESTAMP WITH TIME ZONE, status VARCHAR NOT NULL, "mode" VARCHAR NOT NULL, schedule_key VARCHAR UNIQUE, signal_timestamp_utc TIMESTAMP WITH TIME ZONE, data_timestamp_utc TIMESTAMP WITH TIME ZONE, message VARCHAR, reconciliation JSON);;
+CREATE TABLE paper_runs(run_id VARCHAR PRIMARY KEY, started_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, completed_at_utc TIMESTAMP WITH TIME ZONE, status VARCHAR NOT NULL, "mode" VARCHAR NOT NULL, official_scheduled BOOLEAN NOT NULL DEFAULT false, schedule_key VARCHAR UNIQUE, signal_timestamp_utc TIMESTAMP WITH TIME ZONE, data_timestamp_utc TIMESTAMP WITH TIME ZONE, message VARCHAR, reconciliation JSON);;
 
 -- paper_schema_versions
 CREATE TABLE paper_schema_versions("version" INTEGER PRIMARY KEY, applied_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, description VARCHAR NOT NULL);;

@@ -197,6 +197,7 @@ def commit_operational_failure(
     message: str,
     now: datetime | pd.Timestamp,
     release_provenance: Any | None = None,
+    official_scheduled: bool = False,
 ) -> PaperRunResult:
     """Commit an operational failure as a terminal run without trading."""
     now_ts = pd.Timestamp(now).tz_convert("UTC")
@@ -222,16 +223,12 @@ def commit_operational_failure(
         schedule_key=schedule_key,
         signal_timestamp=None,
         data_timestamp=None,
+        official_scheduled=official_scheduled,
+        release_provenance=release_provenance,
+        allow_missing_release_provenance=(
+            official_scheduled and outcome == "RELEASE_PROVENANCE_FAILURE"
+        ),
     )
-    if release_provenance is not None:
-        system.store.record_run_release_provenance(
-            run_id=run_id,
-            git_commit=release_provenance.git_commit,
-            git_dirty=release_provenance.git_dirty,
-            hardening_manifest_sha256=release_provenance.hardening_manifest_sha256,
-            execution_protocol_version=release_provenance.execution_protocol_version,
-            captured_at_utc=release_provenance.captured_at_utc,
-        )
     if outcome in {
         "RECONCILIATION_FAILURE",
         "KILL_SWITCH_ACTIVATED",

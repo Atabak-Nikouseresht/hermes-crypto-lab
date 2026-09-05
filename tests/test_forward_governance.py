@@ -225,6 +225,7 @@ def test_quote_coherence_runtime_contract_requires_exact_governed_skew():
         {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": 30.0}},
         {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": "30"}},
         {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": True}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": False}},
         {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": None}},
         {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": 0}},
         {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": -1}},
@@ -241,6 +242,13 @@ def test_repository_governance_amendment_rejects_schedule_drift():
 
     with pytest.raises(ValueError, match="economic specification|schedule"):
         verify_trust_anchors(root, config)
+
+
+def test_trust_anchors_reject_runtime_quote_skew_mismatch():
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+
+    with pytest.raises(ValueError, match="quote timestamp skew"):
+        verify_trust_anchors(root, replace(_economic_config(), max_quote_timestamp_skew_seconds=60))
 
 
 def test_forward_experiment_bootstrap_is_idempotent(tmp_path):

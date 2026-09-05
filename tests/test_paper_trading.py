@@ -138,6 +138,79 @@ def test_official_scheduled_paper_run_without_release_provenance_creates_no_orde
     assert (orders, fills) == (0, 0)
 
 
+def _release_provenance(now: datetime) -> ReleaseProvenance:
+    return ReleaseProvenance(
+        git_commit="a" * 40,
+        git_dirty=False,
+        hardening_manifest_sha256="b" * 64,
+        execution_protocol_version="paper-exec-v3-ask-bid-minspread-utc0010",
+        captured_at_utc=now,
+    )
+
+
+def _run_provenance_and_trade_counts(system: PaperTradingSystem, run_id: str) -> tuple[int, int, int]:
+    with system.store.connect(read_only=True) as connection:
+        return connection.execute(
+            "SELECT "
+            "(SELECT COUNT(*) FROM paper_run_release_provenance WHERE run_id=?), "
+            "(SELECT COUNT(*) FROM paper_orders WHERE run_id=?), "
+            "(SELECT COUNT(*) FROM paper_fills WHERE run_id=?)",
+            [run_id, run_id, run_id],
+        ).fetchone()
+
+
+def test_official_snapshot_failure_persists_captured_provenance_without_orders_or_fills(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "snapshot-provenance.duckdb", _config())
+
+    result = system.run(
+        _snapshot(now, stale_days=2),
+        now=now,
+        dry_run=False,
+        release_provenance=_release_provenance(now),
+        require_release_provenance=True,
+        official_scheduled=True,
+    )
+
+    assert result.status == "DATA_HALT"
+    assert _run_provenance_and_trade_counts(system, result.run_id) == (1, 0, 0)
+
+
+def test_official_reconciliation_failure_persists_captured_provenance_without_orders_or_fills(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "reconciliation-provenance.duckdb", _config())
+    with system.store.connect() as connection:
+        connection.execute("UPDATE paper_accounts SET cash=0 WHERE account_id='locked_strategy'")
+
+    result = system.run(
+        _snapshot(now),
+        now=now,
+        dry_run=False,
+        release_provenance=_release_provenance(now),
+        require_release_provenance=True,
+        official_scheduled=True,
+    )
+
+    assert result.status == "KILL_SWITCH"
+    assert _run_provenance_and_trade_counts(system, result.run_id) == (1, 0, 0)
+
+
+def test_official_provenance_admission_failure_is_durable_without_provenance_orders_or_fills(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "provenance-failure.duckdb", _config())
+
+    result = system.run(
+        _snapshot(now),
+        now=now,
+        dry_run=False,
+        require_release_provenance=True,
+        official_scheduled=True,
+    )
+
+    assert result.status == "RELEASE_PROVENANCE_FAILURE"
+    assert _run_provenance_and_trade_counts(system, result.run_id) == (0, 0, 0)
+
+
 @pytest.mark.parametrize(
     ("proposed", "executed", "rejected", "expected"),
     [
@@ -561,7 +634,7 @@ def test_schema_v8_adds_rejected_order_diagnostics_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,'historical','{}')"
         )
         connection.execute("ALTER TABLE paper_run_diagnostics DROP COLUMN rejected_orders")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=8")
@@ -593,7 +666,7 @@ def test_schema_v9_adds_persistent_rejection_audit_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,'historical','{}')"
         )
         connection.execute("DROP TABLE paper_order_rejections")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=9")

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import run_paper
 from run_paper import _current_schedule_window_closed
 from scripts import paper_forward_weekly
 from scripts.interpreter import resolve_project_python
@@ -168,6 +169,81 @@ def test_weekly_dispatch_retries_explicit_retryable_exit_code(monkeypatch):
     monkeypatch.setattr(paper_forward_weekly.subprocess, "run", lambda *_args, **_kwargs: next(results))
     times = iter([datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc), datetime(2026, 1, 5, 0, 11, tzinfo=timezone.utc)])
     assert paper_forward_weekly.main(clock=lambda: next(times), sleeper=lambda _seconds: None, python_resolver=lambda _project: Path("scheduler-python")) == 0
+
+
+def test_weekly_wrapper_retries_the_actual_data_halt_exit_from_run_paper(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from src.paper_broker import PaperConfig, PaperRunResult
+
+    data_halt = PaperRunResult(
+        "halted-run", "DATA_HALT", "validated snapshot rejected", outcome="DATA_QUALITY_FAILURE"
+    )
+    config = PaperConfig(assets=("BTC/USDT",))
+    settings = SimpleNamespace(
+        project_root=tmp_path,
+        logs_dir=tmp_path / "logs",
+        log_level="INFO",
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1_000,
+    )
+    system = SimpleNamespace(
+        store=SimpleNamespace(
+            forward_window_exists=lambda _key: False,
+            schedule_exists=lambda _key: False,
+            account=lambda: {"status": "ACTIVE"},
+        ),
+        _scheduled_key=lambda _now: None,
+        _validate_snapshot=lambda *_args: None,
+        run=lambda *_args, **_kwargs: data_halt,
+    )
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield system
+
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, {"database_path": "paper.duckdb", "reports_dir": "reports", "default_dry_run": True}))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: run_paper.pd.Timestamp("2026-01-05T00:10:00Z"))
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: SimpleNamespace(fetched_at=run_paper.pd.Timestamp("2026-01-05T00:10:00Z")))
+    monkeypatch.setattr(run_paper, "finalize_forward_run", lambda *_args, **_kwargs: data_halt)
+    monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: tmp_path / "report.md")
+    monkeypatch.setattr("sys.argv", ["run_paper.py", "--dry-run"])
+
+    calls, actual_return_codes = [], []
+
+    def run(*args, **_kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            with pytest.raises(SystemExit) as exc:
+                run_paper.main()
+            actual_return_codes.append(exc.value.code)
+            return subprocess.CompletedProcess(args[0], exc.value.code, "", "DATA_HALT")
+        return subprocess.CompletedProcess(args[0], 0, "Status: EXECUTED", "")
+
+    times = iter(
+        [
+            datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc),
+            datetime(2026, 1, 5, 0, 11, tzinfo=timezone.utc),
+        ]
+    )
+    monkeypatch.setattr(paper_forward_weekly.subprocess, "run", run)
+
+    assert paper_forward_weekly.main(
+        clock=lambda: next(times),
+        sleeper=lambda _seconds: None,
+        python_resolver=lambda _project: Path("scheduler-python"),
+    ) == 0
+    assert actual_return_codes == [paper_forward_weekly.RETRYABLE_EXIT_CODE]
+    assert actual_return_codes[0] in paper_forward_weekly.RETRYABLE_EXIT_CODES
+    assert len(calls) == 2
 
 
 def test_weekly_dispatch_delegates_duplicate_prevention_to_committed_run(monkeypatch):

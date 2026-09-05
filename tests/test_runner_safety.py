@@ -13,10 +13,220 @@ import pandas as pd
 import run_paper
 from src.forward_operations import AlreadyRunningError, InterProcessLock
 from src.config import load_settings
-from src.paper_broker import PaperConfig
+from src.paper_broker import (
+    MarketSnapshot,
+    PaperConfig,
+    PaperRunResult,
+    PaperTradingSystem,
+    Quote,
+)
+from src.release_provenance import ReleaseProvenance
 
 
 ASSETS = ("BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT")
+
+
+def _stale_snapshot(now: datetime, assets: tuple[str, ...]) -> MarketSnapshot:
+    dates = pd.date_range("2025-04-20", periods=260, freq="D", tz="UTC")
+    closes = pd.DataFrame(
+        {asset: range(100, 360) for asset in assets}, index=dates, dtype=float
+    )
+    quotes = {
+        asset: Quote(bid=99.9, ask=100.1, last=100.0, timestamp=pd.Timestamp(now))
+        for asset in assets
+    }
+    return MarketSnapshot(closes=closes, quotes=quotes, fetched_at=pd.Timestamp(now))
+
+
+def _release_provenance(now: datetime) -> ReleaseProvenance:
+    return ReleaseProvenance(
+        git_commit="a" * 40,
+        git_dirty=False,
+        hardening_manifest_sha256="b" * 64,
+        execution_protocol_version="paper-exec-v3-ask-bid-minspread-utc0010",
+        captured_at_utc=now,
+    )
+
+
+def _configure_real_data_halt_runner(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    now = datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "data-halt.duckdb", config)
+    snapshot = _stale_snapshot(now, config.assets)
+    values = {
+        **values,
+        "database_path": str(tmp_path / "data-halt.duckdb"),
+        "reports_dir": str(tmp_path / "reports"),
+    }
+    settings = SimpleNamespace(
+        project_root=root,
+        logs_dir=tmp_path / "logs",
+        log_level="INFO",
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1_000,
+    )
+
+    class ControlledDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    @contextmanager
+    def open_real_system(**_kwargs):
+        yield system
+
+    monkeypatch.setattr(run_paper, "datetime", ControlledDateTime)
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_real_system)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: pd.Timestamp(now))
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
+    monkeypatch.setattr(run_paper, "capture_release_provenance", lambda _root: _release_provenance(now))
+    monkeypatch.setattr(run_paper, "resolve_telegram_target", lambda _target: "telegram:test")
+    monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: tmp_path / "report.md")
+    monkeypatch.setattr(
+        run_paper,
+        "NotificationService",
+        lambda *_args, **_kwargs: SimpleNamespace(send_committed_run=lambda *_args: None),
+    )
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--paper"])
+    return system, now
+
+
+def test_real_data_halt_runner_exit_is_retryable_and_leaves_schedule_unclaimed(
+    monkeypatch, tmp_path
+):
+    system, _now = _configure_real_data_halt_runner(monkeypatch, tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        run_paper.main()
+
+    assert exc.value.code == 4
+    with system.store.connect(read_only=True) as connection:
+        run_id, status, attempted_schedule_key, schedule_key = connection.execute(
+            "SELECT run_id, status, attempted_schedule_key, schedule_key FROM paper_runs"
+        ).fetchone()
+        counts = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM paper_orders WHERE run_id=?), "
+            "(SELECT COUNT(*) FROM paper_fills WHERE run_id=?), "
+            "(SELECT COUNT(*) FROM forward_market_observations WHERE run_id=?), "
+            "(SELECT COUNT(*) FROM forward_schedule_windows)",
+            [run_id, run_id, run_id],
+        ).fetchone()
+    assert (status, attempted_schedule_key, schedule_key) == (
+        "DATA_HALT",
+        "2026-01-05T00:05Z",
+        None,
+    )
+    assert counts == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        PaperRunResult("terminal", "RECONCILIATION_FAILURE", "reconcile", outcome="RECONCILIATION_FAILURE"),
+        PaperRunResult("terminal", "KILL_SWITCH", "halted", outcome="KILL_SWITCH_ACTIVATED"),
+        PaperRunResult("terminal", "EXECUTION_ERROR", "execution", outcome="EXECUTION_ERROR"),
+        PaperRunResult("terminal", "RELEASE_PROVENANCE_FAILURE", "release", outcome="RELEASE_PROVENANCE_FAILURE"),
+    ],
+)
+def test_real_runner_terminal_result_handling_remains_non_retryable(monkeypatch, tmp_path, result):
+    config = PaperConfig(assets=ASSETS)
+    settings = SimpleNamespace(
+        project_root=tmp_path,
+        logs_dir=tmp_path / "logs",
+        log_level="INFO",
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1_000,
+    )
+    snapshot = SimpleNamespace(fetched_at=pd.Timestamp("2026-01-06T00:10:00Z"))
+    system = SimpleNamespace(
+        store=SimpleNamespace(
+            forward_window_exists=lambda _key: False,
+            schedule_exists=lambda _key: False,
+            account=lambda: {"status": "ACTIVE"},
+        ),
+        _scheduled_key=lambda _now: None,
+        _validate_snapshot=lambda *_args: None,
+        run=lambda *_args, **_kwargs: result,
+    )
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield system
+
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, {"database_path": "paper.duckdb", "reports_dir": "reports", "default_dry_run": True}))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: snapshot.fetched_at)
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
+    monkeypatch.setattr(run_paper, "finalize_forward_run", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: tmp_path / "report.md")
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--dry-run"])
+
+    with pytest.raises(SystemExit) as exc:
+        run_paper.main()
+
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("final_outcome", "exit_code"),
+    [("NO_REBALANCE", None), ("RELEASE_PROVENANCE_FAILURE", 2)],
+)
+def test_duplicate_schedule_exit_reflects_the_committed_final_outcome(
+    monkeypatch, tmp_path, capsys, final_outcome, exit_code
+):
+    config = PaperConfig(assets=ASSETS)
+    now = datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc)
+    settings = SimpleNamespace(project_root=tmp_path, logs_dir=tmp_path, log_level="INFO")
+    store = SimpleNamespace(
+        forward_window_exists=lambda _key: False,
+        schedule_exists=lambda _key: True,
+        schedule_final_outcome=lambda _key: final_outcome,
+    )
+    system = SimpleNamespace(store=store, _scheduled_key=lambda _now: "2026-01-05T00:05Z")
+
+    class ControlledDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield system
+
+    monkeypatch.setattr(run_paper, "datetime", ControlledDateTime)
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, {"database_path": "paper.duckdb", "reports_dir": "reports", "default_dry_run": False}))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: pd.Timestamp(now))
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "resolve_telegram_target", lambda _target: "telegram:test")
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--paper"])
+
+    if exit_code is None:
+        run_paper.main()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            run_paper.main()
+        assert exc.value.code == exit_code
+
+    assert "DUPLICATE_SCHEDULE" in capsys.readouterr().out
 
 
 def test_canonical_backtest_ignores_economic_environment_overrides(tmp_path, monkeypatch):

@@ -851,9 +851,10 @@ class PaperTradingSystem:
                 run_id=run_id,
                 started_at=now_ts.to_pydatetime(),
                 mode="DRY_RUN" if dry_run else "PAPER",
-                schedule_key=scheduled_key,
+                schedule_key=None,
                 signal_timestamp=None,
                 data_timestamp=None,
+                attempted_schedule_key=scheduled_key,
                 official_scheduled=official_scheduled,
                 allow_missing_release_provenance=True,
             )
@@ -919,9 +920,10 @@ class PaperTradingSystem:
                 run_id=run_id,
                 started_at=now_ts.to_pydatetime(),
                 mode="DRY_RUN" if dry_run else "PAPER",
-                schedule_key=scheduled_key,
+                schedule_key=None,
                 signal_timestamp=None,
                 data_timestamp=snapshot.closes.index[-1].to_pydatetime(),
+                attempted_schedule_key=scheduled_key,
                 official_scheduled=official_scheduled,
                 release_provenance=release_provenance,
             )

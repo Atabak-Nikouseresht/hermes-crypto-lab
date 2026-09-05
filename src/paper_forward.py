@@ -198,15 +198,20 @@ def commit_operational_failure(
     now: datetime | pd.Timestamp,
     release_provenance: Any | None = None,
     official_scheduled: bool = False,
+    retryable_admission_failure: bool = False,
 ) -> PaperRunResult:
     """Commit an operational failure as a terminal run without trading."""
     now_ts = pd.Timestamp(now).tz_convert("UTC")
     run_id = "paper_failure_" + now_ts.strftime("%Y%m%dT%H%M%S%fZ") + "_" + uuid.uuid4().hex[:8]
     schedule_key = system._scheduled_key(now_ts)
-    transient_data_halt = outcome == "DATA_QUALITY_FAILURE"
-    if transient_data_halt:
-        # Invalid public evidence is not a committed schedule outcome: a valid
-        # retry remains permissible until the governed window closes.
+    retryable_admission = outcome == "DATA_QUALITY_FAILURE" or (
+        outcome == "RELEASE_PROVENANCE_FAILURE" and retryable_admission_failure
+    )
+    attempted_schedule_key = None
+    if retryable_admission:
+        # Retryable admission evidence is durable but cannot claim the unique
+        # executable weekly schedule while its governed window remains open.
+        attempted_schedule_key = schedule_key
         schedule_key = None
     if schedule_key and system.store.schedule_exists(schedule_key):
         return PaperRunResult(
@@ -223,6 +228,7 @@ def commit_operational_failure(
         schedule_key=schedule_key,
         signal_timestamp=None,
         data_timestamp=None,
+        attempted_schedule_key=attempted_schedule_key,
         official_scheduled=official_scheduled,
         release_provenance=release_provenance,
         allow_missing_release_provenance=(
@@ -258,7 +264,7 @@ def commit_operational_failure(
         scheduled_for = target.to_pydatetime()
     else:
         scheduled_for = None
-    if not transient_data_halt:
+    if not retryable_admission:
         system.store.record_forward_incident(
             incident_type=outcome,
             reason=message,

@@ -143,6 +143,7 @@ class PaperStore:
                     mode VARCHAR NOT NULL,
                     official_scheduled BOOLEAN NOT NULL DEFAULT FALSE,
                     schedule_key VARCHAR UNIQUE,
+                    attempted_schedule_key VARCHAR,
                     signal_timestamp_utc TIMESTAMPTZ,
                     data_timestamp_utc TIMESTAMPTZ,
                     message VARCHAR,
@@ -334,6 +335,9 @@ class PaperStore:
                 "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS official_scheduled BOOLEAN DEFAULT FALSE"
             )
             connection.execute(
+                "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS attempted_schedule_key VARCHAR"
+            )
+            connection.execute(
                 "ALTER TABLE paper_run_diagnostics "
                 "ADD COLUMN IF NOT EXISTS rejected_orders JSON"
             )
@@ -378,6 +382,11 @@ class PaperStore:
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES "
                 "(13, ?, 'per-forward-run release provenance')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(14, ?, 'retryable forward admission attempt schedule identity')",
                 [now],
             )
             schema_v6 = connection.execute(
@@ -1151,6 +1160,7 @@ class PaperStore:
         schedule_key: str | None,
         signal_timestamp: datetime | None,
         data_timestamp: datetime | None,
+        attempted_schedule_key: str | None = None,
         official_scheduled: bool = False,
         release_provenance: Any | None = None,
         allow_missing_release_provenance: bool = False,
@@ -1173,9 +1183,9 @@ class PaperStore:
             connection.execute(
                 """
                 INSERT INTO paper_runs
-                (run_id, started_at_utc, completed_at_utc, status, mode, official_scheduled, schedule_key,
+                (run_id, started_at_utc, completed_at_utc, status, mode, official_scheduled, schedule_key, attempted_schedule_key,
                  signal_timestamp_utc, data_timestamp_utc, message, reconciliation)
-                VALUES (?, ?, NULL, 'RUNNING', ?, ?, ?, ?, ?, NULL, NULL)
+                VALUES (?, ?, NULL, 'RUNNING', ?, ?, ?, ?, ?, ?, NULL, NULL)
                 """,
                 [
                     run_id,
@@ -1183,6 +1193,7 @@ class PaperStore:
                     mode,
                     official_scheduled,
                     schedule_key,
+                    attempted_schedule_key,
                     signal_timestamp,
                     data_timestamp,
                 ],

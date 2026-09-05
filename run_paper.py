@@ -471,12 +471,14 @@ def main() -> None:
                 try:
                     release_provenance = capture_release_provenance(settings.project_root)
                 except RuntimeError as error:
+                    retryable_provenance_failure = "requires local Git metadata" in str(error)
                     result = commit_operational_failure(
                         system,
                         outcome="RELEASE_PROVENANCE_FAILURE",
                         message=str(error),
                         now=now,
                         official_scheduled=True,
+                        retryable_admission_failure=retryable_provenance_failure,
                     )
                     report_path = write_operational_failure_report(
                         system.store,

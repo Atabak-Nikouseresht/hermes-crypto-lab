@@ -634,7 +634,7 @@ def test_schema_v8_adds_rejected_order_diagnostics_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
         )
         connection.execute("ALTER TABLE paper_run_diagnostics DROP COLUMN rejected_orders")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=8")
@@ -666,7 +666,7 @@ def test_schema_v9_adds_persistent_rejection_audit_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
         )
         connection.execute("DROP TABLE paper_order_rejections")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=9")
@@ -1309,6 +1309,47 @@ def test_data_halt_allows_valid_retry_inside_same_governed_window(tmp_path):
 
     assert halted.status == "DATA_HALT"
     assert succeeded.status == "EXECUTED"
+    assert system.store.schedule_exists("2024-08-05T09:05Z")
+
+
+def test_official_data_halt_records_attempt_without_consuming_schedule_for_retry(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    retry_at = datetime(2024, 8, 5, 9, 11, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "official-data-halt-retry.duckdb", _config())
+
+    halted = system.run(
+        _snapshot(now, stale_days=2),
+        now=now,
+        dry_run=False,
+        release_provenance=_release_provenance(now),
+        require_release_provenance=True,
+        official_scheduled=True,
+    )
+    retried = system.run(
+        _snapshot(retry_at),
+        now=retry_at,
+        dry_run=False,
+        release_provenance=_release_provenance(retry_at),
+        require_release_provenance=True,
+        official_scheduled=True,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        attempted_key, schedule_key = connection.execute(
+            "SELECT attempted_schedule_key, schedule_key FROM paper_runs WHERE run_id=?",
+            [halted.run_id],
+        ).fetchone()
+        orders, fills, observations, windows = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM paper_orders WHERE run_id=?), (SELECT COUNT(*) FROM paper_fills WHERE run_id=?), "
+            "(SELECT COUNT(*) FROM forward_market_observations WHERE run_id=?), "
+            "(SELECT COUNT(*) FROM forward_schedule_windows)"
+            ,
+            [halted.run_id, halted.run_id, halted.run_id],
+        ).fetchone()
+    assert halted.status == "DATA_HALT"
+    assert (attempted_key, schedule_key) == ("2024-08-05T09:05Z", None)
+    assert (orders, fills, observations, windows) == (0, 0, 0, 0)
+    assert retried.status == "EXECUTED"
     assert system.store.schedule_exists("2024-08-05T09:05Z")
 
 

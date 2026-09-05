@@ -14,6 +14,7 @@ from src.paper_store import PaperStore
 V5_EXECUTION = "versioned ask-bid execution context"
 V12_QUOTE = "quote coherence provenance and legacy v5 normalization"
 V13_RELEASE = "per-forward-run release provenance"
+V14_ATTEMPT = "retryable forward admission attempt schedule identity"
 
 
 def _store(path: Path) -> PaperStore:
@@ -32,10 +33,11 @@ def test_fresh_schema_has_unambiguous_v5_and_release_provenance_snapshot(tmp_pat
             for row in connection.execute("PRAGMA table_info('paper_run_release_provenance')").fetchall()
         }
 
-    assert set(versions) == set(range(2, 14))
+    assert set(versions) == set(range(2, 15))
     assert versions[5] == V5_EXECUTION
     assert versions[12] == V12_QUOTE
     assert versions[13] == V13_RELEASE
+    assert versions[14] == V14_ATTEMPT
     assert {
         "run_id",
         "git_commit",
@@ -75,6 +77,7 @@ def test_legacy_v5_meaning_is_preserved_by_actual_initializer_migration(tmp_path
     assert versions[5] == description
     assert versions[12] == V12_QUOTE
     assert versions[13] == V13_RELEASE
+    assert versions[14] == V14_ATTEMPT
 
 
 def test_release_provenance_is_immutable_and_required_after_adoption(tmp_path):
@@ -139,7 +142,7 @@ def test_fresh_runtime_schema_structurally_matches_checked_in_snapshot(tmp_path)
             assert tables == {row[0] for row in runtime.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()}
             for table in tables:
                 assert _schema_structure(runtime, table) == _schema_structure(canonical, table)
-            assert set(dict(runtime.execute("SELECT version, description FROM paper_schema_versions").fetchall())) == set(range(2, 14))
+            assert set(dict(runtime.execute("SELECT version, description FROM paper_schema_versions").fetchall())) == set(range(2, 15))
     finally:
         canonical.close()
 

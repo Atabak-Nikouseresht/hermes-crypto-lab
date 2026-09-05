@@ -36,7 +36,7 @@ from src.paper_notifications import (
     NotificationService,
 )
 from src.paper_report import write_operational_failure_report, write_weekly_paper_report
-from src.release_provenance import capture_release_provenance
+from src.release_provenance import ReleaseProvenanceError, capture_release_provenance
 
 LOGGER = logging.getLogger(__name__)
 
@@ -463,6 +463,13 @@ def main() -> None:
                 )
             ):
                 print(f"Status: DUPLICATE_SCHEDULE — {schedule_key} is already finalized")
+                if system.store.schedule_final_outcome(schedule_key) in {
+                    "RELEASE_PROVENANCE_FAILURE",
+                    "RECONCILIATION_FAILURE",
+                    "KILL_SWITCH_ACTIVATED",
+                    "EXECUTION_ERROR",
+                }:
+                    raise SystemExit(2)
                 return
 
             release_provenance = None
@@ -470,8 +477,8 @@ def main() -> None:
             if official_scheduled:
                 try:
                     release_provenance = capture_release_provenance(settings.project_root)
-                except RuntimeError as error:
-                    retryable_provenance_failure = "requires local Git metadata" in str(error)
+                except ReleaseProvenanceError as error:
+                    retryable_provenance_failure = error.retryable
                     result = commit_operational_failure(
                         system,
                         outcome="RELEASE_PROVENANCE_FAILURE",
@@ -493,7 +500,7 @@ def main() -> None:
                             target=telegram_target,
                             sender=HermesTelegramSender(),
                         ).send_committed_run(result.run_id, report_path)
-                    raise SystemExit(2) from error
+                    raise SystemExit(4 if error.retryable else 2) from error
 
             if system.store.account()["status"] != "ACTIVE":
                 result = commit_operational_failure(

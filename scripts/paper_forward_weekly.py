@@ -16,6 +16,8 @@ PROJECT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT / "run_paper.py"
 MAX_ATTEMPTS = 3
 RETRY_SECONDS = 60
+RETRYABLE_EXIT_CODE = 4
+RETRYABLE_EXIT_CODES = {RETRYABLE_EXIT_CODE, 75}
 
 
 def should_launch(now: datetime) -> bool:
@@ -49,6 +51,8 @@ def main(
             if last_code == 0:
                 return 0
             print((completed.stderr or completed.stdout).strip(), file=sys.stderr)
+            if last_code not in RETRYABLE_EXIT_CODES:
+                return last_code
         except subprocess.TimeoutExpired:
             last_code = 124
             print(

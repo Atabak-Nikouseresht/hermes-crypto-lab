@@ -463,7 +463,7 @@ def main() -> None:
                 )
             ):
                 print(f"Status: DUPLICATE_SCHEDULE — {schedule_key} is already finalized")
-                if system.store.schedule_final_outcome(schedule_key) in {
+                if system.store.schedule_final_outcome(schedule_key) in {  # pragma: no branch
                     "RELEASE_PROVENANCE_FAILURE",
                     "RECONCILIATION_FAILURE",
                     "KILL_SWITCH_ACTIVATED",

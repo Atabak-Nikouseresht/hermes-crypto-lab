@@ -99,11 +99,11 @@
     "tests/test_paper_report.py": "970cfcd74a592f264b3e13131fc0105b61be474a38a3b4c72a2114d4633500e7",
     "tests/test_paper_trading.py": "5aedcd4e53cc92d54eeb779978ce1003041b111e152d82c1155d885c4c12b301",
     "tests/test_runner_safety.py": "465ee1dec55fb1f426cf742224edb13e1ce66abfd2454841042fdd5fbff04358",
-    "tests/test_scheduler_contract.py": "bd3ff7b744a895877e0078b43b8074bb7cbc17deb8c1dd81ca7b36bff73b3e54",
+    "tests/test_scheduler_contract.py": "6765fe6235f70ea93d3fc352e7266f3aef772aa97bc40df1308e0b91b1711217",
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-05T16:11:22.953153+00:00",
+  "generated_at_utc": "2026-09-05T16:23:28.578259+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

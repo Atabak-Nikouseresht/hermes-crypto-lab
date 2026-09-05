@@ -141,6 +141,7 @@ class PaperStore:
                     completed_at_utc TIMESTAMPTZ,
                     status VARCHAR NOT NULL,
                     mode VARCHAR NOT NULL,
+                    official_scheduled BOOLEAN NOT NULL DEFAULT FALSE,
                     schedule_key VARCHAR UNIQUE,
                     signal_timestamp_utc TIMESTAMPTZ,
                     data_timestamp_utc TIMESTAMPTZ,
@@ -330,6 +331,9 @@ class PaperStore:
                 "ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS ledger_semantics_version VARCHAR"
             )
             connection.execute(
+                "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS official_scheduled BOOLEAN DEFAULT FALSE"
+            )
+            connection.execute(
                 "ALTER TABLE paper_run_diagnostics "
                 "ADD COLUMN IF NOT EXISTS rejected_orders JSON"
             )
@@ -497,7 +501,7 @@ class PaperStore:
                     SELECT COUNT(*)
                     FROM paper_runs r
                     LEFT JOIN paper_run_release_provenance p ON p.run_id=r.run_id
-                    WHERE r.mode='PAPER' AND r.schedule_key IS NOT NULL
+                    WHERE r.mode='PAPER' AND r.official_scheduled
                       AND r.started_at_utc >= ?
                       AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED', 'RELEASE_PROVENANCE_FAILURE')
                       AND p.run_id IS NULL
@@ -1147,17 +1151,75 @@ class PaperStore:
         schedule_key: str | None,
         signal_timestamp: datetime | None,
         data_timestamp: datetime | None,
+        official_scheduled: bool = False,
+        release_provenance: Any | None = None,
+        allow_missing_release_provenance: bool = False,
     ) -> None:
+        if type(official_scheduled) is not bool:
+            raise ValueError("official_scheduled must be a boolean")
+        if official_scheduled and release_provenance is None and not allow_missing_release_provenance:
+            raise ValueError("Official scheduled paper run requires release provenance")
+        provenance_values = None
+        if release_provenance is not None:
+            provenance_values = self._validated_release_provenance_values(
+                git_commit=release_provenance.git_commit,
+                git_dirty=release_provenance.git_dirty,
+                hardening_manifest_sha256=release_provenance.hardening_manifest_sha256,
+                execution_protocol_version=release_provenance.execution_protocol_version,
+                captured_at_utc=release_provenance.captured_at_utc,
+            )
         with self.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
             connection.execute(
                 """
                 INSERT INTO paper_runs
-                (run_id, started_at_utc, completed_at_utc, status, mode, schedule_key,
+                (run_id, started_at_utc, completed_at_utc, status, mode, official_scheduled, schedule_key,
                  signal_timestamp_utc, data_timestamp_utc, message, reconciliation)
-                VALUES (?, ?, NULL, 'RUNNING', ?, ?, ?, ?, NULL, NULL)
+                VALUES (?, ?, NULL, 'RUNNING', ?, ?, ?, ?, ?, NULL, NULL)
                 """,
-                [run_id, started_at, mode, schedule_key, signal_timestamp, data_timestamp],
+                [
+                    run_id,
+                    started_at,
+                    mode,
+                    official_scheduled,
+                    schedule_key,
+                    signal_timestamp,
+                    data_timestamp,
+                ],
             )
+            if provenance_values is not None:
+                connection.execute(
+                    "INSERT INTO paper_run_release_provenance VALUES (?, ?, ?, ?, ?, ?)",
+                    [run_id, *provenance_values],
+                )
+            connection.execute("COMMIT")
+
+    @staticmethod
+    def _validated_release_provenance_values(
+        *,
+        git_commit: str,
+        git_dirty: bool,
+        hardening_manifest_sha256: str,
+        execution_protocol_version: str,
+        captured_at_utc: datetime,
+    ) -> tuple[str, bool, str, str, datetime]:
+        if re.fullmatch(r"[0-9a-f]{40}", git_commit) is None:
+            raise ValueError("Release provenance Git commit must be an exact 40-character SHA")
+        if type(git_dirty) is not bool or git_dirty:
+            raise ValueError("Official release provenance must be clean")
+        if re.fullmatch(r"[0-9a-f]{64}", hardening_manifest_sha256) is None:
+            raise ValueError("Release provenance hardening manifest hash is invalid")
+        if execution_protocol_version != EXECUTION_PROTOCOL_VERSION:
+            raise ValueError("Release provenance execution protocol is invalid")
+        if captured_at_utc.tzinfo is None:
+            raise ValueError("Release provenance timestamp must be timezone-aware")
+        return (
+            git_commit,
+            git_dirty,
+            hardening_manifest_sha256,
+            execution_protocol_version,
+            captured_at_utc,
+        )
 
     def record_run_release_provenance(
         self,
@@ -1169,14 +1231,13 @@ class PaperStore:
         execution_protocol_version: str,
         captured_at_utc: datetime,
     ) -> None:
-        if re.fullmatch(r"[0-9a-f]{40}", git_commit) is None:
-            raise ValueError("Release provenance Git commit must be an exact 40-character SHA")
-        if type(git_dirty) is not bool or git_dirty:
-            raise ValueError("Official release provenance must be clean")
-        if re.fullmatch(r"[0-9a-f]{64}", hardening_manifest_sha256) is None:
-            raise ValueError("Release provenance hardening manifest hash is invalid")
-        if execution_protocol_version != EXECUTION_PROTOCOL_VERSION:
-            raise ValueError("Release provenance execution protocol is invalid")
+        values = self._validated_release_provenance_values(
+            git_commit=git_commit,
+            git_dirty=git_dirty,
+            hardening_manifest_sha256=hardening_manifest_sha256,
+            execution_protocol_version=execution_protocol_version,
+            captured_at_utc=captured_at_utc,
+        )
         with self.connect() as connection:
             if connection.execute(
                 "SELECT 1 FROM paper_run_release_provenance WHERE run_id=?", [run_id]
@@ -1184,14 +1245,7 @@ class PaperStore:
                 raise FileExistsError(f"Release provenance already exists for run {run_id}")
             connection.execute(
                 "INSERT INTO paper_run_release_provenance VALUES (?, ?, ?, ?, ?, ?)",
-                [
-                    run_id,
-                    git_commit,
-                    git_dirty,
-                    hardening_manifest_sha256,
-                    execution_protocol_version,
-                    captured_at_utc,
-                ],
+                [run_id, *values],
             )
 
     def order_rejections(self, run_id: str) -> list[dict[str, Any]]:

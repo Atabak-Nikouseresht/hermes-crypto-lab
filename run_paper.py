@@ -466,6 +466,32 @@ def main() -> None:
                 return
 
             release_provenance = None
+            official_scheduled = not dry_run and schedule_key is not None
+            if official_scheduled:
+                try:
+                    release_provenance = capture_release_provenance(settings.project_root)
+                except RuntimeError as error:
+                    result = commit_operational_failure(
+                        system,
+                        outcome="RELEASE_PROVENANCE_FAILURE",
+                        message=str(error),
+                        now=now,
+                        official_scheduled=True,
+                    )
+                    report_path = write_operational_failure_report(
+                        system.store,
+                        result,
+                        reports_dir,
+                        now=pd.Timestamp(now),
+                        locked_candidate_id=config.locked_candidate_id,
+                    )
+                    if telegram_target is not None:
+                        NotificationService(
+                            system.store,
+                            target=telegram_target,
+                            sender=HermesTelegramSender(),
+                        ).send_committed_run(result.run_id, report_path)
+                    raise SystemExit(2) from error
 
             if system.store.account()["status"] != "ACTIVE":
                 result = commit_operational_failure(
@@ -474,6 +500,7 @@ def main() -> None:
                     message="Persistent kill switch is active; no trade attempted",
                     now=now,
                     release_provenance=release_provenance,
+                    official_scheduled=official_scheduled,
                 )
                 report_path = write_operational_failure_report(
                     system.store,
@@ -505,6 +532,7 @@ def main() -> None:
                     message=reason,
                     now=now,
                     release_provenance=release_provenance,
+                    official_scheduled=official_scheduled,
                 )
                 report_path = write_operational_failure_report(
                     system.store,
@@ -538,30 +566,6 @@ def main() -> None:
                     "retrieval; no signal calculation, equity snapshot, or trade was performed"
                 )
                 return
-            if not dry_run and schedule_key is not None:
-                try:
-                    release_provenance = capture_release_provenance(settings.project_root)
-                except RuntimeError as error:
-                    result = commit_operational_failure(
-                        system,
-                        outcome="RELEASE_PROVENANCE_FAILURE",
-                        message=str(error),
-                        now=execution_now,
-                    )
-                    report_path = write_operational_failure_report(
-                        system.store,
-                        result,
-                        reports_dir,
-                        now=pd.Timestamp(execution_now),
-                        locked_candidate_id=config.locked_candidate_id,
-                    )
-                    if telegram_target is not None:
-                        NotificationService(
-                            system.store,
-                            target=telegram_target,
-                            sender=HermesTelegramSender(),
-                        ).send_committed_run(result.run_id, report_path)
-                    raise SystemExit(2) from error
             snapshot_is_valid = system._validate_snapshot(
                 snapshot, pd.Timestamp(execution_now).tz_convert("UTC")
             ) is None
@@ -577,6 +581,7 @@ def main() -> None:
                 forward_diagnostics=diagnostics if schedule_key else None,
                 release_provenance=release_provenance,
                 require_release_provenance=not dry_run and schedule_key is not None,
+                official_scheduled=official_scheduled,
             )
             result = finalize_forward_run(
                 system,

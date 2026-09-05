@@ -677,6 +677,7 @@ def test_paper_run_records_miss_when_window_closes_during_fetch(
         lambda _root: run_paper.pd.Timestamp("2026-01-05T00:00:00Z"),
     )
     monkeypatch.setattr(run_paper, "resolve_telegram_target", lambda _target: "local-test")
+    monkeypatch.setattr(run_paper, "capture_release_provenance", lambda _root: SimpleNamespace())
     monkeypatch.setattr(run_paper, "fetch_public_market_snapshot", fetch_snapshot)
     monkeypatch.setattr(
         run_paper, "build_forward_diagnostics", forbidden_strategy_execution

@@ -18,7 +18,10 @@ def initialize_database(path: Path) -> None:
                 started_at_utc TIMESTAMPTZ NOT NULL,
                 completed_at_utc TIMESTAMPTZ,
                 status VARCHAR NOT NULL,
-                error_message VARCHAR
+                error_message VARCHAR,
+                publication_state VARCHAR,
+                immutable_manifest_path VARCHAR,
+                immutable_manifest_sha256 VARCHAR
             );
             CREATE TABLE IF NOT EXISTS dataset_metadata (
                 run_id VARCHAR NOT NULL,
@@ -36,12 +39,26 @@ def initialize_database(path: Path) -> None:
             );
             """
         )
+        connection.execute(
+            "ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS publication_state VARCHAR"
+        )
+        connection.execute(
+            "ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS immutable_manifest_path VARCHAR"
+        )
+        connection.execute(
+            "ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS immutable_manifest_sha256 VARCHAR"
+        )
 
 
 def start_run(path: Path, run_id: str) -> None:
     with duckdb.connect(str(path)) as connection:
         connection.execute(
-            "INSERT INTO ingestion_runs VALUES (?, ?, NULL, 'running', NULL)",
+            """
+            INSERT INTO ingestion_runs (
+                run_id, started_at_utc, completed_at_utc, status, error_message,
+                publication_state, immutable_manifest_path, immutable_manifest_sha256
+            ) VALUES (?, ?, NULL, 'running', NULL, 'running', NULL, NULL)
+            """,
             [run_id, datetime.now(timezone.utc)],
         )
 
@@ -52,6 +69,56 @@ def finish_run(path: Path, run_id: str, status: str, error_message: str | None =
             "UPDATE ingestion_runs SET completed_at_utc=?, status=?, error_message=? WHERE run_id=?",
             [datetime.now(timezone.utc), status, error_message, run_id],
         )
+
+
+def mark_artifacts_ready(
+    path: Path, run_id: str, immutable_manifest_path: str, immutable_manifest_sha256: str
+) -> None:
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(
+            """
+            UPDATE ingestion_runs
+            SET publication_state='artifacts_ready', immutable_manifest_path=?,
+                immutable_manifest_sha256=?
+            WHERE run_id=? AND status='running'
+            """,
+            [immutable_manifest_path, immutable_manifest_sha256, run_id],
+        )
+
+
+def mark_publication_published(path: Path, run_id: str) -> None:
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(
+            """
+            UPDATE ingestion_runs SET publication_state='published'
+            WHERE run_id=? AND status='running' AND publication_state='artifacts_ready'
+            """,
+            [run_id],
+        )
+
+
+def complete_published_run(path: Path, run_id: str) -> None:
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(
+            """
+            UPDATE ingestion_runs
+            SET completed_at_utc=?, status='completed', error_message=NULL,
+                publication_state='completed'
+            WHERE run_id=? AND status='running' AND publication_state='published'
+            """,
+            [datetime.now(timezone.utc), run_id],
+        )
+
+
+def incomplete_publications(path: Path) -> list[tuple[str, str | None, str | None, str | None]]:
+    with duckdb.connect(str(path), read_only=True) as connection:
+        return connection.execute(
+            """
+            SELECT run_id, publication_state, immutable_manifest_path, immutable_manifest_sha256
+            FROM ingestion_runs WHERE status='running'
+            ORDER BY started_at_utc
+            """
+        ).fetchall()
 
 
 def record_dataset_metadata(

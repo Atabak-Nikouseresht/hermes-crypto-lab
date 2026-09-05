@@ -70,6 +70,11 @@ The following are prohibited without explicit approval and a new strategy or pro
 
 Operational fixes may address crashes, corrupt state, incorrect data handling, timestamp errors, logging failures, broken public API interaction, security defects, or violations of already-defined execution rules. A fix must preserve the strategy's economic behavior.
 
+New official scheduled paper runs record locally verified Git commit/cleanliness,
+active hardening-manifest hash, and execution-protocol provenance before any
+order or fill. Historical runs are not backfilled. Quote timestamp skew is read
+from the governed quote-coherence contract and must exactly match runtime.
+
 Documentation, naming, repository metadata, and generated-artifact policy may change when they do not affect runtime behavior. Such changes are recorded separately from the frozen strategy baseline.
 
 ## Historical integrity

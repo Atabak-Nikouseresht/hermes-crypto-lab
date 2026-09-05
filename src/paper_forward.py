@@ -21,6 +21,7 @@ ERROR_OUTCOMES = {
     "DATA_QUALITY_FAILURE",
     "RECONCILIATION_FAILURE",
     "EXECUTION_ERROR",
+    "RELEASE_PROVENANCE_FAILURE",
 }
 
 RECOVERED_INCOMPLETE_OUTCOME = "RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE"
@@ -195,6 +196,7 @@ def commit_operational_failure(
     outcome: str,
     message: str,
     now: datetime | pd.Timestamp,
+    release_provenance: Any | None = None,
 ) -> PaperRunResult:
     """Commit an operational failure as a terminal run without trading."""
     now_ts = pd.Timestamp(now).tz_convert("UTC")
@@ -221,6 +223,15 @@ def commit_operational_failure(
         signal_timestamp=None,
         data_timestamp=None,
     )
+    if release_provenance is not None:
+        system.store.record_run_release_provenance(
+            run_id=run_id,
+            git_commit=release_provenance.git_commit,
+            git_dirty=release_provenance.git_dirty,
+            hardening_manifest_sha256=release_provenance.hardening_manifest_sha256,
+            execution_protocol_version=release_provenance.execution_protocol_version,
+            captured_at_utc=release_provenance.captured_at_utc,
+        )
     if outcome in {
         "RECONCILIATION_FAILURE",
         "KILL_SWITCH_ACTIVATED",

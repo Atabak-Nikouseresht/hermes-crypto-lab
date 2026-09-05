@@ -18,6 +18,7 @@ from src.paper_broker import (
     SymbolRules,
     classify_execution_outcome,
 )
+from src.release_provenance import ReleaseProvenance
 
 ASSETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT"]
 
@@ -91,6 +92,50 @@ def test_quote_skew_contract_is_persisted_for_new_execution_context(tmp_path):
             [result.run_id],
         ).fetchone()
     assert row == ("quote-coherence-v1-cross-asset-utc", 30)
+
+
+def test_official_scheduled_paper_run_persists_release_provenance_before_execution(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "release.duckdb", _config())
+    provenance = ReleaseProvenance(
+        git_commit="a" * 40,
+        git_dirty=False,
+        hardening_manifest_sha256="b" * 64,
+        execution_protocol_version="paper-exec-v3-ask-bid-minspread-utc0010",
+        captured_at_utc=now,
+    )
+
+    result = system.run(
+        _snapshot(now),
+        now=now,
+        dry_run=False,
+        release_provenance=provenance,
+        require_release_provenance=True,
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        row = connection.execute(
+            "SELECT git_commit, git_dirty, hardening_manifest_sha256, execution_protocol_version "
+            "FROM paper_run_release_provenance WHERE run_id=?",
+            [result.run_id],
+        ).fetchone()
+    assert row == ("a" * 40, False, "b" * 64, provenance.execution_protocol_version)
+
+
+def test_official_scheduled_paper_run_without_release_provenance_creates_no_orders_or_fills(tmp_path):
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "missing-release.duckdb", _config())
+
+    result = system.run(
+        _snapshot(now), now=now, dry_run=False, require_release_provenance=True
+    )
+
+    with system.store.connect(read_only=True) as connection:
+        orders, fills = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM paper_orders), (SELECT COUNT(*) FROM paper_fills)"
+        ).fetchone()
+    assert result.status == "RELEASE_PROVENANCE_FAILURE"
+    assert (orders, fills) == (0, 0)
 
 
 @pytest.mark.parametrize(

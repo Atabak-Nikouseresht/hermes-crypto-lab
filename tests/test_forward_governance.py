@@ -12,6 +12,7 @@ from src.forward_governance import (
     locked_strategy_spec,
     verify_economic_spec_v2,
     verify_governance,
+    verify_quote_coherence_runtime_contract,
     verify_trust_anchors,
 )
 from src.paper_broker import PaperConfig
@@ -199,6 +200,39 @@ def test_repository_governance_uses_code_anchored_release_hashes():
     assert economic_spec_hash_v2(
         replace(config, max_quote_timestamp_skew_seconds=31)
     ) == economic_spec_hash_v2(config)
+
+
+def test_quote_coherence_runtime_contract_requires_exact_governed_skew():
+    payload = {
+        "version": "quote-coherence-v1-cross-asset-utc",
+        "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+        "rule": {"max_quote_timestamp_skew_seconds": 30},
+    }
+
+    verify_quote_coherence_runtime_contract(payload, _economic_config())
+    with pytest.raises(ValueError, match="skew"):
+        verify_quote_coherence_runtime_contract(
+            payload, replace(_economic_config(), max_quote_timestamp_skew_seconds=60)
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"version": "wrong", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": 30}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "wrong", "rule": {"max_quote_timestamp_skew_seconds": 30}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": 30.0}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": "30"}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": True}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": None}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": 0}},
+        {"version": "quote-coherence-v1-cross-asset-utc", "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010", "rule": {"max_quote_timestamp_skew_seconds": -1}},
+    ],
+)
+def test_quote_coherence_runtime_contract_rejects_invalid_governed_values(payload):
+    with pytest.raises(ValueError):
+        verify_quote_coherence_runtime_contract(payload, _economic_config())
 
 
 def test_repository_governance_amendment_rejects_schedule_drift():

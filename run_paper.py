@@ -36,6 +36,7 @@ from src.paper_notifications import (
     NotificationService,
 )
 from src.paper_report import write_operational_failure_report, write_weekly_paper_report
+from src.release_provenance import capture_release_provenance
 
 LOGGER = logging.getLogger(__name__)
 
@@ -464,12 +465,15 @@ def main() -> None:
                 print(f"Status: DUPLICATE_SCHEDULE — {schedule_key} is already finalized")
                 return
 
+            release_provenance = None
+
             if system.store.account()["status"] != "ACTIVE":
                 result = commit_operational_failure(
                     system,
                     outcome="KILL_SWITCH_ACTIVATED",
                     message="Persistent kill switch is active; no trade attempted",
                     now=now,
+                    release_provenance=release_provenance,
                 )
                 report_path = write_operational_failure_report(
                     system.store,
@@ -496,7 +500,11 @@ def main() -> None:
             except Exception as error:
                 reason = f"Public market-data fetch failed: {error}"
                 result = commit_operational_failure(
-                    system, outcome="DATA_QUALITY_FAILURE", message=reason, now=now
+                    system,
+                    outcome="DATA_QUALITY_FAILURE",
+                    message=reason,
+                    now=now,
+                    release_provenance=release_provenance,
                 )
                 report_path = write_operational_failure_report(
                     system.store,
@@ -530,6 +538,30 @@ def main() -> None:
                     "retrieval; no signal calculation, equity snapshot, or trade was performed"
                 )
                 return
+            if not dry_run and schedule_key is not None:
+                try:
+                    release_provenance = capture_release_provenance(settings.project_root)
+                except RuntimeError as error:
+                    result = commit_operational_failure(
+                        system,
+                        outcome="RELEASE_PROVENANCE_FAILURE",
+                        message=str(error),
+                        now=execution_now,
+                    )
+                    report_path = write_operational_failure_report(
+                        system.store,
+                        result,
+                        reports_dir,
+                        now=pd.Timestamp(execution_now),
+                        locked_candidate_id=config.locked_candidate_id,
+                    )
+                    if telegram_target is not None:
+                        NotificationService(
+                            system.store,
+                            target=telegram_target,
+                            sender=HermesTelegramSender(),
+                        ).send_committed_run(result.run_id, report_path)
+                    raise SystemExit(2) from error
             snapshot_is_valid = system._validate_snapshot(
                 snapshot, pd.Timestamp(execution_now).tz_convert("UTC")
             ) is None
@@ -543,6 +575,8 @@ def main() -> None:
                 now=execution_now,
                 dry_run=dry_run,
                 forward_diagnostics=diagnostics if schedule_key else None,
+                release_provenance=release_provenance,
+                require_release_provenance=not dry_run and schedule_key is not None,
             )
             result = finalize_forward_run(
                 system,

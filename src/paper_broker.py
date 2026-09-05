@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -21,6 +21,9 @@ from src.execution_protocol import (
 from src.paper_store import FINAL_EXECUTABLE_LEDGER_SEMANTICS, PaperStore
 from src.strategy import StrategyConfig, generate_signal
 from src.validate_data import validate_ohlcv
+
+if TYPE_CHECKING:
+    from src.release_provenance import ReleaseProvenance
 
 
 @dataclass(frozen=True)
@@ -829,6 +832,8 @@ class PaperTradingSystem:
         now: datetime,
         dry_run: bool,
         forward_diagnostics: dict[str, Any] | None = None,
+        release_provenance: ReleaseProvenance | None = None,
+        require_release_provenance: bool = False,
     ) -> PaperRunResult:
         now_ts = self._utc(now)
         run_id = (
@@ -919,6 +924,12 @@ class PaperTradingSystem:
                 "DUPLICATE_SCHEDULE",
                 f"Schedule {schedule_key} was already executed",
             )
+        if not dry_run and require_release_provenance and release_provenance is None:
+            return PaperRunResult(
+                run_id,
+                "RELEASE_PROVENANCE_FAILURE",
+                "Official scheduled paper execution requires verified release provenance",
+            )
         signal_timestamp, proposals = self._proposals(snapshot)
 
         self.store.insert_run(
@@ -929,6 +940,25 @@ class PaperTradingSystem:
             signal_timestamp=signal_timestamp.to_pydatetime(),
             data_timestamp=snapshot.closes.index[-1].to_pydatetime(),
         )
+        if not dry_run and release_provenance is not None:
+            try:
+                self.store.record_run_release_provenance(
+                    run_id=run_id,
+                    git_commit=release_provenance.git_commit,
+                    git_dirty=release_provenance.git_dirty,
+                    hardening_manifest_sha256=release_provenance.hardening_manifest_sha256,
+                    execution_protocol_version=release_provenance.execution_protocol_version,
+                    captured_at_utc=release_provenance.captured_at_utc,
+                )
+            except (FileExistsError, ValueError) as error:
+                self.store.finish_run(
+                    run_id=run_id,
+                    status="RELEASE_PROVENANCE_FAILURE",
+                    completed_at=now_ts.to_pydatetime(),
+                    message=str(error),
+                    reconciliation=reconciliation,
+                )
+                return PaperRunResult(run_id, "RELEASE_PROVENANCE_FAILURE", str(error))
         if dry_run:
             with self.store.connect() as connection:
                 equity = self._persist_equity(

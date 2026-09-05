@@ -222,6 +222,7 @@ def record_missed_windows(
                     "RECONCILIATION_FAILURE",
                     "KILL_SWITCH_ACTIVATED",
                     "EXECUTION_ERROR",
+                    "RELEASE_PROVENANCE_FAILURE",
                 }:
                     outcome = status
                 else:

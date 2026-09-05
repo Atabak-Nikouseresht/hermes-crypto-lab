@@ -517,6 +517,83 @@ def test_dry_run_market_failure_commits_auditable_failure_without_notification(
     assert "public timeout" in committed[0]["message"]
 
 
+def test_scheduled_paper_run_passes_verified_release_provenance_to_execution(
+    monkeypatch, tmp_path
+):
+    from src.paper_broker import PaperRunResult
+    from src.release_provenance import ReleaseProvenance
+
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    values = {**values, "reports_dir": str(tmp_path / "reports")}
+    now = datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc)
+    settings = SimpleNamespace(
+        project_root=root,
+        logs_dir=tmp_path,
+        log_level="INFO",
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1_000,
+    )
+    store = SimpleNamespace(
+        forward_window_exists=lambda _key: False,
+        schedule_exists=lambda _key: False,
+        account=lambda: {"status": "ACTIVE"},
+    )
+    captured_run_kwargs = {}
+    result = PaperRunResult("official", "EXECUTED", "committed", outcome="NO_REBALANCE")
+    system = SimpleNamespace(
+        store=store,
+        _scheduled_key=lambda _now: "2026-01-05T00:05Z",
+        _validate_snapshot=lambda *_args: None,
+        run=lambda *_args, **kwargs: captured_run_kwargs.update(kwargs) or result,
+    )
+    snapshot = SimpleNamespace(fetched_at=pd.Timestamp(now))
+    provenance = ReleaseProvenance(
+        git_commit="a" * 40,
+        git_dirty=False,
+        hardening_manifest_sha256="b" * 64,
+        execution_protocol_version="paper-exec-v3-ask-bid-minspread-utc0010",
+        captured_at_utc=now,
+    )
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield system
+
+    class ControlledDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(run_paper, "datetime", ControlledDateTime)
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: pd.Timestamp(now))
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
+    monkeypatch.setattr(run_paper, "build_forward_diagnostics", lambda *_args: {})
+    monkeypatch.setattr(run_paper, "capture_release_provenance", lambda _root: provenance)
+    monkeypatch.setattr(run_paper, "finalize_forward_run", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: tmp_path / "report.md")
+    monkeypatch.setattr(run_paper, "resolve_telegram_target", lambda _target: "telegram:test")
+    monkeypatch.setattr(
+        run_paper,
+        "NotificationService",
+        lambda *_args, **_kwargs: SimpleNamespace(send_committed_run=lambda *_args: None),
+    )
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--paper"])
+
+    run_paper.main()
+
+    assert captured_run_kwargs["release_provenance"] == provenance
+    assert captured_run_kwargs["require_release_provenance"] is True
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

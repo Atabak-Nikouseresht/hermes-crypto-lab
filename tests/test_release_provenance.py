@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
-from src.release_provenance import capture_release_provenance
+from src.release_provenance import ReleaseProvenanceError, capture_release_provenance
 
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
@@ -84,3 +84,16 @@ def test_release_provenance_rejects_dirty_git_and_manifest_failure(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="hardening"):
         capture_release_provenance(ROOT)
+
+
+@pytest.mark.parametrize("runner,retryable", [
+    (lambda _command, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("git")), True),
+    (lambda _command, **_kwargs: SimpleNamespace(stdout="bad\n"), False),
+])
+def test_release_provenance_git_failures_are_typed(monkeypatch, runner, retryable):
+    import src.release_provenance as provenance
+
+    monkeypatch.setattr(provenance.subprocess, "run", runner)
+    with pytest.raises(ReleaseProvenanceError) as error:
+        capture_release_provenance(ROOT)
+    assert error.value.retryable is retryable

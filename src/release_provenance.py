@@ -15,6 +15,12 @@ from src.hardening_manifest import verify_hardening_manifest
 _GIT_SHA256 = re.compile(r"[0-9a-f]{40}")
 
 
+class ReleaseProvenanceError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 @dataclass(frozen=True)
 class ReleaseProvenance:
     git_commit: str
@@ -45,20 +51,20 @@ def capture_release_provenance(
             text=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError("Release provenance requires local Git metadata") from error
+        raise ReleaseProvenanceError("Release provenance requires local Git metadata", retryable=True) from error
     if _GIT_SHA256.fullmatch(commit) is None:
-        raise RuntimeError("Release provenance Git commit is not an exact SHA-1")
+        raise ReleaseProvenanceError("Release provenance Git commit is not an exact SHA-1", retryable=False)
     if status:
-        raise RuntimeError("Release provenance refuses a dirty Git working tree")
+        raise ReleaseProvenanceError("Release provenance refuses a dirty Git working tree", retryable=False)
     try:
         hardening = verify_hardening_manifest(
             root, root / "forward_experiment" / "hardening_manifest.json"
         )
     except (OSError, ValueError) as error:
-        raise RuntimeError("Release provenance hardening manifest verification failed") from error
+        raise ReleaseProvenanceError("Release provenance hardening manifest verification failed", retryable=False) from error
     manifest_sha256 = hardening.get("manifest_sha256")
     if not isinstance(manifest_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) is None:
-        raise RuntimeError("Release provenance hardening manifest hash is invalid")
+        raise ReleaseProvenanceError("Release provenance hardening manifest hash is invalid", retryable=False)
     captured_at = now or datetime.now(timezone.utc)
     if captured_at.tzinfo is None:
         raise ValueError("Release provenance timestamp must be timezone-aware")

@@ -146,6 +146,30 @@ def test_weekly_dispatch_retries_after_transient_failure_in_same_window(monkeypa
     assert len(calls) == 2
 
 
+def test_weekly_dispatch_does_not_retry_terminal_provenance_failure(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        paper_forward_weekly.subprocess,
+        "run",
+        lambda *args, **_kwargs: calls.append(args)
+        or subprocess.CompletedProcess(args[0], 2, "", "RELEASE_PROVENANCE_FAILURE"),
+    )
+
+    assert paper_forward_weekly.main(
+        datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc),
+        sleeper=lambda _seconds: pytest.fail("terminal failure must not retry"),
+        python_resolver=lambda _project: Path("scheduler-python"),
+    ) == 2
+    assert len(calls) == 1
+
+
+def test_weekly_dispatch_retries_explicit_retryable_exit_code(monkeypatch):
+    results = iter([subprocess.CompletedProcess([], 4, "", "retryable"), subprocess.CompletedProcess([], 0, "ok", "")])
+    monkeypatch.setattr(paper_forward_weekly.subprocess, "run", lambda *_args, **_kwargs: next(results))
+    times = iter([datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc), datetime(2026, 1, 5, 0, 11, tzinfo=timezone.utc)])
+    assert paper_forward_weekly.main(clock=lambda: next(times), sleeper=lambda _seconds: None, python_resolver=lambda _project: Path("scheduler-python")) == 0
+
+
 def test_weekly_dispatch_delegates_duplicate_prevention_to_committed_run(monkeypatch):
     calls = []
 

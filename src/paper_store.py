@@ -853,6 +853,20 @@ class PaperStore:
                 ).fetchone()[0]
             )
 
+    def schedule_final_outcome(self, schedule_key: str) -> str | None:
+        with self.connect(read_only=True) as connection:
+            row = connection.execute(
+                "SELECT outcome FROM forward_schedule_windows WHERE schedule_key=?",
+                [schedule_key],
+            ).fetchone()
+            if row is not None:
+                return str(row[0])
+            row = connection.execute(
+                "SELECT status FROM paper_runs WHERE schedule_key=? AND status <> 'RUNNING'",
+                [schedule_key],
+            ).fetchone()
+            return None if row is None else str(row[0])
+
     def forward_window_exists(self, schedule_key: str) -> bool:
         with self.connect(read_only=True) as connection:
             return bool(

@@ -42,7 +42,7 @@
     "run_data_pipeline.py": "d25f7e3f24031da5f04f1d00ddbde0c995ffd646f4434b05cecdb56146efe063",
     "run_experiments.py": "114966c7493509b9cdb072449752f3fadab9114bc139b423a9dca47fbf0e7a8c",
     "run_monthly_report.py": "940d8c56f885295c317b1a38f053c277a219675a2640f92140bf37d9b97d64fd",
-    "run_paper.py": "b9440c4be92d3ddb32e8e822a78c6e62c240bdd48b66a28e22fabf81b7fd9956",
+    "run_paper.py": "32c1d25761b55daa0f7c34bb004212b97eb482daab610d4240ae0cddaf200d1c",
     "scripts/backup_forward.py": "f4cbd00a9a5d0c57514ba0a1719bfba8d5f06f79ae30e40c6c8bc1682cb01ecb",
     "scripts/check_markdown_links.py": "2ae389ad79e85596a005d3d2890b5334be791490133d26beb4fda5ab7713379a",
     "scripts/generate_hardening_manifest.py": "e5f6b4264142724c2c9192f369d5934f36f5b6f4aea54b050dbf810e72fd6670",
@@ -98,12 +98,12 @@
     "tests/test_paper_notifications.py": "b3fb1a7fdfd1f9e92d29f18e260ad2045a9a420825e60bd755b25409352d8878",
     "tests/test_paper_report.py": "970cfcd74a592f264b3e13131fc0105b61be474a38a3b4c72a2114d4633500e7",
     "tests/test_paper_trading.py": "5aedcd4e53cc92d54eeb779978ce1003041b111e152d82c1155d885c4c12b301",
-    "tests/test_runner_safety.py": "465ee1dec55fb1f426cf742224edb13e1ce66abfd2454841042fdd5fbff04358",
-    "tests/test_scheduler_contract.py": "6765fe6235f70ea93d3fc352e7266f3aef772aa97bc40df1308e0b91b1711217",
+    "tests/test_runner_safety.py": "52747fd7470d20ea28fa5a324c40e293351f33bc44d8cdbbcefed1e11d7ba4bd",
+    "tests/test_scheduler_contract.py": "982a6aafdd3b73aeb8f81660fcd84beeb39d8f0a07f70e22857150f814964ef9",
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-05T16:23:28.578259+00:00",
+  "generated_at_utc": "2026-09-05T23:06:29.344755+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

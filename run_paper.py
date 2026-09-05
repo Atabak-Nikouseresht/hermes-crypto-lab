@@ -623,11 +623,14 @@ def main() -> None:
             print(f"Outcome: {result.outcome}")
             print(f"Message: {result.message}")
             print(f"Weekly report: {report_path}")
+            if result.status == "DATA_HALT":
+                raise SystemExit(4)
             if result.outcome in {
                 "KILL_SWITCH_ACTIVATED",
                 "DATA_QUALITY_FAILURE",
                 "RECONCILIATION_FAILURE",
                 "EXECUTION_ERROR",
+                "RELEASE_PROVENANCE_FAILURE",
             }:
                 raise SystemExit(2)
     except AlreadyRunningError as error:

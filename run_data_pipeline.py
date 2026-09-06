@@ -6,7 +6,7 @@ import logging
 import re
 import subprocess
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,11 @@ from src.validate_data import clean_ohlcv, rows_to_frame, validate_ohlcv
 
 LOGGER = logging.getLogger(__name__)
 Downloader = Callable[..., list[list[float]]]
-GitProvenance = Callable[[Path], tuple[str, bool | None]]
+GitProvenance = Callable[[Path], tuple[str, bool]]
+
+
+class CanonicalProvenanceError(RuntimeError):
+    pass
 
 
 def _safe_symbol(symbol: str) -> str:
@@ -49,7 +53,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _git_provenance(project_root: Path) -> tuple[str, bool | None]:
+def _git_provenance(project_root: Path) -> tuple[str, bool]:
     try:
         commit = subprocess.run(
             ["git", "-C", str(project_root), "rev-parse", "HEAD"],
@@ -58,7 +62,7 @@ def _git_provenance(project_root: Path) -> tuple[str, bool | None]:
             text=True,
         ).stdout.strip()
         if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-            return "unavailable", None
+            raise CanonicalProvenanceError("Canonical Git commit is malformed")
         dirty = bool(
             subprocess.run(
                 ["git", "-C", str(project_root), "status", "--porcelain"],
@@ -67,9 +71,30 @@ def _git_provenance(project_root: Path) -> tuple[str, bool | None]:
                 text=True,
             ).stdout.strip()
         )
-        return commit, dirty
+        if dirty:
+            raise CanonicalProvenanceError("Canonical publication requires a clean Git tree")
+        return commit, False
     except (OSError, subprocess.CalledProcessError):
-        return "unavailable", None
+        raise CanonicalProvenanceError("Canonical Git provenance is unavailable") from None
+
+
+def _latest_finalized_daily_open(now: datetime) -> datetime:
+    if now.tzinfo is None:
+        raise ValueError("Canonical coverage reference time must be timezone-aware")
+    utc_now = now.astimezone(timezone.utc)
+    return datetime(utc_now.year, utc_now.month, utc_now.day, tzinfo=timezone.utc) - timedelta(days=1)
+
+
+def _require_canonical_git_provenance(provenance: object) -> tuple[str, bool]:
+    try:
+        commit, dirty = provenance  # type: ignore[misc]
+    except (TypeError, ValueError):
+        raise CanonicalProvenanceError("Canonical Git provenance is malformed") from None
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise CanonicalProvenanceError("Canonical Git commit is malformed")
+    if dirty is not False:
+        raise CanonicalProvenanceError("Canonical publication requires a clean Git tree")
+    return commit, False
 
 
 def _validate_canonical_publication(settings: Settings, assets: list[str]) -> None:
@@ -163,6 +188,7 @@ def _run_pipeline_locked(
     exchange: ccxt.Exchange | object | None = None,
     run_id: str | None = None,
     git_provenance: GitProvenance = _git_provenance,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     _validate_canonical_publication(settings, assets)
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -174,7 +200,10 @@ def _run_pipeline_locked(
 
     try:
         market = exchange or create_exchange(settings.exchange, settings.request_timeout_ms)
-        ingestion_git_commit, git_dirty = git_provenance(settings.project_root)
+        ingestion_git_commit, git_dirty = _require_canonical_git_provenance(
+            git_provenance(settings.project_root)
+        )
+        expected_end = _latest_finalized_daily_open(now_utc or datetime.now(timezone.utc))
         for symbol in assets:
             rows = downloader(
                 market,
@@ -198,6 +227,13 @@ def _run_pipeline_locked(
             if not quality.is_valid:
                 raise ValueError(f"Canonical data quality validation failed for {symbol}: {quality.summary}")
             cleaned = clean_ohlcv(normalized)
+            actual_end = cleaned["timestamp"].max()
+            if actual_end != expected_end:
+                raise ValueError(
+                    "Canonical endpoint coverage failed for "
+                    f"{symbol}: actual_end={actual_end.isoformat()} "
+                    f"expected_end={expected_end.isoformat()}"
+                )
             save_clean_parquet(cleaned, parquet_path)
             start_utc = cleaned["timestamp"].min().isoformat() if not cleaned.empty else None
             end_utc = cleaned["timestamp"].max().isoformat() if not cleaned.empty else None
@@ -337,6 +373,7 @@ def run_pipeline(
     exchange: ccxt.Exchange | object | None = None,
     run_id: str | None = None,
     git_provenance: GitProvenance = _git_provenance,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     lock_path = settings.project_root / "runtime" / "canonical_pipeline.lock"
     with InterProcessLock(lock_path, command_name="canonical-data-pipeline"):
@@ -347,6 +384,7 @@ def run_pipeline(
             exchange=exchange,
             run_id=run_id,
             git_provenance=git_provenance,
+            now_utc=now_utc,
         )
 
 

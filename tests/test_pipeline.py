@@ -492,3 +492,31 @@ def test_cleanup_failure_does_not_mask_primary_pipeline_failure(tmp_path):
     assert status == "failed"
     assert completed_at is not None
     assert "No finalized OHLCV rows" in error
+
+
+def test_cleanup_failure_after_pointer_publication_does_not_fail_completed_run(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+
+    class Exchange:
+        closed = 0
+
+        def close(self):
+            self.closed += 1
+            raise OSError("close failure")
+
+    market = Exchange()
+    result = run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_args, **_kwargs: _valid_rows(),
+        exchange=market,
+        run_id="cleanup-after-publication",
+    )
+
+    pointer = json.loads(
+        (settings.processed_dir / "dataset_manifest.json").read_text(encoding="utf-8")
+    )
+    assert result["run_id"] == "cleanup-after-publication"
+    assert pointer["run_id"] == "cleanup-after-publication"
+    assert _run_status(settings.database_path, "cleanup-after-publication")[0] == "completed"
+    assert market.closed == 1

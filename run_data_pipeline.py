@@ -280,10 +280,6 @@ def run_pipeline(
         ):
             raise RuntimeError("Canonical pointer does not match immutable manifest")
         mark_publication_published(settings.database_path, run_id)
-        close = getattr(market, "close", None)
-        if callable(close):
-            close()
-        market = None
         complete_published_run(settings.database_path, run_id)
         LOGGER.info("Pipeline completed; report=%s", markdown_path)
         return {

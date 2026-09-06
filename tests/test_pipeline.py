@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import json
 import subprocess
 from dataclasses import replace
@@ -441,6 +442,95 @@ def test_recovery_finalizes_exact_run_when_pointer_published_before_completion(
         assert connection.execute(
             "SELECT COUNT(*) FROM dataset_metadata WHERE run_id='interrupted'"
         ).fetchone()[0] == 1
+
+
+def test_runtime_finalization_error_leaves_published_run_recoverable(tmp_path, monkeypatch):
+    settings = _pipeline_settings(tmp_path)
+    original_complete = run_data_pipeline.complete_published_run
+    monkeypatch.setattr(
+        run_data_pipeline,
+        "complete_published_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("database finalization failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="database finalization failed"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: _valid_rows(),
+            exchange=object(),
+            run_id="finalization-error",
+        )
+
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    immutable_path = settings.processed_dir / "finalization-error" / "dataset_manifest.json"
+    pointer_before_recovery = pointer_path.read_bytes()
+    with duckdb.connect(str(settings.database_path), read_only=True) as connection:
+        row = connection.execute(
+            "SELECT status, publication_state FROM ingestion_runs WHERE run_id='finalization-error'"
+        ).fetchone()
+    assert row == ("running", "published")
+    assert json.loads(pointer_before_recovery)["run_id"] == "finalization-error"
+    assert immutable_path.read_bytes() == pointer_before_recovery
+
+    monkeypatch.setattr(run_data_pipeline, "complete_published_run", original_complete)
+    run_data_pipeline.recover_interrupted_publications(settings)
+    run_data_pipeline.recover_interrupted_publications(settings)
+
+    status, completed_at, error = _run_status(settings.database_path, "finalization-error")
+    assert (status, error) == ("completed", None)
+    assert completed_at is not None
+    assert pointer_path.read_bytes() == pointer_before_recovery
+    with duckdb.connect(str(settings.database_path), read_only=True) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM dataset_metadata WHERE run_id='finalization-error'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("tamper", ["pointer", "immutable"])
+def test_recovery_refuses_published_manifest_identity_mismatch(tmp_path, tamper):
+    settings = _pipeline_settings(tmp_path)
+    settings.processed_dir.mkdir(parents=True)
+    immutable_path = settings.processed_dir / "run-A" / "dataset_manifest.json"
+    immutable_path.parent.mkdir()
+    immutable_payload = {
+        "run_id": "run-A",
+        "version_manifest_path": "run-A/dataset_manifest.json",
+    }
+    immutable_path.write_text(json.dumps(immutable_payload), encoding="utf-8")
+    pointer_payload = immutable_payload.copy()
+    if tamper == "pointer":
+        pointer_payload = {
+            "run_id": "run-B",
+            "version_manifest_path": "run-B/dataset_manifest.json",
+        }
+    else:
+        immutable_path.write_text(
+            json.dumps({**immutable_payload, "tampered": True}), encoding="utf-8"
+        )
+    (settings.processed_dir / "dataset_manifest.json").write_text(
+        json.dumps(pointer_payload), encoding="utf-8"
+    )
+    run_data_pipeline.initialize_database(settings.database_path)
+    with duckdb.connect(str(settings.database_path)) as connection:
+        connection.execute(
+            """
+            INSERT INTO ingestion_runs VALUES
+            ('run-A', now(), NULL, 'running', NULL, 'published', ?, ?)
+            """,
+            [
+                "run-A/dataset_manifest.json",
+                hashlib.sha256(json.dumps(immutable_payload).encode()).hexdigest(),
+            ],
+        )
+
+    run_data_pipeline.recover_interrupted_publications(settings)
+
+    status, completed_at, _error = _run_status(settings.database_path, "run-A")
+    assert status == "failed"
+    assert completed_at is not None
 
 
 def test_successful_publication_closes_exchange_and_completes_after_verified_pointer(tmp_path):

@@ -104,21 +104,39 @@ def complete_published_run(path: Path, run_id: str) -> None:
             UPDATE ingestion_runs
             SET completed_at_utc=?, status='completed', error_message=NULL,
                 publication_state='completed'
-            WHERE run_id=? AND status='running' AND publication_state='published'
+            WHERE run_id=? AND status IN ('running', 'failed')
+              AND publication_state='published'
             """,
             [datetime.now(timezone.utc), run_id],
         )
 
 
-def incomplete_publications(path: Path) -> list[tuple[str, str | None, str | None, str | None]]:
+def recoverable_publications(
+    path: Path,
+) -> list[tuple[str, str | None, str | None, str | None]]:
     with duckdb.connect(str(path), read_only=True) as connection:
         return connection.execute(
             """
             SELECT run_id, publication_state, immutable_manifest_path, immutable_manifest_sha256
-            FROM ingestion_runs WHERE status='running'
+            FROM ingestion_runs
+            WHERE status='running' OR (status='failed' AND publication_state='published')
             ORDER BY started_at_utc
             """
         ).fetchall()
+
+
+def publication_details(
+    path: Path, run_id: str
+) -> tuple[str, str | None, str | None, str | None] | None:
+    with duckdb.connect(str(path), read_only=True) as connection:
+        return connection.execute(
+            """
+            SELECT status, publication_state, immutable_manifest_path,
+                   immutable_manifest_sha256
+            FROM ingestion_runs WHERE run_id=?
+            """,
+            [run_id],
+        ).fetchone()
 
 
 def record_dataset_metadata(

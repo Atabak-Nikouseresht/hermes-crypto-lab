@@ -12,7 +12,12 @@ from typing import Any
 
 import ccxt
 
-from src.config import Settings, load_assets, load_canonical_research_config
+from src.config import (
+    Settings,
+    load_assets,
+    load_canonical_history_since,
+    load_canonical_research_config,
+)
 from src.database import (
     complete_published_run,
     finish_run,
@@ -99,6 +104,7 @@ def _require_canonical_git_provenance(provenance: object) -> tuple[str, bool]:
 
 def _validate_canonical_publication(settings: Settings, assets: list[str]) -> None:
     governed_assets_path = settings.project_root / "config" / "assets.yaml"
+    governed_since = load_canonical_history_since(settings.project_root)
     if settings.exchange != "binance":
         raise ValueError("Canonical research publication requires exchange binance")
     if settings.timeframe != "1d":
@@ -107,6 +113,11 @@ def _validate_canonical_publication(settings: Settings, assets: list[str]) -> No
         raise ValueError("Canonical research publication requires config/assets.yaml")
     if assets != load_assets(governed_assets_path):
         raise ValueError("Canonical research publication assets differ from governed assets")
+    if settings.since != governed_since:
+        raise ValueError(
+            "Canonical history mismatch: "
+            f"configured_since={settings.since} governed_since={governed_since}"
+        )
 
 
 def _canonical_pointer_matches(
@@ -190,7 +201,6 @@ def _run_pipeline_locked(
     git_provenance: GitProvenance = _git_provenance,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
-    _validate_canonical_publication(settings, assets)
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     initialize_database(settings.database_path)
     recover_interrupted_publications(settings)
@@ -199,6 +209,7 @@ def _run_pipeline_locked(
     results: list[dict[str, Any]] = []
 
     try:
+        _validate_canonical_publication(settings, assets)
         market = exchange or create_exchange(settings.exchange, settings.request_timeout_ms)
         ingestion_git_commit, git_dirty = _require_canonical_git_provenance(
             git_provenance(settings.project_root)

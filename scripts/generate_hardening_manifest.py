@@ -48,6 +48,7 @@ STATIC_CRITICAL_FILES = (
     "docs/repository-policy.md",
     "docs/testing.md",
     "config/assets.yaml",
+    "config/canonical_research.yaml",
     "config/strategy.yaml",
     "forward_experiment/checkpoint_manifest.json",
     "forward_experiment/execution_protocol_v2.json",

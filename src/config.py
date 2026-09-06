@@ -105,6 +105,15 @@ def load_assets(path: Path) -> list[str]:
     return assets
 
 
+def load_canonical_history_since(project_root: Path) -> str:
+    specification = project_root / "config" / "canonical_research.yaml"
+    payload = yaml.safe_load(specification.read_text(encoding="utf-8")) or {}
+    since = payload.get("canonical_history_since")
+    if not isinstance(since, str) or not since:
+        raise ValueError("canonical research specification has no canonical_history_since")
+    return since
+
+
 def load_canonical_research_config(
     project_root: Path | None = None,
 ) -> CanonicalResearchConfig:

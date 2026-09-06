@@ -10,7 +10,7 @@ import pytest
 
 import run_data_pipeline
 from run_data_pipeline import run_pipeline as _run_pipeline
-from src.config import Settings
+from src.config import Settings, load_settings
 from src.database import start_run
 from src.forward_operations import AlreadyRunningError, InterProcessLock
 
@@ -20,6 +20,9 @@ def governed_assets(tmp_path):
     path = tmp_path / "config" / "assets.yaml"
     path.parent.mkdir()
     path.write_text("assets: [BTC/USDT]\n", encoding="utf-8")
+    (path.parent / "canonical_research.yaml").write_text(
+        "canonical_history_since: \"2024-01-01T00:00:00Z\"\n", encoding="utf-8"
+    )
 
 
 def run_pipeline(**kwargs):
@@ -877,3 +880,47 @@ def test_pipeline_rejects_noncanonical_injected_provenance(tmp_path, provenance)
             now_utc=_utc("2026-09-06T18:00:00Z"),
         )
     assert _run_status(settings.database_path, "invalid-provenance")[0] == "failed"
+
+
+@pytest.mark.parametrize("configured_since", ["2023-12-31T00:00:00Z", "2024-01-02T00:00:00Z"])
+def test_pipeline_rejects_canonical_history_mismatch_and_preserves_pointer(
+    tmp_path, configured_since
+):
+    settings = _pipeline_settings(tmp_path)
+    run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_args, **_kwargs: _valid_rows(),
+        exchange=object(),
+        run_id="governed-history",
+    )
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    pointer_before = pointer_path.read_bytes()
+
+    with pytest.raises(ValueError, match="Canonical history mismatch"):
+        run_pipeline(
+            settings=replace(settings, since=configured_since),
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: _valid_rows(),
+            exchange=object(),
+            run_id="history-mismatch",
+        )
+
+    assert pointer_path.read_bytes() == pointer_before
+    assert _run_status(settings.database_path, "history-mismatch")[0] == "failed"
+
+
+def test_pipeline_rejects_hcl_since_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("HCL_SINCE", "2024-01-02T00:00:00Z")
+    settings = load_settings(tmp_path)
+
+    with pytest.raises(ValueError, match="Canonical history mismatch"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: _valid_rows(),
+            exchange=object(),
+            run_id="environment-history-mismatch",
+        )
+
+    assert _run_status(settings.database_path, "environment-history-mismatch")[0] == "failed"

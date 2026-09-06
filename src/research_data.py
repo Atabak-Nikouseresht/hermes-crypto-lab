@@ -46,9 +46,12 @@ def _validate_schema_v2(manifest: dict[str, Any], processed_dir: Path) -> None:
     commit = manifest.get("ingestion_git_commit")
     dirty = manifest.get("git_dirty")
     if commit == "unavailable":
-        if dirty is not None:
-            raise ValueError("Canonical schema-v2 unavailable Git provenance must use null git_dirty")
-    elif not isinstance(commit, str) or _GIT_COMMIT_RE.fullmatch(commit) is None or not isinstance(dirty, bool):
+        raise ValueError("Canonical schema-v2 unavailable Git provenance")
+    if (
+        not isinstance(commit, str)
+        or _GIT_COMMIT_RE.fullmatch(commit) is None
+        or dirty is not False
+    ):
         raise ValueError("Canonical schema-v2 manifest has invalid Git provenance")
     datasets = manifest.get("datasets")
     if not isinstance(datasets, dict) or not datasets:
@@ -85,6 +88,48 @@ def _validate_schema_v2(manifest: dict[str, Any], processed_dir: Path) -> None:
                 (root / relative).resolve().relative_to(root)
             except ValueError as error:
                 raise ValueError(f"Canonical schema-v2 {label} path escapes data directory") from error
+
+
+def _validate_dataset_semantics(
+    asset: str, entry: dict[str, Any], parquet_path: Path, raw_path: Path
+) -> None:
+    try:
+        frame = pd.read_parquet(parquet_path, columns=["timestamp"])
+    except Exception as error:
+        raise ValueError(f"Canonical Parquet is unreadable for {asset}") from error
+    if len(frame) != entry["rows"]:
+        raise ValueError(
+            f"Canonical manifest row-count mismatch for {asset}: "
+            f"declared={entry['rows']} actual={len(frame)}"
+        )
+    if frame.empty:
+        raise ValueError(f"Canonical manifest dataset is empty for {asset}")
+    timestamps = pd.to_datetime(frame["timestamp"], utc=True)
+    declared_start = pd.Timestamp(entry["start_utc"]).tz_convert("UTC")
+    declared_end = pd.Timestamp(entry["end_utc"]).tz_convert("UTC")
+    actual_start = timestamps.min()
+    actual_end = timestamps.max()
+    if declared_start != actual_start:
+        raise ValueError(
+            f"Canonical manifest start timestamp mismatch for {asset}: "
+            f"declared={declared_start.isoformat()} actual={actual_start.isoformat()}"
+        )
+    if declared_end != actual_end:
+        raise ValueError(
+            f"Canonical manifest end timestamp mismatch for {asset}: "
+            f"declared={declared_end.isoformat()} actual={actual_end.isoformat()}"
+        )
+    try:
+        raw_rows = json.loads(raw_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"Canonical raw artifact is unreadable for {asset}") from error
+    if not isinstance(raw_rows, list) or not all(isinstance(row, list) for row in raw_rows):
+        raise ValueError(f"Canonical raw artifact is not a row list for {asset}")
+    if len(raw_rows) != entry["raw_rows"]:
+        raise ValueError(
+            f"Canonical manifest raw row-count mismatch for {asset}: "
+            f"declared={entry['raw_rows']} actual={len(raw_rows)}"
+        )
 
 
 def _paths_and_manifest(
@@ -155,6 +200,7 @@ def _paths_and_manifest(
                     raise ValueError("Canonical raw evidence path escapes data directory") from error
                 if not raw_candidate.is_file() or _sha256(raw_candidate) != raw_sha256:
                     raise ValueError(f"Canonical raw evidence hash mismatch for {asset}")
+                _validate_dataset_semantics(asset, entry, candidate, raw_candidate)
             paths[asset] = candidate
         return paths, manifest, manifest_path
     raise ValueError("canonical dataset manifest is required")

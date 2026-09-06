@@ -16,11 +16,12 @@ from src.config import Settings, load_assets, load_canonical_research_config
 from src.database import (
     complete_published_run,
     finish_run,
-    incomplete_publications,
     initialize_database,
     mark_artifacts_ready,
     mark_publication_published,
+    publication_details,
     record_dataset_metadata,
+    recoverable_publications,
     start_run,
 )
 from src.download_data import create_exchange, download_daily_ohlcv
@@ -108,11 +109,11 @@ def _canonical_pointer_matches(
 
 def recover_interrupted_publications(settings: Settings) -> None:
     """Resolve interrupted canonical publications without changing the pointer."""
-    for run_id, state, manifest_path, manifest_sha256 in incomplete_publications(
+    for run_id, state, manifest_path, manifest_sha256 in recoverable_publications(
         settings.database_path
     ):
         if (
-            state in {"artifacts_ready", "published"}
+            state == "published"
             and manifest_path is not None
             and manifest_sha256 is not None
             and _canonical_pointer_matches(
@@ -131,6 +132,24 @@ def recover_interrupted_publications(settings: Settings) -> None:
                 "failed",
                 "Interrupted before canonical publication completed",
             )
+
+
+def _published_run_matches_canonical_pointer(settings: Settings, run_id: str) -> bool:
+    details = publication_details(settings.database_path, run_id)
+    if details is None:
+        return False
+    _status, state, manifest_path, manifest_sha256 = details
+    return bool(
+        state == "published"
+        and manifest_path is not None
+        and manifest_sha256 is not None
+        and _canonical_pointer_matches(
+            processed_dir=settings.processed_dir,
+            run_id=run_id,
+            immutable_manifest_path=manifest_path,
+            immutable_manifest_sha256=manifest_sha256,
+        )
+    )
 
 
 def run_pipeline(
@@ -291,8 +310,11 @@ def run_pipeline(
             "json_report": str(json_path),
         }
     except Exception as error:
-        finish_run(settings.database_path, run_id, "failed", str(error))
-        LOGGER.exception("Pipeline failed")
+        if _published_run_matches_canonical_pointer(settings, run_id):
+            LOGGER.exception("Published canonical run requires finalization recovery")
+        else:
+            finish_run(settings.database_path, run_id, "failed", str(error))
+            LOGGER.exception("Pipeline failed")
         raise
     finally:
         if market is not None:

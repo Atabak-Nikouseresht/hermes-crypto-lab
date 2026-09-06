@@ -39,7 +39,7 @@
     "requirements.lock": "979b34da490f7f862bf263104718dcd82c6cd70cb74809b9660193d1375fb547",
     "requirements.txt": "82ce257b749755e726847eba70abb8318e01f6a90929d38ba10810461317b7b0",
     "run_backtest.py": "204bc28c6cd01d75340da4e23558ab99ed6fb9a59b3f470c245208ab44ae511a",
-    "run_data_pipeline.py": "dfc918e5b81c2a2fcbe5d7269805c47087809b97eab002986bdeeb90ac2f6ceb",
+    "run_data_pipeline.py": "20534253cce704663164bfcd4b9d856215d39e04fad18d898f5516e7ce2d41c1",
     "run_experiments.py": "114966c7493509b9cdb072449752f3fadab9114bc139b423a9dca47fbf0e7a8c",
     "run_monthly_report.py": "940d8c56f885295c317b1a38f053c277a219675a2640f92140bf37d9b97d64fd",
     "run_paper.py": "32c1d25761b55daa0f7c34bb004212b97eb482daab610d4240ae0cddaf200d1c",
@@ -61,7 +61,7 @@
     "src/costs.py": "343c869812192001b18edad95f2f86bdd9d736005600c71006fde68d9c600cfd",
     "src/currency_reporting.py": "f8eab4111eabeb0f1702450f6a7b35da4b2f2bc1109d1ac446ca3daca899393e",
     "src/data_integrity.py": "805d36b4b9b22bcde7f0ee10e7824ff641d65e684e436c8233a25639342683ef",
-    "src/database.py": "87a73d6d721e2de093ee9663dea4e82f946576ce0ae89505c9d914a50efcf71f",
+    "src/database.py": "0a08d47bcc9b6739ec71adcd2756f75b854ebd820ff7f752b1c0aa5b562e32bd",
     "src/download_data.py": "7ca1b5c84248af2d117677bae344cb5c1adb5782cb3ce38ec2516ed02545a47b",
     "src/execution_protocol.py": "7c0ae762dadc01a1e15de598166771436818336cb56e18c1a2fc599cace080a3",
     "src/experiment_ledger.py": "e5f23a567a252f14f47839dcf34daec07ef3c4fa07f0d4571f8bf51202851b02",
@@ -103,7 +103,7 @@
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-06T08:39:13.657384+00:00",
+  "generated_at_utc": "2026-09-06T09:27:58.291714+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

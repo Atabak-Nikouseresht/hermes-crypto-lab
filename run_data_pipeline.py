@@ -25,6 +25,7 @@ from src.database import (
     start_run,
 )
 from src.download_data import create_exchange, download_daily_ohlcv
+from src.forward_operations import InterProcessLock
 from src.logging_config import configure_logging
 from src.report import write_quality_report
 from src.storage import save_clean_parquet, save_json_atomic, save_raw_json
@@ -113,7 +114,7 @@ def recover_interrupted_publications(settings: Settings) -> None:
         settings.database_path
     ):
         if (
-            state == "published"
+            state in {"artifacts_ready", "published"}
             and manifest_path is not None
             and manifest_sha256 is not None
             and _canonical_pointer_matches(
@@ -123,7 +124,8 @@ def recover_interrupted_publications(settings: Settings) -> None:
                 immutable_manifest_sha256=manifest_sha256,
             )
         ):
-            mark_publication_published(settings.database_path, run_id)
+            if state == "artifacts_ready":
+                mark_publication_published(settings.database_path, run_id)
             complete_published_run(settings.database_path, run_id)
         else:
             finish_run(
@@ -152,7 +154,7 @@ def _published_run_matches_canonical_pointer(settings: Settings, run_id: str) ->
     )
 
 
-def run_pipeline(
+def _run_pipeline_locked(
     *,
     settings: Settings,
     assets: list[str],
@@ -324,6 +326,27 @@ def run_pipeline(
                     close()
                 except Exception:
                     LOGGER.exception("Exchange cleanup failed after pipeline failure")
+
+
+def run_pipeline(
+    *,
+    settings: Settings,
+    assets: list[str],
+    downloader: Downloader = download_daily_ohlcv,
+    exchange: ccxt.Exchange | object | None = None,
+    run_id: str | None = None,
+    git_provenance: GitProvenance = _git_provenance,
+) -> dict[str, Any]:
+    lock_path = settings.project_root / "runtime" / "canonical_pipeline.lock"
+    with InterProcessLock(lock_path, command_name="canonical-data-pipeline"):
+        return _run_pipeline_locked(
+            settings=settings,
+            assets=assets,
+            downloader=downloader,
+            exchange=exchange,
+            run_id=run_id,
+            git_provenance=git_provenance,
+        )
 
 
 def main() -> None:

@@ -10,6 +10,8 @@ import pytest
 import run_data_pipeline
 from run_data_pipeline import run_pipeline
 from src.config import Settings
+from src.database import start_run
+from src.forward_operations import AlreadyRunningError, InterProcessLock
 
 
 @pytest.fixture(autouse=True)
@@ -487,6 +489,116 @@ def test_runtime_finalization_error_leaves_published_run_recoverable(tmp_path, m
         assert connection.execute(
             "SELECT COUNT(*) FROM dataset_metadata WHERE run_id='finalization-error'"
         ).fetchone()[0] == 1
+
+
+def test_artifacts_ready_exact_pointer_recovers_after_crash_before_published_state(
+    tmp_path, monkeypatch
+):
+    settings = _pipeline_settings(tmp_path)
+    original_mark = run_data_pipeline.mark_publication_published
+    monkeypatch.setattr(
+        run_data_pipeline,
+        "mark_publication_published",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            KeyboardInterrupt("crashed before publication state transition")
+        ),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="crashed before publication state"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: _valid_rows(),
+            exchange=object(),
+            run_id="artifacts-ready-pointer",
+        )
+
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    pointer_before_recovery = pointer_path.read_bytes()
+    with duckdb.connect(str(settings.database_path), read_only=True) as connection:
+        row = connection.execute(
+            "SELECT status, publication_state FROM ingestion_runs WHERE run_id='artifacts-ready-pointer'"
+        ).fetchone()
+    assert row == ("running", "artifacts_ready")
+
+    monkeypatch.setattr(run_data_pipeline, "mark_publication_published", original_mark)
+    run_data_pipeline.recover_interrupted_publications(settings)
+    run_data_pipeline.recover_interrupted_publications(settings)
+
+    status, completed_at, error = _run_status(
+        settings.database_path, "artifacts-ready-pointer"
+    )
+    assert (status, error) == ("completed", None)
+    assert completed_at is not None
+    assert pointer_path.read_bytes() == pointer_before_recovery
+
+
+def test_active_canonical_writer_lock_refuses_second_pipeline_without_touching_run(
+    tmp_path,
+):
+    settings = _pipeline_settings(tmp_path)
+    lock_path = settings.project_root / "runtime" / "canonical_pipeline.lock"
+    with InterProcessLock(lock_path, command_name="active-canonical-pipeline"):
+        with pytest.raises(AlreadyRunningError):
+            run_pipeline(
+                settings=settings,
+                assets=["BTC/USDT"],
+                downloader=lambda *_args, **_kwargs: _valid_rows(),
+                exchange=object(),
+                run_id="refused-second-run",
+            )
+
+    assert not settings.database_path.exists()
+
+
+def test_canonical_writer_lock_releases_after_pipeline_failure(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+    with pytest.raises(RuntimeError, match="No finalized OHLCV rows"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_args, **_kwargs: [],
+            exchange=object(),
+            run_id="first-fails",
+        )
+
+    result = run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_args, **_kwargs: _valid_rows(),
+        exchange=object(),
+        run_id="second-succeeds",
+    )
+    assert result["run_id"] == "second-succeeds"
+
+
+def test_canonical_lock_ignores_stale_owner_sidecar_after_os_lock_release(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+    lock_path = settings.project_root / "runtime" / "canonical_pipeline.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.with_suffix(lock_path.suffix + ".owner.json").write_text(
+        json.dumps({"pid": 999999, "token": "stale"}), encoding="utf-8"
+    )
+
+    result = run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_args, **_kwargs: _valid_rows(),
+        exchange=object(),
+        run_id="stale-owner-succeeds",
+    )
+    assert result["run_id"] == "stale-owner-succeeds"
+
+
+def test_unexpected_publication_state_transition_fails_closed(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+    run_data_pipeline.initialize_database(settings.database_path)
+    start_run(settings.database_path, "unexpected-state")
+
+    with pytest.raises(RuntimeError, match="to published"):
+        run_data_pipeline.mark_publication_published(
+            settings.database_path, "unexpected-state"
+        )
 
 
 @pytest.mark.parametrize("tamper", ["pointer", "immutable"])

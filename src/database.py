@@ -75,40 +75,50 @@ def mark_artifacts_ready(
     path: Path, run_id: str, immutable_manifest_path: str, immutable_manifest_sha256: str
 ) -> None:
     with duckdb.connect(str(path)) as connection:
-        connection.execute(
+        row = connection.execute(
             """
             UPDATE ingestion_runs
             SET publication_state='artifacts_ready', immutable_manifest_path=?,
                 immutable_manifest_sha256=?
             WHERE run_id=? AND status='running'
+              AND publication_state='running'
+            RETURNING run_id
             """,
             [immutable_manifest_path, immutable_manifest_sha256, run_id],
-        )
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Cannot transition ingestion run {run_id} to artifacts_ready")
 
 
 def mark_publication_published(path: Path, run_id: str) -> None:
     with duckdb.connect(str(path)) as connection:
-        connection.execute(
+        row = connection.execute(
             """
             UPDATE ingestion_runs SET publication_state='published'
             WHERE run_id=? AND status='running' AND publication_state='artifacts_ready'
+            RETURNING run_id
             """,
             [run_id],
-        )
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Cannot transition ingestion run {run_id} to published")
 
 
 def complete_published_run(path: Path, run_id: str) -> None:
     with duckdb.connect(str(path)) as connection:
-        connection.execute(
+        row = connection.execute(
             """
             UPDATE ingestion_runs
             SET completed_at_utc=?, status='completed', error_message=NULL,
                 publication_state='completed'
             WHERE run_id=? AND status IN ('running', 'failed')
               AND publication_state='published'
+            RETURNING run_id
             """,
             [datetime.now(timezone.utc), run_id],
-        )
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Cannot complete unpublished ingestion run {run_id}")
 
 
 def recoverable_publications(

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
@@ -8,7 +9,7 @@ import duckdb
 import pytest
 
 import run_data_pipeline
-from run_data_pipeline import run_pipeline
+from run_data_pipeline import run_pipeline as _run_pipeline
 from src.config import Settings
 from src.database import start_run
 from src.forward_operations import AlreadyRunningError, InterProcessLock
@@ -19,6 +20,12 @@ def governed_assets(tmp_path):
     path = tmp_path / "config" / "assets.yaml"
     path.parent.mkdir()
     path.write_text("assets: [BTC/USDT]\n", encoding="utf-8")
+
+
+def run_pipeline(**kwargs):
+    kwargs.setdefault("git_provenance", lambda _root: ("a" * 40, False))
+    kwargs.setdefault("now_utc", datetime(2024, 1, 2, tzinfo=timezone.utc))
+    return _run_pipeline(**kwargs)
 
 
 def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
@@ -47,6 +54,7 @@ def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
         exchange=object(),
         run_id="test-run",
         git_provenance=lambda _root: ("a" * 40, False),
+        now_utc=datetime(2024, 1, 3, tzinfo=timezone.utc),
     )
 
     assert (tmp_path / "data" / "raw" / "test-run" / "BTC_USDT_1d.json").exists()
@@ -99,10 +107,12 @@ def test_git_provenance_supports_clean_dirty_and_unavailable(monkeypatch, tmp_pa
         ]
     )
     monkeypatch.setattr(run_data_pipeline.subprocess, "run", lambda *_args, **_kwargs: next(dirty))
-    assert run_data_pipeline._git_provenance(tmp_path) == ("b" * 40, True)
+    with pytest.raises(run_data_pipeline.CanonicalProvenanceError, match="clean Git tree"):
+        run_data_pipeline._git_provenance(tmp_path)
 
     monkeypatch.setattr(run_data_pipeline.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no git")))
-    assert run_data_pipeline._git_provenance(tmp_path) == ("unavailable", None)
+    with pytest.raises(run_data_pipeline.CanonicalProvenanceError, match="unavailable"):
+        run_data_pipeline._git_provenance(tmp_path)
 
 
 def test_pipeline_rejects_non_daily_canonical_data(tmp_path):
@@ -750,3 +760,120 @@ def test_cleanup_failure_after_pointer_publication_does_not_fail_completed_run(t
     assert pointer["run_id"] == "cleanup-after-publication"
     assert _run_status(settings.database_path, "cleanup-after-publication")[0] == "completed"
     assert market.closed == 1
+
+
+def _utc(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _daily_row(value: str) -> list[float]:
+    return [int(_utc(value).timestamp() * 1000), 10.0, 12.0, 9.0, 11.0, 100.0]
+
+
+def test_latest_finalized_daily_open_uses_utc_previous_midnight():
+    assert run_data_pipeline._latest_finalized_daily_open(_utc("2026-09-06T18:00:00Z")) == _utc("2026-09-05T00:00:00Z")
+    assert run_data_pipeline._latest_finalized_daily_open(_utc("2026-09-07T00:00:01Z")) == _utc("2026-09-06T00:00:00Z")
+
+
+@pytest.mark.parametrize("commit", ["", "abc123", "g" * 40])
+def test_git_provenance_rejects_malformed_commit(monkeypatch, tmp_path, commit):
+    monkeypatch.setattr(run_data_pipeline.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 0, commit, ""))
+    with pytest.raises(run_data_pipeline.CanonicalProvenanceError, match="malformed"):
+        run_data_pipeline._git_provenance(tmp_path)
+
+
+def test_git_provenance_rejects_git_command_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_data_pipeline.subprocess, "run", lambda *_a, **_k: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["git"])))
+    with pytest.raises(run_data_pipeline.CanonicalProvenanceError, match="unavailable"):
+        run_data_pipeline._git_provenance(tmp_path)
+
+
+def test_pipeline_requires_exact_finalized_endpoint_and_preserves_previous_pointer(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+    now = _utc("2026-09-06T18:00:00Z")
+
+    def provenance(_root):
+        return "a" * 40, False
+    run_pipeline(settings=settings, assets=["BTC/USDT"], downloader=lambda *_a, **_k: [_daily_row("2026-09-04T00:00:00Z"), _daily_row("2026-09-05T00:00:00Z")], exchange=object(), run_id="complete-endpoint", git_provenance=provenance, now_utc=now)
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    pointer_before = pointer_path.read_bytes()
+    with pytest.raises(ValueError, match="BTC/USDT.*actual_end.*expected_end"):
+        run_pipeline(settings=settings, assets=["BTC/USDT"], downloader=lambda *_a, **_k: [_daily_row("2026-09-04T00:00:00Z")], exchange=object(), run_id="one-day-stale", git_provenance=provenance, now_utc=now)
+    assert pointer_path.read_bytes() == pointer_before
+    assert _run_status(settings.database_path, "one-day-stale")[0] == "failed"
+
+
+def test_pipeline_rejects_current_forming_candle_and_stale_asset(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+    now = _utc("2026-09-06T18:00:00Z")
+    with pytest.raises(ValueError, match="BTC/USDT.*actual_end.*expected_end"):
+        run_pipeline(settings=settings, assets=["BTC/USDT"], downloader=lambda *_a, **_k: [_daily_row("2026-09-05T00:00:00Z"), _daily_row("2026-09-06T00:00:00Z")], exchange=object(), run_id="forming-candle", git_provenance=lambda _root: ("a" * 40, False), now_utc=now)
+    (tmp_path / "config" / "assets.yaml").write_text("assets: [BTC/USDT, ETH/USDT, BNB/USDT]\n", encoding="utf-8")
+    def rows_for_symbol(_exchange, symbol, **_kwargs):
+        return {"BTC/USDT": [_daily_row("2026-09-05T00:00:00Z")], "ETH/USDT": [_daily_row("2026-09-05T00:00:00Z")], "BNB/USDT": [_daily_row("2026-09-03T00:00:00Z")]}[symbol]
+    with pytest.raises(ValueError, match="BNB/USDT.*actual_end.*expected_end"):
+        run_pipeline(settings=settings, assets=["BTC/USDT", "ETH/USDT", "BNB/USDT"], downloader=rows_for_symbol, exchange=object(), run_id="one-asset-stale", git_provenance=lambda _root: ("a" * 40, False), now_utc=now)
+    assert _run_status(settings.database_path, "one-asset-stale")[0] == "failed"
+
+
+def test_pipeline_provenance_failure_preserves_previous_pointer(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+    now = _utc("2026-09-06T18:00:00Z")
+    rows = [_daily_row("2026-09-05T00:00:00Z")]
+    run_pipeline(settings=settings, assets=["BTC/USDT"], downloader=lambda *_a, **_k: rows, exchange=object(), run_id="provenance-good", git_provenance=lambda _root: ("a" * 40, False), now_utc=now)
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    pointer_before = pointer_path.read_bytes()
+    with pytest.raises(run_data_pipeline.CanonicalProvenanceError, match="unavailable"):
+        run_pipeline(settings=settings, assets=["BTC/USDT"], exchange=object(), run_id="provenance-bad", git_provenance=lambda _root: (_ for _ in ()).throw(run_data_pipeline.CanonicalProvenanceError("unavailable")), now_utc=now)
+    assert pointer_path.read_bytes() == pointer_before
+    assert _run_status(settings.database_path, "provenance-bad")[0] == "failed"
+
+
+def test_pipeline_rejects_multi_day_stale_endpoint_at_midnight_boundary(tmp_path):
+    settings = _pipeline_settings(tmp_path)
+    now = _utc("2026-09-07T00:00:01Z")
+
+    def provenance(_root):
+        return "a" * 40, False
+
+    run_pipeline(
+        settings=settings,
+        assets=["BTC/USDT"],
+        downloader=lambda *_a, **_k: [_daily_row("2026-09-06T00:00:00Z")],
+        exchange=object(),
+        run_id="midnight-complete",
+        git_provenance=provenance,
+        now_utc=now,
+    )
+    with pytest.raises(ValueError, match="BTC/USDT.*actual_end.*expected_end"):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            downloader=lambda *_a, **_k: [_daily_row("2026-09-04T00:00:00Z")],
+            exchange=object(),
+            run_id="multi-day-stale",
+            git_provenance=provenance,
+            now_utc=now,
+        )
+    assert _run_status(settings.database_path, "multi-day-stale")[0] == "failed"
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        lambda _root: ("a" * 40, True),
+        lambda _root: ("unavailable", None),
+    ],
+)
+def test_pipeline_rejects_noncanonical_injected_provenance(tmp_path, provenance):
+    settings = _pipeline_settings(tmp_path)
+    with pytest.raises(run_data_pipeline.CanonicalProvenanceError):
+        run_pipeline(
+            settings=settings,
+            assets=["BTC/USDT"],
+            exchange=object(),
+            run_id="invalid-provenance",
+            git_provenance=provenance,
+            now_utc=_utc("2026-09-06T18:00:00Z"),
+        )
+    assert _run_status(settings.database_path, "invalid-provenance")[0] == "failed"

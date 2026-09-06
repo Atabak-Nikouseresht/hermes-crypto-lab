@@ -1708,7 +1708,7 @@ def test_recovers_terminal_run_missing_post_commit_evidence(tmp_path):
         ).fetchone()[0]
     assert outcome == "RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE"
     assert window_run == result.run_id
-    assert baseline_count == 1
+    assert baseline_count == 0
     recovery_kwargs = {
         "reports_dir": tmp_path / "reports",
         "notification_target": "telegram:test",

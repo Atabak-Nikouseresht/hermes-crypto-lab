@@ -29,7 +29,7 @@ from src.paper_forward import (
     finalize_forward_run,
     recover_committed_forward_evidence,
 )
-from src.paper_market import fetch_public_market_snapshot
+from src.paper_market import TransientPublicMarketError, fetch_public_market_snapshot
 from src.paper_notifications import (
     HermesTelegramSender,
     NotificationError,
@@ -533,6 +533,28 @@ def main() -> None:
             )
             try:
                 snapshot = fetch_configured_public_market_snapshot(config, settings)
+            except TransientPublicMarketError as error:
+                reason = f"Transient public market-data fetch failed: {error}"
+                result = commit_operational_failure(
+                    system,
+                    outcome="DATA_QUALITY_FAILURE",
+                    message=reason,
+                    now=now,
+                    release_provenance=release_provenance,
+                    official_scheduled=official_scheduled,
+                )
+                report_path = write_operational_failure_report(
+                    system.store,
+                    result,
+                    reports_dir,
+                    now=pd.Timestamp(now),
+                    locked_candidate_id=config.locked_candidate_id,
+                )
+                if telegram_target is not None:
+                    NotificationService(
+                        system.store, target=telegram_target, sender=HermesTelegramSender()
+                    ).send_committed_run(result.run_id, report_path)
+                raise SystemExit(4) from error
             except Exception as error:
                 reason = f"Public market-data fetch failed: {error}"
                 result = commit_operational_failure(

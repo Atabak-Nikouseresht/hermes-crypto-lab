@@ -132,9 +132,9 @@ def recover_committed_forward_evidence(
                 reconciliation_valid=reconciliation.valid,
             )
         assert outcome is not None
-        if evidence_complete:
+        if evidence_complete and system.store.forward_baseline_eligible(run_id=run_id):
             system.store.ensure_forward_baseline(run_id=run_id)
-        else:
+        elif not evidence_complete and system.store.forward_baseline_eligible(run_id=run_id):
             system.store.ensure_recovered_forward_baseline(run_id=run_id)
         schedule_start = pd.Timestamp(schedule_key).tz_convert("UTC")
         scheduled_for = schedule_start.normalize() + pd.Timedelta(
@@ -425,7 +425,10 @@ def finalize_forward_run(
         kill_switch_active=account["status"] != "ACTIVE",
         reconciliation_valid=reconciliation.valid,
     )
-    system.store.ensure_forward_baseline(run_id=result.run_id)
+    if result.status != "DRY_RUN" and system.store.forward_baseline_eligible(
+        run_id=result.run_id
+    ):
+        system.store.ensure_forward_baseline(run_id=result.run_id)
     schedule_key = system._scheduled_key(now_ts)
     if schedule_key is not None and result.status != "DRY_RUN":
         target = now_ts.normalize() + pd.Timedelta(

@@ -670,6 +670,7 @@ def test_dry_run_market_failure_commits_auditable_failure_without_notification(
     monkeypatch, tmp_path
 ):
     from src.paper_broker import PaperRunResult
+    from src.paper_market import TransientPublicMarketError
 
     root = Path(__file__).resolve().parents[1]
     config, values = run_paper.load_paper_configuration(root)
@@ -710,7 +711,9 @@ def test_dry_run_market_failure_commits_auditable_failure_without_notification(
     monkeypatch.setattr(
         run_paper,
         "fetch_configured_public_market_snapshot",
-        lambda *_args: (_ for _ in ()).throw(TimeoutError("public timeout")),
+        lambda *_args: (_ for _ in ()).throw(
+            TransientPublicMarketError("public timeout")
+        ),
     )
     monkeypatch.setattr(run_paper, "commit_operational_failure", commit)
     monkeypatch.setattr(
@@ -720,7 +723,7 @@ def test_dry_run_market_failure_commits_auditable_failure_without_notification(
     )
     monkeypatch.setattr(sys, "argv", ["run_paper.py", "--dry-run"])
 
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(SystemExit, match="4"):
         run_paper.main()
 
     assert committed[0]["outcome"] == "DATA_QUALITY_FAILURE"

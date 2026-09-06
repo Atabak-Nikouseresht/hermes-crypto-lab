@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
-from src.download_data import call_with_retry, create_exchange
+from src.download_data import RETRYABLE_ERRORS, call_with_retry, create_exchange
 from src.paper_broker import MarketSnapshot, PaperConfig, Quote, SymbolRules
 from src.validate_data import rows_to_frame
 
@@ -50,6 +50,10 @@ class PublicMarketClient:
     def close(self) -> Any:
         close = getattr(self._client, "close", None)
         return close() if callable(close) else None
+
+
+class TransientPublicMarketError(RuntimeError):
+    """A retry-exhausted public transport or exchange-availability failure."""
 
 
 def create_public_market_client(exchange_id: str, timeout_ms: int) -> PublicMarketClient:
@@ -150,6 +154,8 @@ def fetch_public_market_snapshot(
                 ),
                 price_tick=float(price_filter.get("tickSize") or 0.0),
             )
+    except RETRYABLE_ERRORS as error:
+        raise TransientPublicMarketError(str(error)) from error
     finally:
         if owned_exchange:
             close = getattr(market, "close", None)

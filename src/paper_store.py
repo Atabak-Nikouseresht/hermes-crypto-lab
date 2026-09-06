@@ -1041,6 +1041,21 @@ class PaperStore:
             ).fetchone()
             if existing is not None:
                 return
+            eligible_run = connection.execute(
+                """
+                SELECT r.run_id
+                FROM paper_runs r
+                JOIN forward_experiments e ON e.experiment_id=?
+                WHERE r.run_id=?
+                  AND r.mode='PAPER' AND r.official_scheduled=TRUE
+                  AND r.schedule_key IS NOT NULL AND r.completed_at_utc IS NOT NULL
+                  AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED', 'DATA_HALT')
+                  AND r.started_at_utc >= e.started_at_utc
+                """,
+                [experiment_id, run_id],
+            ).fetchone()
+            if eligible_run is None:
+                raise ValueError("Cannot establish baseline from an ineligible forward run")
             snapshot = connection.execute(
                 "SELECT snapshot_at_utc, equity FROM equity_snapshots WHERE run_id=?",
                 [run_id],
@@ -1056,6 +1071,26 @@ class PaperStore:
             connection.execute(
                 "INSERT INTO forward_baselines VALUES (?, ?, ?, ?)",
                 [experiment_id, run_id, snapshot[0], snapshot[1]],
+            )
+
+    def forward_baseline_eligible(self, *, run_id: str) -> bool:
+        with self.connect(read_only=True) as connection:
+            experiment_id = self._active_experiment_id(connection)
+            return bool(
+                connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM paper_runs r
+                        JOIN forward_experiments e ON e.experiment_id=?
+                        WHERE r.run_id=? AND r.mode='PAPER'
+                          AND r.official_scheduled=TRUE AND r.schedule_key IS NOT NULL
+                          AND r.completed_at_utc IS NOT NULL
+                          AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED', 'DATA_HALT')
+                          AND r.started_at_utc >= e.started_at_utc
+                    )
+                    """,
+                    [experiment_id, run_id],
+                ).fetchone()[0]
             )
 
     def ensure_recovered_forward_baseline(self, *, run_id: str) -> None:

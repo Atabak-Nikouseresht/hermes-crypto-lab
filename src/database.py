@@ -104,6 +104,21 @@ def mark_publication_published(path: Path, run_id: str) -> None:
             raise RuntimeError(f"Cannot transition ingestion run {run_id} to published")
 
 
+def recover_artifacts_ready_publication(path: Path, run_id: str) -> None:
+    with duckdb.connect(str(path)) as connection:
+        row = connection.execute(
+            """
+            UPDATE ingestion_runs SET publication_state='published', error_message=NULL
+            WHERE run_id=? AND status IN ('running', 'failed')
+              AND publication_state='artifacts_ready'
+            RETURNING run_id
+            """,
+            [run_id],
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Cannot recover ingestion run {run_id} to published")
+
+
 def complete_published_run(path: Path, run_id: str) -> None:
     with duckdb.connect(str(path)) as connection:
         row = connection.execute(
@@ -129,7 +144,9 @@ def recoverable_publications(
             """
             SELECT run_id, publication_state, immutable_manifest_path, immutable_manifest_sha256
             FROM ingestion_runs
-            WHERE status='running' OR (status='failed' AND publication_state='published')
+            WHERE status='running' OR (
+                status='failed' AND publication_state IN ('artifacts_ready', 'published')
+            )
             ORDER BY started_at_utc
             """
         ).fetchall()

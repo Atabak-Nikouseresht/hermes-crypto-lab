@@ -21,6 +21,7 @@ from src.database import (
     mark_publication_published,
     publication_details,
     record_dataset_metadata,
+    recover_artifacts_ready_publication,
     recoverable_publications,
     start_run,
 )
@@ -125,7 +126,7 @@ def recover_interrupted_publications(settings: Settings) -> None:
             )
         ):
             if state == "artifacts_ready":
-                mark_publication_published(settings.database_path, run_id)
+                recover_artifacts_ready_publication(settings.database_path, run_id)
             complete_published_run(settings.database_path, run_id)
         else:
             finish_run(
@@ -136,13 +137,13 @@ def recover_interrupted_publications(settings: Settings) -> None:
             )
 
 
-def _published_run_matches_canonical_pointer(settings: Settings, run_id: str) -> bool:
+def _canonical_publication_matches_run(settings: Settings, run_id: str) -> bool:
     details = publication_details(settings.database_path, run_id)
     if details is None:
         return False
     _status, state, manifest_path, manifest_sha256 = details
     return bool(
-        state == "published"
+        state in {"artifacts_ready", "published"}
         and manifest_path is not None
         and manifest_sha256 is not None
         and _canonical_pointer_matches(
@@ -312,7 +313,7 @@ def _run_pipeline_locked(
             "json_report": str(json_path),
         }
     except Exception as error:
-        if _published_run_matches_canonical_pointer(settings, run_id):
+        if _canonical_publication_matches_run(settings, run_id):
             LOGGER.exception("Published canonical run requires finalization recovery")
         else:
             finish_run(settings.database_path, run_id, "failed", str(error))

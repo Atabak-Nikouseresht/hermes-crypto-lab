@@ -533,6 +533,34 @@ def test_artifacts_ready_exact_pointer_recovers_after_crash_before_published_sta
     assert pointer_path.read_bytes() == pointer_before_recovery
 
 
+def test_mark_published_error_preserves_verified_artifacts_ready_publication(
+    tmp_path, monkeypatch
+):
+    settings = _pipeline_settings(tmp_path)
+    original_mark = run_data_pipeline.mark_publication_published
+    monkeypatch.setattr(
+        run_data_pipeline,
+        "mark_publication_published",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("publish state failed")),
+    )
+    with pytest.raises(RuntimeError, match="publish state failed"):
+        run_pipeline(settings=settings, assets=["BTC/USDT"], downloader=lambda *_a, **_k: _valid_rows(), exchange=object(), run_id="mark-published-error")
+    pointer_path = settings.processed_dir / "dataset_manifest.json"
+    immutable_path = settings.processed_dir / "mark-published-error" / "dataset_manifest.json"
+    pointer_before_recovery = pointer_path.read_bytes()
+    with duckdb.connect(str(settings.database_path), read_only=True) as connection:
+        row = connection.execute("SELECT status, publication_state FROM ingestion_runs WHERE run_id='mark-published-error'").fetchone()
+    assert row == ("running", "artifacts_ready")
+    assert immutable_path.read_bytes() == pointer_before_recovery
+    monkeypatch.setattr(run_data_pipeline, "mark_publication_published", original_mark)
+    run_data_pipeline.recover_interrupted_publications(settings)
+    run_data_pipeline.recover_interrupted_publications(settings)
+    status, completed_at, error = _run_status(settings.database_path, "mark-published-error")
+    assert (status, error) == ("completed", None)
+    assert completed_at is not None
+    assert pointer_path.read_bytes() == pointer_before_recovery
+
+
 def test_active_canonical_writer_lock_refuses_second_pipeline_without_touching_run(
     tmp_path,
 ):

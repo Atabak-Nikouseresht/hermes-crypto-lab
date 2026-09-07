@@ -86,6 +86,7 @@ def _configure_real_data_halt_runner(monkeypatch, tmp_path):
     monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: pd.Timestamp(now))
     monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "_current_schedule_window_closed", lambda *_args: False)
     monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
     monkeypatch.setattr(run_paper, "capture_release_provenance", lambda _root: _release_provenance(now))
     monkeypatch.setattr(run_paper, "resolve_telegram_target", lambda _target: "telegram:test")
@@ -170,6 +171,7 @@ def test_real_runner_terminal_result_handling_remains_non_retryable(monkeypatch,
     monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: snapshot.fetched_at)
     monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "_current_schedule_window_closed", lambda *_args: False)
     monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
     monkeypatch.setattr(run_paper, "finalize_forward_run", lambda *_args, **_kwargs: result)
     monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: tmp_path / "report.md")
@@ -648,6 +650,7 @@ def test_dry_run_success_orchestrates_public_snapshot_and_report_without_notific
     monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: snapshot.fetched_at)
     monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "_current_schedule_window_closed", lambda *_args: False)
     monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
     monkeypatch.setattr(run_paper, "finalize_forward_run", lambda *_args, **_kwargs: result)
     monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: report)
@@ -730,6 +733,83 @@ def test_dry_run_market_failure_commits_auditable_failure_without_notification(
     assert "public timeout" in committed[0]["message"]
 
 
+def test_transient_market_failure_keeps_retryable_exit_when_telegram_fails(
+    monkeypatch, tmp_path
+):
+    from src.paper_market import TransientPublicMarketError
+    from src.paper_notifications import NotificationError
+
+    root = Path(__file__).resolve().parents[1]
+    config, values = run_paper.load_paper_configuration(root)
+    values = {**values, "reports_dir": str(tmp_path / "reports")}
+    now = datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc)
+    settings = SimpleNamespace(
+        project_root=root,
+        logs_dir=tmp_path,
+        log_level="INFO",
+        max_retries=1,
+        backoff_base_seconds=0.1,
+        request_timeout_ms=1_000,
+    )
+    system = SimpleNamespace(
+        store=SimpleNamespace(
+            forward_window_exists=lambda _key: False,
+            schedule_exists=lambda _key: False,
+            account=lambda: {"status": "ACTIVE"},
+        ),
+        _scheduled_key=lambda _now: "2026-01-05T00:05Z",
+    )
+    committed = []
+
+    @contextmanager
+    def open_fake(**_kwargs):
+        yield system
+
+    def commit(*_args, **kwargs):
+        committed.append(kwargs)
+        return PaperRunResult("failed-run", "DATA_QUALITY_FAILURE", kwargs["message"])
+
+    class FailingNotification:
+        def send_committed_run(self, *_args):
+            raise NotificationError("telegram unavailable")
+
+    class ControlledDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(run_paper, "datetime", ControlledDateTime)
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: pd.Timestamp(now))
+    monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        run_paper,
+        "fetch_configured_public_market_snapshot",
+        lambda *_args: (_ for _ in ()).throw(TransientPublicMarketError("public timeout")),
+    )
+    monkeypatch.setattr(run_paper, "capture_release_provenance", lambda _root: _release_provenance(now))
+    monkeypatch.setattr(run_paper, "commit_operational_failure", commit)
+    monkeypatch.setattr(
+        run_paper,
+        "write_operational_failure_report",
+        lambda *_args, **_kwargs: tmp_path / "failed.md",
+    )
+    monkeypatch.setattr(run_paper, "resolve_telegram_target", lambda _target: "telegram:test")
+    monkeypatch.setattr(run_paper, "NotificationService", lambda *_args, **_kwargs: FailingNotification())
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--paper"])
+
+    with pytest.raises(SystemExit) as exc:
+        run_paper.main()
+
+    assert exc.value.code == 4
+    assert committed[0]["official_scheduled"] is True
+
+
 def test_scheduled_paper_run_passes_verified_release_provenance_to_execution(
     monkeypatch, tmp_path
 ):
@@ -788,6 +868,7 @@ def test_scheduled_paper_run_passes_verified_release_provenance_to_execution(
     monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: pd.Timestamp(now))
     monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "_current_schedule_window_closed", lambda *_args: False)
     monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: snapshot)
     monkeypatch.setattr(run_paper, "build_forward_diagnostics", lambda *_args: {})
     monkeypatch.setattr(run_paper, "capture_release_provenance", lambda _root: provenance)

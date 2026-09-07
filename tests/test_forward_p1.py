@@ -9,13 +9,15 @@ from src.paper_market import TransientPublicMarketError, fetch_public_market_sna
 
 
 def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
-    system = PaperTradingSystem(tmp_path / "paper.duckdb", PaperConfig(assets=("BTC/USDT",)))
+    assets = ("BTC/USDT", "ETH/USDT")
+    specification = '{"locked_strategy":{"allocation":{"asset_caps":{"BTC/USDT":0.7,"ETH/USDT":0.6}}}}'
+    system = PaperTradingSystem(tmp_path / "paper.duckdb", PaperConfig(assets=assets))
     now = datetime(2026, 1, 5, 0, 10, tzinfo=timezone.utc)
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('experiment', ?, 'locked', 'hash', 'governance', '{}', 'ACTIVE')",
-            [now],
+            "('experiment', ?, 'locked', 'hash', 'governance', ?, 'ACTIVE')",
+            [now, specification],
         )
         connection.execute(
             "INSERT INTO paper_runs VALUES (?, ?, ?, 'DRY_RUN', 'DRY_RUN', FALSE, NULL, NULL, NULL, NULL, '', '{}')",
@@ -38,6 +40,18 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
 
     with system.store.connect() as connection:
         connection.execute(
+            "INSERT INTO paper_runs VALUES (?, ?, ?, 'RECOVERED_ABORTED', 'PAPER', TRUE, NULL, NULL, NULL, NULL, '', '{}')",
+            ["recovered", now, now],
+        )
+        connection.execute(
+            "INSERT INTO equity_snapshots VALUES ('recovered-equity', 'recovered', ?, 100, 0, 100, ?)",
+            [system.store.account_id, now],
+        )
+    with pytest.raises(ValueError, match="recovered run"):
+        system.store.ensure_recovered_forward_baseline(run_id="recovered")
+
+    with system.store.connect() as connection:
+        connection.execute(
             "INSERT INTO paper_runs VALUES (?, ?, ?, 'EXECUTED', 'PAPER', TRUE, ?, NULL, NULL, NULL, '', '{}')",
             ["official", now, now, "2026-01-05T00:05Z"],
         )
@@ -48,6 +62,25 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
         connection.execute(
             "INSERT INTO forward_market_observations VALUES ('official', ?, 'BTC/USDT', 100)",
             [now],
+        )
+    assert not system.store.forward_baseline_eligible(run_id="official")
+    with pytest.raises(ValueError, match="complete governed market observations"):
+        system.store.ensure_forward_baseline(run_id="official")
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO forward_market_observations VALUES ('official', ?, 'ETH/USDT', 100)",
+            [now],
+        )
+        connection.execute(
+            "INSERT INTO forward_market_observations VALUES ('official', ?, 'DOGE/USDT', 100)",
+            [now],
+        )
+    assert not system.store.forward_baseline_eligible(run_id="official")
+    with pytest.raises(ValueError, match="complete governed market observations"):
+        system.store.ensure_forward_baseline(run_id="official")
+    with system.store.connect() as connection:
+        connection.execute(
+            "DELETE FROM forward_market_observations WHERE run_id='official' AND symbol='DOGE/USDT'"
         )
     assert system.store.forward_baseline_eligible(run_id="official")
     system.store.ensure_forward_baseline(run_id="official")

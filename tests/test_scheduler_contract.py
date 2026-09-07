@@ -212,6 +212,7 @@ def test_weekly_wrapper_retries_the_actual_data_halt_exit_from_run_paper(monkeyp
     monkeypatch.setattr(run_paper, "_experiment_start", lambda _root: run_paper.pd.Timestamp("2026-01-05T00:10:00Z"))
     monkeypatch.setattr(run_paper, "recover_committed_forward_evidence", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(run_paper, "record_missed_windows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_paper, "_current_schedule_window_closed", lambda *_args: False)
     monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda *_args: SimpleNamespace(fetched_at=run_paper.pd.Timestamp("2026-01-05T00:10:00Z")))
     monkeypatch.setattr(run_paper, "finalize_forward_run", lambda *_args, **_kwargs: data_halt)
     monkeypatch.setattr(run_paper, "write_weekly_paper_report", lambda *_args, **_kwargs: tmp_path / "report.md")

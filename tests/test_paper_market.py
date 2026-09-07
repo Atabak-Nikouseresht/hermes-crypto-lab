@@ -5,7 +5,77 @@ import pandas as pd
 import pytest
 
 from src.paper_broker import PaperConfig, PaperTradingSystem
-from src.paper_market import create_public_market_client, fetch_public_market_snapshot
+from src.paper_market import (
+    create_public_market_client,
+    fetch_public_market_snapshot,
+    parse_binance_spot_symbol_rules,
+)
+
+
+def _binance_market_info(*, filters, **info):
+    return {
+        "active": True,
+        "limits": {"amount": {"min": 0.001, "max": 1000}, "cost": {"min": 5}},
+        "info": {
+            "status": "TRADING",
+            "isSpotTradingAllowed": True,
+            "orderTypes": ["LIMIT", "MARKET"],
+            "permissions": ["SPOT"],
+            "filters": filters,
+            **info,
+        },
+    }
+
+
+def test_binance_market_rules_preserve_market_specific_filter_semantics():
+    rules = parse_binance_spot_symbol_rules(
+        _binance_market_info(
+            filters=[
+                {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
+                {"filterType": "MARKET_LOT_SIZE", "minQty": "0.01", "maxQty": "10", "stepSize": "0.01"},
+                {"filterType": "MIN_NOTIONAL", "minNotional": "5", "applyToMarket": False, "avgPriceMins": 0},
+                {"filterType": "NOTIONAL", "minNotional": "10", "maxNotional": "100", "applyMinToMarket": True, "applyMaxToMarket": True, "avgPriceMins": 0},
+                {"filterType": "PRICE_FILTER", "minPrice": "0", "maxPrice": "0", "tickSize": "0.01"},
+                {"filterType": "UNRELATED_FILTER", "value": "ignored"},
+            ]
+        )
+    )
+
+    assert rules.active and rules.market_order_allowed
+    assert (rules.market_min_quantity, rules.market_max_quantity, rules.market_step_size) == (
+        0.01,
+        10.0,
+        0.01,
+    )
+    assert not rules.min_notional_applies_to_market
+    assert (rules.notional_min, rules.notional_max) == (10.0, 100.0)
+    assert rules.notional_min_applies_to_market and rules.notional_max_applies_to_market
+
+
+@pytest.mark.parametrize(
+    ("overrides", "active", "market_allowed"),
+    [
+        ({"status": "BREAK"}, False, True),
+        ({"isSpotTradingAllowed": False}, False, True),
+        ({"orderTypes": ["LIMIT"]}, True, False),
+        ({"permissions": ["MARGIN"]}, False, True),
+    ],
+)
+def test_binance_market_rules_fail_closed_for_ineligible_market_execution(
+    overrides, active, market_allowed
+):
+    rules = parse_binance_spot_symbol_rules(
+        _binance_market_info(
+            filters=[
+                {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
+                {"filterType": "MIN_NOTIONAL", "minNotional": "5", "applyToMarket": True, "avgPriceMins": 0},
+            ],
+            **overrides,
+        )
+    )
+
+    assert rules.active is active
+    assert rules.market_order_allowed is market_allowed
 
 
 class FakePublicExchange:

@@ -1,0 +1,32 @@
+{
+  "created_at_utc": "2026-09-07T13:50:00Z",
+  "economic_spec_changed": false,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "historical_governance_records_rewritten": false,
+  "historical_protocol_records_rewritten": false,
+  "parameter_retuning": false,
+  "prior_quote_coherence_governance_amendment_sha256": "7413c0683a747c60f261795d20d318d0556f028f878c9441955cbd9bb5a73da6",
+  "purpose": "Future-only clarification of the existing public-market failure state machine. The sealed governance data_failure clause remains historical evidence; retry-exhausted typed public transport and availability failures are retryable admission failures, while malformed, stale, incomplete, unverifiable, reconciliation, provenance, accounting, governance, and execution-contract failures remain terminal and fail closed.",
+  "research_results_changed": false,
+  "retryable_transient_failure_semantics": {
+    "allows_execution": false,
+    "commits_execution_or_observation": false,
+    "failure_recorded": true,
+    "kill_switch_latched_solely_for_transience": false,
+    "retry_permitted_under_bounded_scheduler_policy": true,
+    "successful_subsequent_retry_may_proceed_under_normal_schedule_and_idempotency_controls": true
+  },
+  "status": "active additive future-only operational amendment; all earlier sealed governance remains unchanged",
+  "strategy_reselection": false,
+  "terminal_integrity_failure_semantics": {
+    "examples": [
+      "invalid or unverifiable market snapshot",
+      "database reconciliation or persisted evidence integrity failure",
+      "governance, release-provenance, accounting, or hardening-integrity failure",
+      "unsupported or invalid execution contract"
+    ],
+    "fail_closed": true,
+    "retryable_by_default": false
+  },
+  "version": "forward-governance-transient-failure-semantics-amendment-v5"
+}

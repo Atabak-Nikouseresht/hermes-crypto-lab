@@ -509,6 +509,132 @@ def test_reconciliation_revalidates_persisted_execution_and_quote_context(
     assert expected in reconciliation.message.lower()
 
 
+def _current_official_execution(
+    tmp_path, *, quote_skew_seconds: int = 0
+) -> tuple[PaperTradingSystem, str]:
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "current-execution.duckdb", _config())
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_schema_versions SET applied_at_utc='2024-01-01T00:00:00Z' WHERE version=13"
+        )
+    snapshot = _snapshot(now)
+    if quote_skew_seconds:
+        snapshot.quotes["ETH/USDT"] = replace(
+            snapshot.quotes["ETH/USDT"],
+            timestamp=pd.Timestamp(now) - pd.Timedelta(seconds=quote_skew_seconds),
+        )
+    result = system.run(
+        snapshot,
+        now=now,
+        dry_run=False,
+        release_provenance=_release_provenance(now),
+        require_release_provenance=True,
+    )
+    assert result.status == "EXECUTED"
+    assert system.store.reconcile().valid
+    return system, result.run_id
+
+
+@pytest.mark.parametrize(
+    ("table", "expected"),
+    [
+        ("paper_execution_outcomes", "execution outcome"),
+        ("paper_quote_coherence_context", "quote coherence"),
+    ],
+)
+def test_reconciliation_requires_current_committed_execution_evidence(tmp_path, table, expected):
+    system, run_id = _current_official_execution(tmp_path)
+    with system.store.connect() as connection:
+        connection.execute(f"DELETE FROM {table} WHERE run_id=?", [run_id])
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert expected in reconciliation.message.lower()
+
+
+def test_no_rebalance_without_execution_context_remains_valid(tmp_path):
+    now = datetime(2024, 8, 5, 9, 40, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "no-rebalance.duckdb", _config())
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_schema_versions SET applied_at_utc='2024-01-01T00:00:00Z' WHERE version=13"
+        )
+
+    result = system.run(
+        _snapshot(now),
+        now=now,
+        dry_run=False,
+        release_provenance=_release_provenance(now),
+        require_release_provenance=True,
+    )
+
+    assert result.status == "NO_REBALANCE"
+    assert system.store.reconcile().valid
+
+
+def test_reconciliation_requires_execution_context_for_current_filled_order(tmp_path):
+    system, run_id = _current_official_execution(tmp_path)
+    with system.store.connect() as connection:
+        connection.execute("DELETE FROM paper_execution_context WHERE run_id=?", [run_id])
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "execution context" in reconciliation.message.lower()
+
+
+def test_reconciliation_rejects_unknown_current_execution_outcome(tmp_path):
+    system, run_id = _current_official_execution(tmp_path)
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_execution_outcomes SET execution_outcome='UNKNOWN' WHERE run_id=?", [run_id]
+        )
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "execution outcome" in reconciliation.message.lower()
+
+
+def test_reconciliation_rejects_standalone_current_context_protocol(tmp_path):
+    system, run_id = _current_official_execution(tmp_path)
+    with system.store.connect() as connection:
+        connection.execute("DELETE FROM paper_orders WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM paper_fills WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM cash_ledger WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM position_ledger WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM paper_positions")
+        connection.execute("UPDATE paper_accounts SET cash=initial_cash")
+        connection.execute(
+            "UPDATE paper_execution_context SET execution_protocol_version='bogus-protocol' WHERE run_id=?",
+            [run_id],
+        )
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "execution context protocol" in reconciliation.message.lower()
+
+
+@pytest.mark.parametrize("max_skew", [999999, 1])
+def test_reconciliation_requires_persisted_quote_skew_to_match_current_config(tmp_path, max_skew):
+    system, run_id = _current_official_execution(
+        tmp_path, quote_skew_seconds=2 if max_skew == 1 else 0
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_quote_coherence_context SET max_timestamp_skew_seconds=? WHERE run_id=?",
+            [max_skew, run_id],
+        )
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "max skew" in reconciliation.message.lower()
+
+
 def test_reconciliation_rejects_ledger_provenance_link_tampering(tmp_path):
     system, _result = _execute_scaled_buy(
         tmp_path, initial_cash=83.0, min_quantity=0.1, min_notional=1.0

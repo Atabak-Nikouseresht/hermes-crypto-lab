@@ -145,6 +145,7 @@ def _refresh_backup_database_checksum(backup: Path) -> None:
         ("UPDATE paper_run_release_provenance SET git_commit='g'", "release provenance"),
         ("UPDATE paper_execution_context SET bid=ask+1.0", "bid/ask"),
         ("UPDATE paper_quote_coherence_context SET contract_version='unknown-contract'", "quote coherence contract"),
+        ("UPDATE paper_quote_coherence_context SET max_timestamp_skew_seconds=999999", "max skew"),
     ],
 )
 def test_backup_semantic_validity_cannot_exceed_runtime_reconciliation(
@@ -164,6 +165,7 @@ def test_backup_semantic_validity_cannot_exceed_runtime_reconciliation(
             "fee_rate": system.config.fee_rate,
             "minimum_spread_rate": system.config.minimum_spread_rate,
             "slippage_rate": system.config.slippage_rate,
+            "max_quote_timestamp_skew_seconds": system.config.max_quote_timestamp_skew_seconds,
         },
     )
     copied = backup / "paper_trading.duckdb"

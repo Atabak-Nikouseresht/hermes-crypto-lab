@@ -20,6 +20,7 @@ DEFAULT_RECONCILIATION_SETTINGS = {
     "fee_rate": 0.001,
     "minimum_spread_rate": 0.0002,
     "slippage_rate": 0.0005,
+    "max_quote_timestamp_skew_seconds": 30,
 }
 
 
@@ -80,6 +81,9 @@ def _database_checks(
         fee_rate=float(reconciliation_settings["fee_rate"]),
         minimum_spread_rate=float(reconciliation_settings["minimum_spread_rate"]),
         slippage_rate=float(reconciliation_settings["slippage_rate"]),
+        max_quote_timestamp_skew_seconds=int(
+            reconciliation_settings["max_quote_timestamp_skew_seconds"]
+        ),
     )
     return {
         "tables": tables,

@@ -80,7 +80,7 @@
     "src/paper_market.py": "2b7a9ba614615469f06c51e69c55478769b9a889fe82f28d568bf6944c2aa9f9",
     "src/paper_notifications.py": "dd9018e121544f492ecc969066f172aac15512030395110b00e175741ae72cc2",
     "src/paper_report.py": "dd89846992e5acd645959143e76a2903eabbfad4c7bf3e8e5931cff93e5c568b",
-    "src/paper_store.py": "e1afa707dad031a5572977b60b312b9a7bcd632503228a0e0bfd691b3c9a6fab",
+    "src/paper_store.py": "5ff90b889bbcff2d080202c8929e0fde510b27936d4df278dd94e96b1cffc780",
     "src/portfolio.py": "89e393c466d7850eec5f2d82b2944d8bc6871c12952cf5779baa33d7a5985a02",
     "src/release_provenance.py": "f38341e42954100f5e9550616b34bc90edf8deb9fafc23ba471ae15fe496d242",
     "src/report.py": "59923840ff8f3842ac5a10209b7b4d1ef7213b4f41b7f544fa976607b1dbd3b9",
@@ -104,7 +104,7 @@
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-07T07:58:35.671780+00:00",
+  "generated_at_utc": "2026-09-07T09:39:40.912977+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

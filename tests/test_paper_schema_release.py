@@ -33,7 +33,7 @@ def test_fresh_schema_has_unambiguous_v5_and_release_provenance_snapshot(tmp_pat
             for row in connection.execute("PRAGMA table_info('paper_run_release_provenance')").fetchall()
         }
 
-    assert set(versions) == set(range(2, 15))
+    assert set(versions) == set(range(2, 16))
     assert versions[5] == V5_EXECUTION
     assert versions[12] == V12_QUOTE
     assert versions[13] == V13_RELEASE
@@ -142,7 +142,7 @@ def test_fresh_runtime_schema_structurally_matches_checked_in_snapshot(tmp_path)
             assert tables == {row[0] for row in runtime.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()}
             for table in tables:
                 assert _schema_structure(runtime, table) == _schema_structure(canonical, table)
-            assert set(dict(runtime.execute("SELECT version, description FROM paper_schema_versions").fetchall())) == set(range(2, 15))
+            assert set(dict(runtime.execute("SELECT version, description FROM paper_schema_versions").fetchall())) == set(range(2, 16))
     finally:
         canonical.close()
 

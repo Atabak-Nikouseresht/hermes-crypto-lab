@@ -107,11 +107,17 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
     spot_allowed = info.get("isSpotTradingAllowed")
     order_types = info.get("orderTypes")
     permissions = info.get("permissions")
+    permission_sets = info.get("permissionSets")
     permissions_allow_spot = permissions is None or (
         isinstance(permissions, list) and (not permissions or "SPOT" in permissions)
     )
+    permission_sets_allow_spot = True
+    if permission_sets is not None:
+        permission_sets_allow_spot = isinstance(permission_sets, list) and all(
+            isinstance(group, list) and "SPOT" in group for group in permission_sets
+        )
     active = bool(market_info.get("active")) and status == "TRADING" and spot_allowed is True
-    active = active and permissions_allow_spot
+    active = active and permissions_allow_spot and permission_sets_allow_spot
     market_order_allowed = isinstance(order_types, list) and "MARKET" in order_types
 
     lot_min = _filter_decimal(lot, "minQty")

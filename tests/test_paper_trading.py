@@ -766,7 +766,7 @@ def test_market_order_rule_enforcement_uses_market_lot_and_notional_flags(tmp_pa
 
     def normalize(quantity):
         return system._normalize_exchange_quantity(
-            symbol="BTC/USDT", quantity=quantity, validation_price=10.0, snapshot=snapshot
+            symbol="BTC/USDT", quantity=quantity, rule_reference_price=10.0, snapshot=snapshot
         )
     assert normalize(0.009) == (
         None,
@@ -806,7 +806,7 @@ def test_market_notional_average_price_requirement_fails_closed(tmp_path):
     )
 
     assert system._normalize_exchange_quantity(
-        symbol="BTC/USDT", quantity=1.0, validation_price=10.0, snapshot=snapshot
+        symbol="BTC/USDT", quantity=1.0, rule_reference_price=10.0, snapshot=snapshot
     ) == (None, "market_notional_reference_unverifiable")
 
 
@@ -1331,7 +1331,7 @@ def test_malformed_exchange_rules_fail_closed_before_fill(tmp_path, rules):
     quantity, reason = system._normalize_exchange_quantity(
         symbol="BTC/USDT",
         quantity=1.0,
-        validation_price=100.0,
+        rule_reference_price=100.0,
         snapshot=snapshot,
     )
 

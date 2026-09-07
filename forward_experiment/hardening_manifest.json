@@ -75,9 +75,9 @@
     "src/hardening_manifest.py": "93925dcbbf39e8423bf0bfea4550ed5f0d1b72fb0a318bd305dc1978fdf14a2c",
     "src/logging_config.py": "dabe0fb99c78b2735671edc5e3380d001338cde8c5b415c65bf69553267a1b13",
     "src/metrics.py": "68d9c7749ccbc272bf517b857fd6aa896990e0d338f0c1e1df97c0388ace764d",
-    "src/paper_broker.py": "1be227d83edf0631c3dccaaa2ce1ed2e3016c6bd7b7b3a9d18b3f5f59d5b2b21",
+    "src/paper_broker.py": "5c4a2b67e0019b9a396296f6ff22daa8a0533938ee498e0501b1fa342824fe6b",
     "src/paper_forward.py": "054e3da896e4185444449d8cc3c102fde7058e6900d00e60b37d3cf94c6af79d",
-    "src/paper_market.py": "c5556896ca7454a9d314831f042498c7170f98d4703c56415df4402736c2d205",
+    "src/paper_market.py": "0780b4bd27530db0d6e81b7f7c078cec90ab44719ea5ab6cc32658d4fc4be74a",
     "src/paper_notifications.py": "dd9018e121544f492ecc969066f172aac15512030395110b00e175741ae72cc2",
     "src/paper_report.py": "dd89846992e5acd645959143e76a2903eabbfad4c7bf3e8e5931cff93e5c568b",
     "src/paper_store.py": "f688aad79e0e2734d9d246e4f06bbe87c6c7a0049d04b481c54bbf48a1bee9cc",
@@ -98,13 +98,13 @@
     "tests/test_paper_market.py": "f0349cc84ccbecd7e873f76bf143aa42d5baeb5b88f7f2255784f67f8ec39ab3",
     "tests/test_paper_notifications.py": "b3fb1a7fdfd1f9e92d29f18e260ad2045a9a420825e60bd755b25409352d8878",
     "tests/test_paper_report.py": "970cfcd74a592f264b3e13131fc0105b61be474a38a3b4c72a2114d4633500e7",
-    "tests/test_paper_trading.py": "96ab0da17c3fd3d0f530ae4c51d052f1d5ddd55ebb29d91669d4bef4471e9e9a",
+    "tests/test_paper_trading.py": "63a56ac7a172ffa94b61fa1491db9b5643af8a1b71af652b39cb0fe5fe416e42",
     "tests/test_runner_safety.py": "72b6b274e58b216b8d3548a953537bac0b1bc51e92b9aa827178b65e86f9f908",
     "tests/test_scheduler_contract.py": "b5ea40e0b035b94982b42b83474d0aeb7823135cb7bc4a9660b8d4b90011f278",
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-07T16:20:28.364332+00:00",
+  "generated_at_utc": "2026-09-07T16:35:13.436627+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

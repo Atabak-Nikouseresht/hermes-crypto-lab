@@ -654,12 +654,6 @@ class PaperStore:
                     SELECT run_id FROM paper_runs
                     WHERE mode='PAPER' AND official_scheduled
                       AND status='EXECUTED' AND started_at_utc >= ?
-                      AND (
-                           EXISTS (SELECT 1 FROM paper_execution_outcomes o WHERE o.run_id=paper_runs.run_id)
-                        OR EXISTS (SELECT 1 FROM paper_quote_coherence_context q WHERE q.run_id=paper_runs.run_id)
-                        OR EXISTS (SELECT 1 FROM paper_execution_context c WHERE c.run_id=paper_runs.run_id)
-                        OR EXISTS (SELECT 1 FROM paper_orders o WHERE o.run_id=paper_runs.run_id)
-                      )
                     """,
                     [adoption[0]],
                 ).fetchall()

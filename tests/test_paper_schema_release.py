@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import duckdb
 import pytest
 
-from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
+from src.execution_protocol import EXECUTION_PROTOCOL_VERSION, QUOTE_COHERENCE_CONTRACT_VERSION
 from src.paper_store import PaperStore, ReconciliationResult
 
 
@@ -76,6 +76,18 @@ def _valid_release_provenance(now: datetime) -> SimpleNamespace:
     )
 
 
+def _record_current_no_rebalance_evidence(store: PaperStore, *, run_id: str, now: datetime) -> None:
+    with store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_execution_outcomes VALUES (?, 'NO_REBALANCE_REQUIRED', ?)",
+            [run_id, now],
+        )
+        connection.execute(
+            "INSERT INTO paper_quote_coherence_context VALUES (?, ?, 30, ?, ?, ?)",
+            [run_id, QUOTE_COHERENCE_CONTRACT_VERSION, now, now, now],
+        )
+
+
 def _seed_valid_official_run(store: PaperStore, *, run_id: str = "current") -> datetime:
     now = datetime.now(timezone.utc)
     with store.connect() as connection:
@@ -100,6 +112,7 @@ def _seed_valid_official_run(store: PaperStore, *, run_id: str = "current") -> d
         message="test official run",
         reconciliation=ReconciliationResult(True, "test"),
     )
+    _record_current_no_rebalance_evidence(store, run_id=run_id, now=now)
     assert store.reconcile().valid
     return now
 
@@ -207,6 +220,7 @@ def test_release_provenance_is_immutable_and_required_after_adoption(tmp_path):
         execution_protocol_version=EXECUTION_PROTOCOL_VERSION,
         captured_at_utc=now,
     )
+    _record_current_no_rebalance_evidence(store, run_id="current", now=now)
     assert store.reconcile().valid
     with pytest.raises(FileExistsError):
         store.record_run_release_provenance(

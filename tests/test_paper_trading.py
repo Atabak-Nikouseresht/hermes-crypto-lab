@@ -19,6 +19,7 @@ from src.paper_broker import (
     classify_execution_outcome,
 )
 from src.release_provenance import ReleaseProvenance
+from src.paper_store import ReconciliationResult
 
 ASSETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT"]
 
@@ -534,6 +535,105 @@ def _current_official_execution(
     assert result.status == "EXECUTED"
     assert system.store.reconcile().valid
     return system, result.run_id
+
+
+def _current_execution_rejected_without_orders(tmp_path) -> tuple[PaperTradingSystem, str]:
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    config = PaperConfig(
+        assets=("BTC/USDT",),
+        initial_cash=100.0,
+        fee_rate=0.0,
+        minimum_spread_rate=0.0,
+        slippage_rate=0.0,
+        require_exchange_rules=True,
+    )
+    system = PaperTradingSystem(tmp_path / "execution-rejected.duckdb", config)
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_schema_versions SET applied_at_utc='2024-01-01T00:00:00Z' WHERE version=13"
+        )
+    system.store.insert_run(
+        run_id="rejected-run",
+        started_at=now,
+        mode="PAPER",
+        schedule_key="2024-08-05T09:05Z",
+        signal_timestamp=datetime(2024, 8, 4, tzinfo=timezone.utc),
+        data_timestamp=datetime(2024, 8, 4, tzinfo=timezone.utc),
+        official_scheduled=True,
+        release_provenance=_release_provenance(now),
+    )
+    timestamp = pd.Timestamp(now)
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(
+            {"BTC/USDT": [100.0]},
+            index=pd.DatetimeIndex([pd.Timestamp("2024-08-04T00:00:00Z")]),
+        ),
+        quotes={"BTC/USDT": Quote(100.0, 100.0, 100.0, timestamp)},
+        fetched_at=timestamp,
+        symbol_rules={"BTC/USDT": SymbolRules(True, 2.0, 10.0, 0.1, 1.0, 0.01)},
+    )
+    system._execute(
+        run_id="rejected-run",
+        signal_timestamp=pd.Timestamp("2024-08-04T00:00:00Z"),
+        proposals=[
+            {
+                "idempotency_key": "rejected-order",
+                "symbol": "BTC/USDT",
+                "side": "BUY",
+                "requested_quantity": 1.0,
+                "target_weight": 1.0,
+            }
+        ],
+        snapshot=snapshot,
+        now=timestamp,
+    )
+    system.store.finish_run(
+        run_id="rejected-run",
+        status="EXECUTED",
+        completed_at=now,
+        message="rejected execution fixture",
+        reconciliation=ReconciliationResult(True, "fixture"),
+    )
+    with system.store.connect(read_only=True) as connection:
+        outcome, order_count = connection.execute(
+            "SELECT (SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id='rejected-run'), "
+            "(SELECT COUNT(*) FROM paper_orders WHERE run_id='rejected-run')"
+        ).fetchone()
+    assert (outcome, order_count) == ("EXECUTION_REJECTED", 0)
+    assert system.store.reconcile().valid
+    return system, "rejected-run"
+
+
+def test_reconciliation_detects_coordinated_stripping_of_zero_order_execution(tmp_path):
+    system, run_id = _current_execution_rejected_without_orders(tmp_path)
+    with system.store.connect() as connection:
+        connection.execute("DELETE FROM paper_execution_outcomes WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM paper_quote_coherence_context WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM paper_execution_context WHERE run_id=?", [run_id])
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert "missing execution outcome" in reconciliation.message.lower()
+
+
+def test_reconciliation_detects_total_execution_evidence_stripping(tmp_path):
+    system, run_id = _current_official_execution(tmp_path)
+    with system.store.connect() as connection:
+        for table in (
+            "paper_execution_outcomes",
+            "paper_quote_coherence_context",
+            "paper_execution_context",
+            "paper_orders",
+            "paper_fills",
+        ):
+            connection.execute(f"DELETE FROM {table} WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM cash_ledger WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM position_ledger WHERE run_id=?", [run_id])
+        connection.execute("DELETE FROM paper_positions")
+        connection.execute("UPDATE paper_accounts SET cash=initial_cash")
+
+    assert not system.store.reconcile().valid
 
 
 @pytest.mark.parametrize(

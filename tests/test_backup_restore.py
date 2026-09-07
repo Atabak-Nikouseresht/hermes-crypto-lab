@@ -183,3 +183,43 @@ def test_backup_semantic_validity_cannot_exceed_runtime_reconciliation(
     _refresh_backup_database_checksum(backup)
     with pytest.raises(ValueError, match="runtime reconciliation"):
         verify_backup(backup)
+
+
+def test_backup_rejects_coordinated_execution_evidence_stripping(tmp_path):
+    system, project = _verified_execution_system(tmp_path)
+    backup = create_verified_backup(
+        project_root=project,
+        database_path=system.store.path,
+        output_root=tmp_path / "backups",
+        lock_path=project / "runtime" / "forward_writer.lock",
+        timestamp="2026-08-22T120099Z",
+        commit_hash="abc123",
+        reconciliation_settings={
+            "account_id": system.config.account_id,
+            "quantity_tolerance": system.config.quantity_tolerance,
+            "fee_rate": system.config.fee_rate,
+            "minimum_spread_rate": system.config.minimum_spread_rate,
+            "slippage_rate": system.config.slippage_rate,
+            "max_quote_timestamp_skew_seconds": system.config.max_quote_timestamp_skew_seconds,
+        },
+    )
+    with system.store.connect() as connection:
+        for table in (
+            "paper_execution_outcomes",
+            "paper_quote_coherence_context",
+            "paper_execution_context",
+            "paper_orders",
+            "paper_fills",
+        ):
+            connection.execute(f"DELETE FROM {table} WHERE run_id='backup-run'")
+        connection.execute("DELETE FROM cash_ledger WHERE run_id='backup-run'")
+        connection.execute("DELETE FROM position_ledger WHERE run_id='backup-run'")
+        connection.execute("DELETE FROM paper_positions")
+        connection.execute("UPDATE paper_accounts SET cash=initial_cash")
+
+    assert not system.store.reconcile().valid
+    copied = backup / "paper_trading.duckdb"
+    shutil.copy2(system.store.path, copied)
+    _refresh_backup_database_checksum(backup)
+    with pytest.raises(ValueError, match="runtime reconciliation"):
+        verify_backup(backup)

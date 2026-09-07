@@ -35,6 +35,9 @@ QUOTE_COHERENCE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
 QUOTE_COHERENCE_CONTRACT_HASH_SHA256 = (
     "8646abfb7664252db276965c6422ff33d8398d58093ba64a45ccecaf90b5f064"
 )
+TRANSIENT_FAILURE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
+    "56e114adbd812cc07301d0122e7b1363a7605601d0f93f486d64ebd25f62e038"
+)
 
 
 def locked_strategy_spec(config: PaperConfig) -> dict[str, Any]:
@@ -205,6 +208,9 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     quote_coherence_contract = (
         project_root / "forward_experiment" / "quote_coherence_contract_v1.json"
     )
+    transient_failure_amendment = (
+        project_root / "forward_experiment" / "governance_amendment_v5_transient_failure_semantics.json"
+    )
     actual_checkpoint = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     actual_governance = hashlib.sha256(governance.read_bytes()).hexdigest()
     actual_locked = locked_strategy_hash(config)
@@ -219,6 +225,9 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     actual_quote_coherence_contract = hashlib.sha256(
         quote_coherence_contract.read_bytes()
     ).hexdigest()
+    actual_transient_failure_amendment = hashlib.sha256(
+        transient_failure_amendment.read_bytes()
+    ).hexdigest()
     expected = {
         "checkpoint": CHECKPOINT_MANIFEST_HASH_SHA256,
         "governance": GOVERNANCE_HASH_SHA256,
@@ -228,6 +237,7 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "economic_governance_amendment": ECONOMIC_GOVERNANCE_AMENDMENT_HASH_SHA256,
         "quote_coherence_governance_amendment": QUOTE_COHERENCE_GOVERNANCE_AMENDMENT_HASH_SHA256,
         "quote_coherence_contract": QUOTE_COHERENCE_CONTRACT_HASH_SHA256,
+        "transient_failure_governance_amendment": TRANSIENT_FAILURE_GOVERNANCE_AMENDMENT_HASH_SHA256,
     }
     actual = {
         "checkpoint": actual_checkpoint,
@@ -238,6 +248,7 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "economic_governance_amendment": actual_economic_amendment,
         "quote_coherence_governance_amendment": actual_quote_coherence_amendment,
         "quote_coherence_contract": actual_quote_coherence_contract,
+        "transient_failure_governance_amendment": actual_transient_failure_amendment,
     }
     if actual != expected:
         raise ValueError(f"Forward trust-anchor mismatch: expected={expected}, actual={actual}")
@@ -264,6 +275,12 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     verify_immutable_manifest(
         quote_coherence_contract,
         project_root / "forward_experiment" / "quote_coherence_contract_v1.json.sha256",
+    )
+    verify_immutable_manifest(
+        transient_failure_amendment,
+        project_root
+        / "forward_experiment"
+        / "governance_amendment_v5_transient_failure_semantics.json.sha256",
     )
     amendment_payload = json.loads(amendment.read_text(encoding="utf-8"))
     if amendment_payload["base_governance_sha256"] != actual_governance:
@@ -308,6 +325,34 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     ):
         raise ValueError("Quote coherence amendment declares a prohibited historical or economic change")
     verify_quote_coherence_runtime_contract(quote_contract_payload, config)
+    transient_payload = json.loads(transient_failure_amendment.read_text(encoding="utf-8"))
+    if (
+        transient_payload["prior_quote_coherence_governance_amendment_sha256"]
+        != actual_quote_coherence_amendment
+    ):
+        raise ValueError("Transient failure amendment does not anchor quote coherence governance")
+    retryable = transient_payload["retryable_transient_failure_semantics"]
+    if retryable != {
+        "allows_execution": False,
+        "commits_execution_or_observation": False,
+        "failure_recorded": True,
+        "kill_switch_latched_solely_for_transience": False,
+        "retry_permitted_under_bounded_scheduler_policy": True,
+        "successful_subsequent_retry_may_proceed_under_normal_schedule_and_idempotency_controls": True,
+    }:
+        raise ValueError("Transient failure amendment semantics are not fail-closed")
+    if any(
+        transient_payload[field]
+        for field in (
+            "strategy_reselection",
+            "parameter_retuning",
+            "research_results_changed",
+            "historical_governance_records_rewritten",
+            "historical_protocol_records_rewritten",
+            "economic_spec_changed",
+        )
+    ):
+        raise ValueError("Transient failure amendment declares a prohibited change")
     declared_schedule = amendment_payload["operational_schedule"]
     actual_schedule = {
         "schedule_weekday": config.schedule_weekday,

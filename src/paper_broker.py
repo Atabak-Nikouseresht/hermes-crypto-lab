@@ -46,6 +46,17 @@ class SymbolRules:
     step_size: float
     min_notional: float
     price_tick: float
+    market_order_allowed: bool = True
+    market_min_quantity: float | None = None
+    market_max_quantity: float | None = None
+    market_step_size: float | None = None
+    min_notional_applies_to_market: bool = True
+    min_notional_avg_price_mins: int = 0
+    notional_min: float | None = None
+    notional_max: float | None = None
+    notional_min_applies_to_market: bool = False
+    notional_max_applies_to_market: bool = False
+    notional_avg_price_mins: int = 0
 
 
 @dataclass(frozen=True)
@@ -336,7 +347,9 @@ class PaperTradingSystem:
                 return None, "missing_exchange_rules"
             return quantity, None
         if not rules.active:
-            return None, "inactive_symbol"
+            return None, "symbol_not_tradable"
+        if not rules.market_order_allowed:
+            return None, "market_orders_not_allowed"
         if (
             not math.isfinite(validation_price)
             or validation_price <= 0
@@ -344,8 +357,10 @@ class PaperTradingSystem:
             or rules.min_quantity <= 0
             or not math.isfinite(rules.step_size)
             or rules.step_size <= 0
-            or not math.isfinite(rules.min_notional)
-            or rules.min_notional <= 0
+            or (
+                rules.min_notional_applies_to_market
+                and (not math.isfinite(rules.min_notional) or rules.min_notional <= 0)
+            )
             or (
                 rules.max_quantity is not None
                 and (
@@ -371,8 +386,36 @@ class PaperTradingSystem:
             return None, "below_min_quantity"
         if rules.max_quantity is not None and normalized > rules.max_quantity:
             return None, "above_max_quantity"
-        if normalized * validation_price < rules.min_notional:
+        if rules.market_step_size is not None:
+            try:
+                market_step = Decimal(str(rules.market_step_size))
+                market_units = (Decimal(str(normalized)) / market_step).to_integral_value(
+                    rounding=ROUND_FLOOR
+                )
+                normalized = float(market_units * market_step)
+            except (InvalidOperation, OverflowError, ValueError):
+                return None, "invalid_exchange_rules"
+        if rules.market_min_quantity is not None and normalized < rules.market_min_quantity:
+            return None, "below_market_min_quantity"
+        if normalized <= self.config.quantity_tolerance:
+            return None, "non_positive_quantity"
+        if rules.market_max_quantity is not None and normalized > rules.market_max_quantity:
+            return None, "above_market_max_quantity"
+        if (
+            (rules.min_notional_applies_to_market and rules.min_notional_avg_price_mins != 0)
+            or (rules.notional_min_applies_to_market and rules.notional_avg_price_mins != 0)
+            or (rules.notional_max_applies_to_market and rules.notional_avg_price_mins != 0)
+        ):
+            return None, "market_notional_reference_unverifiable"
+
+        if rules.min_notional_applies_to_market and normalized * validation_price < rules.min_notional:
             return None, "below_min_notional"
+        if rules.notional_min_applies_to_market:
+            if rules.notional_min is None or normalized * validation_price < rules.notional_min:
+                return None, "below_market_notional"
+        if rules.notional_max_applies_to_market:
+            if rules.notional_max is None or normalized * validation_price > rules.notional_max:
+                return None, "above_market_notional"
         return normalized, None
 
     def _reject_quantity(
@@ -429,7 +472,7 @@ class PaperTradingSystem:
             quantity, invalid_reason = self._normalize_exchange_quantity(
                 symbol=asset,
                 quantity=abs(delta),
-                validation_price=snapshot.quotes[asset].mid,
+                validation_price=snapshot.quotes[asset].last,
                 snapshot=snapshot,
             )
             if invalid_reason:

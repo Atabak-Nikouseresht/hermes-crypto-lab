@@ -60,6 +60,90 @@ def create_public_market_client(exchange_id: str, timeout_ms: int) -> PublicMark
     return PublicMarketClient(create_exchange(exchange_id, timeout_ms))
 
 
+def _filter_decimal(filter_data: dict[str, Any], field: str) -> float | None:
+    value = filter_data.get(field)
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None
+
+
+def _filter_int(filter_data: dict[str, Any], field: str) -> int | None:
+    value = filter_data.get(field)
+    return value if type(value) is int and value >= 0 else None
+
+
+def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
+    """Parse public exchangeInfo for prospective paper MARKET execution only.
+
+    Binance applies its MARKET notional filters to an average/reference price;
+    the broker rejects an applicable filter with a nonzero avgPriceMins rather
+    than claiming current ticker evidence reconstructs that exchange value.
+    """
+    info = market_info.get("info")
+    if not isinstance(info, dict):
+        info = {}
+    raw_filters = info.get("filters")
+    if not isinstance(raw_filters, list):
+        raw_filters = []
+    filters = {
+        item.get("filterType"): item
+        for item in raw_filters
+        if isinstance(item, dict)
+    }
+    lot = filters.get("LOT_SIZE", {})
+    market_lot = filters.get("MARKET_LOT_SIZE", {})
+    min_notional = filters.get("MIN_NOTIONAL", {})
+    notional = filters.get("NOTIONAL", {})
+    price_filter = filters.get("PRICE_FILTER", {})
+    limits = market_info.get("limits") if isinstance(market_info.get("limits"), dict) else {}
+    amount_limits = limits.get("amount") if isinstance(limits.get("amount"), dict) else {}
+    cost_limits = limits.get("cost") if isinstance(limits.get("cost"), dict) else {}
+
+    status = info.get("status")
+    spot_allowed = info.get("isSpotTradingAllowed")
+    order_types = info.get("orderTypes")
+    permissions = info.get("permissions")
+    permissions_allow_spot = permissions is None or (
+        isinstance(permissions, list) and "SPOT" in permissions
+    )
+    active = bool(market_info.get("active")) and status == "TRADING" and spot_allowed is True
+    active = active and permissions_allow_spot
+    market_order_allowed = isinstance(order_types, list) and "MARKET" in order_types
+
+    lot_min = _filter_decimal(lot, "minQty")
+    lot_max = _filter_decimal(lot, "maxQty")
+    lot_step = _filter_decimal(lot, "stepSize")
+    market_min = _filter_decimal(market_lot, "minQty")
+    market_max = _filter_decimal(market_lot, "maxQty")
+    market_step = _filter_decimal(market_lot, "stepSize")
+    return SymbolRules(
+        active=active,
+        min_quantity=lot_min or float(amount_limits.get("min") or 0.0),
+        max_quantity=lot_max
+        if lot_max is not None
+        else (float(amount_limits["max"]) if amount_limits.get("max") is not None else None),
+        step_size=lot_step or 0.0,
+        min_notional=_filter_decimal(min_notional, "minNotional")
+        or float(cost_limits.get("min") or 0.0),
+        price_tick=_filter_decimal(price_filter, "tickSize") or 0.0,
+        market_order_allowed=market_order_allowed,
+        market_min_quantity=market_min,
+        market_max_quantity=market_max,
+        market_step_size=market_step,
+        min_notional_applies_to_market=min_notional.get("applyToMarket") is True,
+        min_notional_avg_price_mins=_filter_int(min_notional, "avgPriceMins") or 0,
+        notional_min=_filter_decimal(notional, "minNotional"),
+        notional_max=_filter_decimal(notional, "maxNotional"),
+        notional_min_applies_to_market=notional.get("applyMinToMarket") is True,
+        notional_max_applies_to_market=notional.get("applyMaxToMarket") is True,
+        notional_avg_price_mins=_filter_int(notional, "avgPriceMins") or 0,
+    )
+
+
 def fetch_public_market_snapshot(
     config: PaperConfig,
     *,
@@ -131,29 +215,7 @@ def fetch_public_market_snapshot(
                 raise ValueError(f"Quote timestamp missing for {symbol}")
             quote_time = pd.to_datetime(ticker_ms, unit="ms", utc=True)
             quotes[symbol] = Quote(bid=bid, ask=ask, last=last, timestamp=quote_time)
-            market_info = market.market(symbol)
-            filters = {
-                item.get("filterType"): item
-                for item in market_info.get("info", {}).get("filters", [])
-            }
-            lot = filters.get("LOT_SIZE", {})
-            notional = filters.get("NOTIONAL", filters.get("MIN_NOTIONAL", {}))
-            price_filter = filters.get("PRICE_FILTER", {})
-            limits = market_info.get("limits", {})
-            rules[symbol] = SymbolRules(
-                active=bool(market_info.get("active")),
-                min_quantity=float(lot.get("minQty") or limits.get("amount", {}).get("min") or 0.0),
-                max_quantity=(
-                    float(lot.get("maxQty") or limits.get("amount", {}).get("max"))
-                    if (lot.get("maxQty") or limits.get("amount", {}).get("max")) is not None
-                    else None
-                ),
-                step_size=float(lot.get("stepSize") or 0.0),
-                min_notional=float(
-                    notional.get("minNotional") or limits.get("cost", {}).get("min") or 0.0
-                ),
-                price_tick=float(price_filter.get("tickSize") or 0.0),
-            )
+            rules[symbol] = parse_binance_spot_symbol_rules(market.market(symbol))
     except RETRYABLE_ERRORS as error:
         raise TransientPublicMarketError(str(error)) from error
     finally:

@@ -735,6 +735,81 @@ def test_reconciliation_requires_persisted_quote_skew_to_match_current_config(tm
     assert "max skew" in reconciliation.message.lower()
 
 
+def test_market_order_rule_enforcement_uses_market_lot_and_notional_flags(tmp_path):
+    now = pd.Timestamp("2024-08-05T00:10:00Z")
+    rules = SymbolRules(
+        True,
+        0.001,
+        100.0,
+        0.001,
+        5.0,
+        0.01,
+        market_min_quantity=0.01,
+        market_max_quantity=1.0,
+        market_step_size=0.01,
+        min_notional_applies_to_market=False,
+        notional_min=10.0,
+        notional_max=20.0,
+        notional_min_applies_to_market=True,
+        notional_max_applies_to_market=True,
+    )
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(),
+        quotes={"BTC/USDT": Quote(10.0, 10.0, 10.0, now)},
+        fetched_at=now,
+        symbol_rules={"BTC/USDT": rules},
+    )
+    system = PaperTradingSystem(
+        tmp_path / "market-rules.duckdb",
+        PaperConfig(assets=("BTC/USDT",), require_exchange_rules=True),
+    )
+
+    def normalize(quantity):
+        return system._normalize_exchange_quantity(
+            symbol="BTC/USDT", quantity=quantity, validation_price=10.0, snapshot=snapshot
+        )
+    assert normalize(0.009) == (
+        None,
+        "below_market_min_quantity",
+    )
+    assert normalize(1.011) == (
+        None,
+        "above_market_max_quantity",
+    )
+    assert normalize(1.005) == (1.0, None)
+    assert normalize(0.5) == (
+        None,
+        "below_market_notional",
+    )
+
+
+def test_market_notional_average_price_requirement_fails_closed(tmp_path):
+    now = pd.Timestamp("2024-08-05T00:10:00Z")
+    rules = SymbolRules(
+        True,
+        0.001,
+        100.0,
+        0.001,
+        1.0,
+        0.01,
+        min_notional_avg_price_mins=5,
+    )
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(),
+        quotes={"BTC/USDT": Quote(10.0, 10.0, 10.0, now)},
+        fetched_at=now,
+        symbol_rules={"BTC/USDT": rules},
+    )
+    system = PaperTradingSystem(
+        tmp_path / "average-price.duckdb",
+        PaperConfig(assets=("BTC/USDT",), require_exchange_rules=True),
+    )
+
+    assert system._normalize_exchange_quantity(
+        symbol="BTC/USDT", quantity=1.0, validation_price=10.0, snapshot=snapshot
+    ) == (None, "market_notional_reference_unverifiable")
+
+
 def test_reconciliation_rejects_ledger_provenance_link_tampering(tmp_path):
     system, _result = _execute_scaled_buy(
         tmp_path, initial_cash=83.0, min_quantity=0.1, min_notional=1.0
@@ -1261,7 +1336,7 @@ def test_malformed_exchange_rules_fail_closed_before_fill(tmp_path, rules):
     )
 
     assert quantity is None
-    assert reason in {"inactive_symbol", "invalid_exchange_rules"}
+    assert reason in {"symbol_not_tradable", "invalid_exchange_rules"}
 
 
 def test_execution_message_counts_only_persisted_orders(monkeypatch, tmp_path):

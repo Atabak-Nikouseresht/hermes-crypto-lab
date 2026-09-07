@@ -335,7 +335,7 @@ class PaperTradingSystem:
         *,
         symbol: str,
         quantity: float,
-        validation_price: float,
+        rule_reference_price: float,
         snapshot: MarketSnapshot,
     ) -> tuple[float | None, str | None]:
         """Quantize down and validate a final executable quantity."""
@@ -351,8 +351,8 @@ class PaperTradingSystem:
         if not rules.market_order_allowed:
             return None, "market_orders_not_allowed"
         if (
-            not math.isfinite(validation_price)
-            or validation_price <= 0
+            not math.isfinite(rule_reference_price)
+            or rule_reference_price <= 0
             or not math.isfinite(rules.min_quantity)
             or rules.min_quantity <= 0
             or not math.isfinite(rules.step_size)
@@ -408,13 +408,15 @@ class PaperTradingSystem:
         ):
             return None, "market_notional_reference_unverifiable"
 
-        if rules.min_notional_applies_to_market and normalized * validation_price < rules.min_notional:
+        normalized_decimal = Decimal(str(normalized))
+        reference_decimal = Decimal(str(rule_reference_price))
+        if rules.min_notional_applies_to_market and normalized_decimal * reference_decimal < Decimal(str(rules.min_notional)):
             return None, "below_min_notional"
         if rules.notional_min_applies_to_market:
-            if rules.notional_min is None or normalized * validation_price < rules.notional_min:
+            if rules.notional_min is None or normalized_decimal * reference_decimal < Decimal(str(rules.notional_min)):
                 return None, "below_market_notional"
         if rules.notional_max_applies_to_market:
-            if rules.notional_max is None or normalized * validation_price > rules.notional_max:
+            if rules.notional_max is None or normalized_decimal * reference_decimal > Decimal(str(rules.notional_max)):
                 return None, "above_market_notional"
         return normalized, None
 
@@ -472,7 +474,7 @@ class PaperTradingSystem:
             quantity, invalid_reason = self._normalize_exchange_quantity(
                 symbol=asset,
                 quantity=abs(delta),
-                validation_price=snapshot.quotes[asset].last,
+                rule_reference_price=snapshot.quotes[asset].last,
                 snapshot=snapshot,
             )
             if invalid_reason:
@@ -622,7 +624,7 @@ class PaperTradingSystem:
                 quantity, invalid_reason = self._normalize_exchange_quantity(
                     symbol=proposal["symbol"],
                     quantity=requested,
-                    validation_price=terms["execution_price"],
+                    rule_reference_price=snapshot.quotes[proposal["symbol"]].last,
                     snapshot=snapshot,
                 )
                 if invalid_reason:
@@ -756,7 +758,7 @@ class PaperTradingSystem:
                     quantity, invalid_reason = self._normalize_exchange_quantity(
                         symbol=proposal["symbol"],
                         quantity=scaled,
-                        validation_price=terms["execution_price"],
+                        rule_reference_price=snapshot.quotes[proposal["symbol"]].last,
                         snapshot=snapshot,
                     )
                     if invalid_reason:

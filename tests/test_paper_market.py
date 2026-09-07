@@ -59,6 +59,7 @@ def test_binance_market_rules_preserve_market_specific_filter_semantics():
         ({"isSpotTradingAllowed": False}, False, True),
         ({"orderTypes": ["LIMIT"]}, True, False),
         ({"permissions": ["MARGIN"]}, False, True),
+        ({"permissions": []}, True, True),
     ],
 )
 def test_binance_market_rules_fail_closed_for_ineligible_market_execution(

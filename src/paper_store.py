@@ -334,6 +334,15 @@ class PaperStore:
             connection.execute(
                 "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS official_scheduled BOOLEAN DEFAULT FALSE"
             )
+            # A missing column proves the row predates official scheduling, so
+            # DuckDB's DEFAULT FALSE backfill is an explicit legacy classification.
+            # A pre-existing NULL instead fails closed below rather than being guessed.
+            connection.execute(
+                "ALTER TABLE paper_runs ALTER COLUMN official_scheduled SET DEFAULT FALSE"
+            )
+            connection.execute(
+                "ALTER TABLE paper_runs ALTER COLUMN official_scheduled SET NOT NULL"
+            )
             connection.execute(
                 "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS attempted_schedule_key VARCHAR"
             )
@@ -387,6 +396,11 @@ class PaperStore:
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES "
                 "(14, ?, 'retryable forward admission attempt schedule identity')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(15, ?, 'official schedule nullability parity')",
                 [now],
             )
             schema_v6 = connection.execute(
@@ -498,6 +512,10 @@ class PaperStore:
 
     def reconcile(self, tolerance: float = 1e-7) -> ReconciliationResult:
         with self.connect(read_only=True) as connection:
+            if connection.execute(
+                "SELECT COUNT(*) FROM paper_runs WHERE official_scheduled IS NULL"
+            ).fetchone()[0]:
+                return ReconciliationResult(False, "NULL official_scheduled state detected")
             adoption = connection.execute(
                 "SELECT applied_at_utc FROM paper_schema_versions WHERE version=13"
             ).fetchone()
@@ -520,6 +538,29 @@ class PaperStore:
                 if missing_release_provenance:
                     return ReconciliationResult(
                         False, "Missing release provenance for post-adoption forward paper run"
+                    )
+                invalid_release_provenance = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM paper_runs r
+                    JOIN paper_run_release_provenance p ON p.run_id=r.run_id
+                    WHERE r.mode='PAPER' AND r.official_scheduled
+                      AND r.started_at_utc >= ?
+                      AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED', 'RELEASE_PROVENANCE_FAILURE')
+                      AND (
+                        p.git_commit IS NULL OR NOT regexp_full_match(p.git_commit, '^[0-9a-f]{40}$')
+                        OR p.git_dirty IS DISTINCT FROM FALSE
+                        OR p.hardening_manifest_sha256 IS NULL
+                        OR NOT regexp_full_match(p.hardening_manifest_sha256, '^[0-9a-f]{64}$')
+                        OR p.execution_protocol_version <> ?
+                        OR p.captured_at_utc IS NULL
+                      )
+                    """,
+                    [adoption[0], EXECUTION_PROTOCOL_VERSION],
+                ).fetchone()[0]
+                if invalid_release_provenance:
+                    return ReconciliationResult(
+                        False, "Invalid release provenance for post-adoption forward paper run"
                     )
             account = connection.execute(
                 "SELECT cash FROM paper_accounts WHERE account_id=?", [self.account_id]

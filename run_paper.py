@@ -123,16 +123,25 @@ def resolve_telegram_target(command_line_target: str | None) -> str:
     return target
 
 
+def send_committed_notification_or_raise(
+    store, *, target: str | None, run_id: str, report_path: Path
+) -> None:
+    """Deliver after commit and preserve durable failure evidence for the caller."""
+    if target is None:
+        return
+    NotificationService(
+        store, target=target, sender=HermesTelegramSender()
+    ).send_committed_run(run_id, report_path)
+
+
 def send_committed_notification_best_effort(
     store, *, target: str | None, run_id: str, report_path: Path
 ) -> None:
-    """Deliver only after commit; delivery failure never reclassifies the run."""
-    if target is None:
-        return
+    """Preserve primary failure classification when post-commit delivery fails."""
     try:
-        NotificationService(
-            store, target=target, sender=HermesTelegramSender()
-        ).send_committed_run(run_id, report_path)
+        send_committed_notification_or_raise(
+            store, target=target, run_id=run_id, report_path=report_path
+        )
     except NotificationError:
         LOGGER.exception("Telegram failed after committed run %s; retry with --resend %s", run_id, run_id)
 
@@ -638,12 +647,19 @@ def main() -> None:
             report_path = write_weekly_paper_report(
                 system.store, result, snapshot, reports_dir, now=snapshot.fetched_at
             )
-            send_committed_notification_best_effort(
-                system.store,
-                target=telegram_target,
-                run_id=result.run_id,
-                report_path=report_path,
-            )
+            try:
+                send_committed_notification_or_raise(
+                    system.store,
+                    target=telegram_target,
+                    run_id=result.run_id,
+                    report_path=report_path,
+                )
+            except NotificationError as error:
+                print(
+                    f"Committed run {result.run_id}; Telegram failed: {error}. "
+                    f"Retry only: run_paper.py --resend {result.run_id}"
+                )
+                raise SystemExit(3) from error
             print(f"Status: {result.status}")
             print(f"Outcome: {result.outcome}")
             print(f"Message: {result.message}")

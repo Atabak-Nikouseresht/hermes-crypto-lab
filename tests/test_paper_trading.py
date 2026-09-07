@@ -474,6 +474,41 @@ def test_reconciliation_rejects_coordinated_bogus_protocol_provenance(tmp_path):
     assert not system.store.reconcile().valid
 
 
+@pytest.mark.parametrize(
+    ("statement", "parameters", "expected"),
+    [
+        ("UPDATE paper_execution_context SET bid=ask+1.0", [], "bid/ask"),
+        ("UPDATE paper_execution_context SET bid=-1.0", [], "bid/ask"),
+        ("UPDATE paper_execution_context SET ask=-1.0", [], "bid/ask"),
+        ("UPDATE paper_execution_context SET midpoint=midpoint+1.0", [], "midpoint"),
+        ("UPDATE paper_execution_context SET full_spread=full_spread+1.0", [], "spread"),
+        ("UPDATE paper_execution_context SET quote_timestamp_utc=execution_timestamp_utc+INTERVAL 1 SECOND", [], "timestamp"),
+        ("UPDATE paper_execution_context SET finalized_candle_close_utc=quote_timestamp_utc+INTERVAL 1 SECOND", [], "timestamp"),
+        ("UPDATE paper_execution_context SET finalized_candle_open_utc=finalized_candle_close_utc+INTERVAL 1 SECOND", [], "timestamp"),
+        ("UPDATE paper_execution_context SET execution_delay_seconds=execution_delay_seconds+1.0", [], "execution delay"),
+        ("UPDATE paper_execution_context SET data_age_seconds=data_age_seconds+1.0", [], "data age"),
+        ("UPDATE paper_execution_context SET midpoint=?", [float("nan")], "non-finite"),
+        ("UPDATE paper_quote_coherence_context SET earliest_quote_timestamp_utc=earliest_quote_timestamp_utc-INTERVAL 1 SECOND", [], "earliest"),
+        ("UPDATE paper_quote_coherence_context SET latest_quote_timestamp_utc=latest_quote_timestamp_utc+INTERVAL 1 SECOND", [], "latest"),
+        ("UPDATE paper_quote_coherence_context SET max_timestamp_skew_seconds=-1", [], "skew"),
+        ("UPDATE paper_quote_coherence_context SET contract_version='unknown-contract'", [], "contract"),
+    ],
+)
+def test_reconciliation_revalidates_persisted_execution_and_quote_context(
+    tmp_path, statement, parameters, expected
+):
+    system, _ = _execute_scaled_buy(
+        tmp_path, initial_cash=83.0, min_quantity=0.1, min_notional=1.0
+    )
+    with system.store.connect() as connection:
+        connection.execute(statement, parameters)
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid
+    assert expected in reconciliation.message.lower()
+
+
 def test_reconciliation_rejects_ledger_provenance_link_tampering(tmp_path):
     system, _result = _execute_scaled_buy(
         tmp_path, initial_cash=83.0, min_quantity=0.1, min_notional=1.0

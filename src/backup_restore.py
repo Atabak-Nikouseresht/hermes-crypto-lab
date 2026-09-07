@@ -11,6 +11,16 @@ from typing import Any
 import duckdb
 
 from src.forward_operations import InterProcessLock
+from src.paper_store import PaperStore
+
+
+DEFAULT_RECONCILIATION_SETTINGS = {
+    "account_id": "locked_strategy",
+    "quantity_tolerance": 1e-12,
+    "fee_rate": 0.001,
+    "minimum_spread_rate": 0.0002,
+    "slippage_rate": 0.0005,
+}
 
 
 def _sha256(path: Path) -> str:
@@ -21,7 +31,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _database_checks(database_path: Path) -> dict[str, Any]:
+def _database_checks(
+    database_path: Path, reconciliation_settings: dict[str, Any]
+) -> dict[str, Any]:
     with duckdb.connect(str(database_path), read_only=True) as connection:
         connection.execute("SET TimeZone='UTC'")
         tables = sorted(row[0] for row in connection.execute("SHOW TABLES").fetchall())
@@ -61,6 +73,14 @@ def _database_checks(database_path: Path) -> dict[str, Any]:
     account_cash = {row[0]: float(row[1]) for row in account}
     ledger_cash_map = {row[0]: float(row[1]) for row in ledger_cash}
     cash_valid = all(abs(value - ledger_cash_map.get(key, 0.0)) <= 1e-7 for key, value in account_cash.items())
+    reconciliation = PaperStore.reconcile_database(
+        database_path,
+        account_id=str(reconciliation_settings["account_id"]),
+        quantity_tolerance=float(reconciliation_settings["quantity_tolerance"]),
+        fee_rate=float(reconciliation_settings["fee_rate"]),
+        minimum_spread_rate=float(reconciliation_settings["minimum_spread_rate"]),
+        slippage_rate=float(reconciliation_settings["slippage_rate"]),
+    )
     return {
         "tables": tables,
         "schema_version": schema_version,
@@ -68,6 +88,10 @@ def _database_checks(database_path: Path) -> dict[str, Any]:
         "position_mismatches": position_mismatch,
         "orphan_fills": orphan_fills,
         "account_statuses": {row[0]: row[2] for row in account},
+        "runtime_reconciliation": {
+            "valid": reconciliation.valid,
+            "message": reconciliation.message,
+        },
     }
 
 
@@ -79,9 +103,14 @@ def create_verified_backup(
     lock_path: Path,
     timestamp: str,
     commit_hash: str,
+    reconciliation_settings: dict[str, Any] | None = None,
 ) -> Path:
     project_root = Path(project_root).resolve()
     database_path = Path(database_path).resolve()
+    reconciliation_settings = {
+        **DEFAULT_RECONCILIATION_SETTINGS,
+        **(reconciliation_settings or {}),
+    }
     backup_dir = Path(output_root).resolve() / timestamp
     backup_dir.mkdir(parents=True, exist_ok=False)
     with InterProcessLock(lock_path, timeout_seconds=10, command_name="forward-backup"):
@@ -97,13 +126,14 @@ def create_verified_backup(
         for path in sorted(backup_dir.rglob("*")):
             if path.is_file():
                 checksums[str(path.relative_to(backup_dir)).replace("\\", "/")] = _sha256(path)
-        db_checks = _database_checks(copied_database)
+        db_checks = _database_checks(copied_database, reconciliation_settings)
         manifest = {
             "backup_timestamp": timestamp,
             "commit_hash": commit_hash,
             "schema_version": db_checks["schema_version"],
             "checksums": checksums,
             "database_checks": db_checks,
+            "reconciliation_settings": reconciliation_settings,
             "secrets_included": False,
             "retention_policy": "non-destructive; deletion requires explicit human approval",
         }
@@ -127,15 +157,23 @@ def verify_backup(backup_dir: Path) -> dict[str, Any]:
     sidecar_expected = (backup_dir / "backup_manifest.sha256").read_text(encoding="ascii").split()[0]
     if _sha256(manifest_path) != sidecar_expected:
         raise ValueError("backup manifest checksum mismatch")
-    checks = _database_checks(backup_dir / "paper_trading.duckdb")
+    reconciliation_settings = {
+        **DEFAULT_RECONCILIATION_SETTINGS,
+        **manifest.get("reconciliation_settings", {}),
+    }
+    checks = _database_checks(backup_dir / "paper_trading.duckdb", reconciliation_settings)
     valid = bool(
         checks["cash_reconciles"]
         and checks["position_mismatches"] == 0
         and checks["orphan_fills"] == 0
         and checks["schema_version"] == manifest["schema_version"]
+        and checks["runtime_reconciliation"]["valid"]
     )
     if not valid:
-        raise ValueError(f"backup database integrity failure: {checks}")
+        raise ValueError(
+            "backup database failed runtime reconciliation: "
+            f"{checks['runtime_reconciliation']['message']}"
+        )
     return {"valid": True, "database_checks": checks, "checksums": len(manifest["checksums"])}
 
 
@@ -145,12 +183,18 @@ def verify_restore_to_temporary(backup_dir: Path, temporary_root: Path) -> dict[
     restore_dir.mkdir(parents=True, exist_ok=False)
     restored_database = restore_dir / "paper_trading.duckdb"
     shutil.copy2(Path(backup_dir) / "paper_trading.duckdb", restored_database)
-    checks = _database_checks(restored_database)
+    manifest = json.loads((Path(backup_dir) / "backup_manifest.json").read_text(encoding="utf-8"))
+    reconciliation_settings = {
+        **DEFAULT_RECONCILIATION_SETTINGS,
+        **manifest.get("reconciliation_settings", {}),
+    }
+    checks = _database_checks(restored_database, reconciliation_settings)
     return {
         "valid": bool(
             checks["cash_reconciles"]
             and checks["position_mismatches"] == 0
             and checks["orphan_fills"] == 0
+            and checks["runtime_reconciliation"]["valid"]
         ),
         "restored_database": str(restored_database),
         "production_database_untouched": True,

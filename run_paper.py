@@ -123,6 +123,20 @@ def resolve_telegram_target(command_line_target: str | None) -> str:
     return target
 
 
+def send_committed_notification_best_effort(
+    store, *, target: str | None, run_id: str, report_path: Path
+) -> None:
+    """Deliver only after commit; delivery failure never reclassifies the run."""
+    if target is None:
+        return
+    try:
+        NotificationService(
+            store, target=target, sender=HermesTelegramSender()
+        ).send_committed_run(run_id, report_path)
+    except NotificationError:
+        LOGGER.exception("Telegram failed after committed run %s; retry with --resend %s", run_id, run_id)
+
+
 @contextmanager
 def open_locked_system(
     *,
@@ -494,12 +508,12 @@ def main() -> None:
                         now=pd.Timestamp(now),
                         locked_candidate_id=config.locked_candidate_id,
                     )
-                    if telegram_target is not None:
-                        NotificationService(
-                            system.store,
-                            target=telegram_target,
-                            sender=HermesTelegramSender(),
-                        ).send_committed_run(result.run_id, report_path)
+                    send_committed_notification_best_effort(
+                        system.store,
+                        target=telegram_target,
+                        run_id=result.run_id,
+                        report_path=report_path,
+                    )
                     raise SystemExit(4 if error.retryable else 2) from error
 
             if system.store.account()["status"] != "ACTIVE":
@@ -518,12 +532,12 @@ def main() -> None:
                     now=pd.Timestamp(now),
                     locked_candidate_id=config.locked_candidate_id,
                 )
-                if telegram_target is not None:
-                    NotificationService(
-                        system.store,
-                        target=telegram_target,
-                        sender=HermesTelegramSender(),
-                    ).send_committed_run(result.run_id, report_path)
+                send_committed_notification_best_effort(
+                    system.store,
+                    target=telegram_target,
+                    run_id=result.run_id,
+                    report_path=report_path,
+                )
                 raise SystemExit(2)
 
             LOGGER.info(
@@ -550,10 +564,12 @@ def main() -> None:
                     now=pd.Timestamp(now),
                     locked_candidate_id=config.locked_candidate_id,
                 )
-                if telegram_target is not None:
-                    NotificationService(
-                        system.store, target=telegram_target, sender=HermesTelegramSender()
-                    ).send_committed_run(result.run_id, report_path)
+                send_committed_notification_best_effort(
+                    system.store,
+                    target=telegram_target,
+                    run_id=result.run_id,
+                    report_path=report_path,
+                )
                 raise SystemExit(4) from error
             except Exception as error:
                 reason = f"Public market-data fetch failed: {error}"
@@ -572,15 +588,12 @@ def main() -> None:
                     now=pd.Timestamp(now),
                     locked_candidate_id=config.locked_candidate_id,
                 )
-                if telegram_target is not None:
-                    try:
-                        NotificationService(
-                            system.store,
-                            target=telegram_target,
-                            sender=HermesTelegramSender(),
-                        ).send_committed_run(result.run_id, report_path)
-                    except NotificationError:
-                        LOGGER.exception("Telegram failed after committed data-quality failure")
+                send_committed_notification_best_effort(
+                    system.store,
+                    target=telegram_target,
+                    run_id=result.run_id,
+                    report_path=report_path,
+                )
                 LOGGER.exception(reason)
                 raise SystemExit(2) from error
 
@@ -625,22 +638,12 @@ def main() -> None:
             report_path = write_weekly_paper_report(
                 system.store, result, snapshot, reports_dir, now=snapshot.fetched_at
             )
-            if telegram_target is not None:
-                try:
-                    NotificationService(
-                        system.store,
-                        target=telegram_target,
-                        sender=HermesTelegramSender(),
-                    ).send_committed_run(result.run_id, report_path)
-                except NotificationError as error:
-                    LOGGER.exception(
-                        "Telegram failed after committed run %s; retry with --resend %s",
-                        result.run_id,
-                        result.run_id,
-                    )
-                    print(f"Committed run {result.run_id}; Telegram failed: {error}")
-                    print(f"Retry only: run_paper.py --resend {result.run_id}")
-                    raise SystemExit(3) from error
+            send_committed_notification_best_effort(
+                system.store,
+                target=telegram_target,
+                run_id=result.run_id,
+                report_path=report_path,
+            )
             print(f"Status: {result.status}")
             print(f"Outcome: {result.outcome}")
             print(f"Message: {result.message}")

@@ -1060,14 +1060,14 @@ class PaperStore:
                 "SELECT snapshot_at_utc, equity FROM equity_snapshots WHERE run_id=?",
                 [run_id],
             ).fetchone()
-            observation_count = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM forward_market_observations WHERE run_id=?",
-                    [run_id],
-                ).fetchone()[0]
-            )
-            if snapshot is None or observation_count == 0:
-                raise ValueError("Cannot establish baseline without equity and market observations")
+            if snapshot is None:
+                raise ValueError("Cannot establish baseline without an equity snapshot")
+            if not self._has_complete_governed_baseline_observations(
+                connection, experiment_id=experiment_id, run_id=run_id
+            ):
+                raise ValueError(
+                    "Cannot establish baseline without complete governed market observations"
+                )
             connection.execute(
                 "INSERT INTO forward_baselines VALUES (?, ?, ?, ?)",
                 [experiment_id, run_id, snapshot[0], snapshot[1]],
@@ -1076,7 +1076,7 @@ class PaperStore:
     def forward_baseline_eligible(self, *, run_id: str) -> bool:
         with self.connect(read_only=True) as connection:
             experiment_id = self._active_experiment_id(connection)
-            return bool(
+            eligible_run = bool(
                 connection.execute(
                     """
                     SELECT EXISTS (
@@ -1092,27 +1092,44 @@ class PaperStore:
                     [experiment_id, run_id],
                 ).fetchone()[0]
             )
+            return eligible_run and self._has_complete_governed_baseline_observations(
+                connection, experiment_id=experiment_id, run_id=run_id
+            )
+
+    @staticmethod
+    def _has_complete_governed_baseline_observations(
+        connection, *, experiment_id: str, run_id: str
+    ) -> bool:
+        row = connection.execute(
+            "SELECT specification FROM forward_experiments WHERE experiment_id=?",
+            [experiment_id],
+        ).fetchone()
+        if row is None:
+            return False
+        specification = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        try:
+            governed_symbols = set(
+                specification["locked_strategy"]["allocation"]["asset_caps"]
+            )
+        except (KeyError, TypeError):
+            return False
+        if not governed_symbols or any(
+            not isinstance(symbol, str) or not symbol for symbol in governed_symbols
+        ):
+            return False
+        observed_symbols = {
+            str(symbol)
+            for (symbol,) in connection.execute(
+                "SELECT symbol FROM forward_market_observations WHERE run_id=?", [run_id]
+            ).fetchall()
+        }
+        return observed_symbols == governed_symbols
 
     def ensure_recovered_forward_baseline(self, *, run_id: str) -> None:
-        """Anchor exact committed equity when interrupted market evidence is unavailable."""
-        with self.connect() as connection:
-            experiment_id = self._active_experiment_id(connection)
-            existing = connection.execute(
-                "SELECT run_id FROM forward_baselines WHERE experiment_id=?",
-                [experiment_id],
-            ).fetchone()
-            if existing is not None:
-                return
-            snapshot = connection.execute(
-                "SELECT snapshot_at_utc, equity FROM equity_snapshots WHERE run_id=?",
-                [run_id],
-            ).fetchone()
-            if snapshot is None:
-                raise ValueError("Cannot recover baseline without committed equity")
-            connection.execute(
-                "INSERT INTO forward_baselines VALUES (?, ?, ?, ?)",
-                [experiment_id, run_id, snapshot[0], snapshot[1]],
-            )
+        """Reject historical recovery as a baseline source without complete evidence."""
+        raise ValueError(
+            f"Cannot establish a forward baseline from recovered run {run_id} without complete evidence"
+        )
 
     def record_forward_details(
         self,

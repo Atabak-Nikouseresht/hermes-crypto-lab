@@ -60,6 +60,7 @@ def main() -> None:
                 "fee_rate": config.fee_rate,
                 "minimum_spread_rate": config.minimum_spread_rate,
                 "slippage_rate": config.slippage_rate,
+                "max_quote_timestamp_skew_seconds": config.max_quote_timestamp_skew_seconds,
             },
         )
         print(json.dumps({"status": "VERIFIED", "backup": str(backup)}, indent=2))

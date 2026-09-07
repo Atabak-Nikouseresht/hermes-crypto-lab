@@ -36,6 +36,7 @@ class PaperStore:
         fee_rate: float = 0.001,
         minimum_spread_rate: float = 0.0005,
         slippage_rate: float = 0.0005,
+        max_quote_timestamp_skew_seconds: int = 30,
     ):
         self.path = Path(path)
         self.account_id = account_id
@@ -43,6 +44,7 @@ class PaperStore:
         self.fee_rate = fee_rate
         self.minimum_spread_rate = minimum_spread_rate
         self.slippage_rate = slippage_rate
+        self.max_quote_timestamp_skew_seconds = max_quote_timestamp_skew_seconds
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(initial_cash)
         self.recover_abandoned_runs()
@@ -62,6 +64,7 @@ class PaperStore:
         fee_rate: float,
         minimum_spread_rate: float,
         slippage_rate: float,
+        max_quote_timestamp_skew_seconds: int,
     ) -> ReconciliationResult:
         """Run the authoritative reconciliation path without initializing a database."""
         store = cls.__new__(cls)
@@ -71,6 +74,7 @@ class PaperStore:
         store.fee_rate = fee_rate
         store.minimum_spread_rate = minimum_spread_rate
         store.slippage_rate = slippage_rate
+        store.max_quote_timestamp_skew_seconds = max_quote_timestamp_skew_seconds
         return store.reconcile()
 
     def _initialize(self, initial_cash: float) -> None:
@@ -643,6 +647,65 @@ class PaperStore:
             ).fetchone()[0]
             if invalid_rejection:
                 return ReconciliationResult(False, "Orphan or invalid order rejection detected")
+            current_execution_runs = {
+                str(run_id)
+                for (run_id,) in connection.execute(
+                    """
+                    SELECT run_id FROM paper_runs
+                    WHERE mode='PAPER' AND official_scheduled
+                      AND status='EXECUTED' AND started_at_utc >= ?
+                      AND (
+                           EXISTS (SELECT 1 FROM paper_execution_outcomes o WHERE o.run_id=paper_runs.run_id)
+                        OR EXISTS (SELECT 1 FROM paper_quote_coherence_context q WHERE q.run_id=paper_runs.run_id)
+                        OR EXISTS (SELECT 1 FROM paper_execution_context c WHERE c.run_id=paper_runs.run_id)
+                        OR EXISTS (SELECT 1 FROM paper_orders o WHERE o.run_id=paper_runs.run_id)
+                      )
+                    """,
+                    [adoption[0]],
+                ).fetchall()
+            }
+            allowed_execution_outcomes = {
+                "NO_REBALANCE_REQUIRED",
+                "EXECUTION_REJECTED",
+                "PARTIAL_EXECUTION",
+                "FULL_EXECUTION",
+            }
+            for run_id in current_execution_runs:
+                outcome = connection.execute(
+                    "SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id=?",
+                    [run_id],
+                ).fetchone()
+                if outcome is None:
+                    return ReconciliationResult(
+                        False, f"Missing execution outcome for current run={run_id}"
+                    )
+                if outcome[0] not in allowed_execution_outcomes:
+                    return ReconciliationResult(
+                        False, f"Unknown execution outcome for current run={run_id}"
+                    )
+                quote_context = connection.execute(
+                    "SELECT 1 FROM paper_quote_coherence_context WHERE run_id=?", [run_id]
+                ).fetchone()
+                if quote_context is None:
+                    return ReconciliationResult(
+                        False, f"Missing quote coherence context for current run={run_id}"
+                    )
+            missing_current_execution_context = connection.execute(
+                """
+                SELECT o.order_id FROM paper_orders o
+                LEFT JOIN paper_execution_context c ON c.run_id=o.run_id AND c.symbol=o.symbol
+                LEFT JOIN paper_legacy_order_semantics legacy ON legacy.order_id=o.order_id
+                WHERE o.ledger_semantics_version=? AND legacy.order_id IS NULL AND c.run_id IS NULL
+                LIMIT 1
+                """,
+                [FINAL_EXECUTABLE_LEDGER_SEMANTICS],
+            ).fetchone()
+            if missing_current_execution_context is not None:
+                return ReconciliationResult(
+                    False,
+                    "Missing execution context for current filled order "
+                    f"{missing_current_execution_context[0]}",
+                )
             execution_contexts = connection.execute(
                 """
                 SELECT run_id, symbol, execution_protocol_version, signal_timestamp_utc,
@@ -660,7 +723,7 @@ class PaperStore:
             for (
                 run_id,
                 symbol,
-                _context_protocol,
+                context_protocol,
                 signal_timestamp,
                 finalized_open,
                 finalized_close,
@@ -673,6 +736,13 @@ class PaperStore:
                 execution_delay,
                 data_age,
             ) in execution_contexts:
+                if (
+                    str(run_id) in current_execution_runs
+                    and context_protocol != EXECUTION_PROTOCOL_VERSION
+                ):
+                    return ReconciliationResult(
+                        False, f"Execution context protocol mismatch for run={run_id} symbol={symbol}"
+                    )
                 numeric_values = (bid, ask, midpoint, full_spread, execution_delay, data_age)
                 if any(value is None or not math.isfinite(float(value)) for value in numeric_values):
                     return ReconciliationResult(
@@ -729,6 +799,13 @@ class PaperStore:
                 if max_skew is None or int(max_skew) <= 0 or earliest > latest:
                     return ReconciliationResult(
                         False, f"Quote coherence skew contract mismatch for run={run_id}"
+                    )
+                if (
+                    str(run_id) in current_execution_runs
+                    and int(max_skew) != self.max_quote_timestamp_skew_seconds
+                ):
+                    return ReconciliationResult(
+                        False, f"Quote coherence max skew mismatch for run={run_id}"
                     )
                 quote_times = context_quote_times.get(str(run_id), [])
                 if not quote_times:

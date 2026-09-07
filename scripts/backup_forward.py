@@ -54,6 +54,13 @@ def main() -> None:
             lock_path=settings.project_root / "runtime" / "forward_writer.lock",
             timestamp=timestamp,
             commit_hash=commit,
+            reconciliation_settings={
+                "account_id": config.account_id,
+                "quantity_tolerance": config.quantity_tolerance,
+                "fee_rate": config.fee_rate,
+                "minimum_spread_rate": config.minimum_spread_rate,
+                "slippage_rate": config.slippage_rate,
+            },
         )
         print(json.dumps({"status": "VERIFIED", "backup": str(backup)}, indent=2))
         return

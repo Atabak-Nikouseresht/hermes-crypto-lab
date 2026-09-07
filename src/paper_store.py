@@ -13,7 +13,7 @@ from typing import Any
 
 import duckdb
 
-from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
+from src.execution_protocol import EXECUTION_PROTOCOL_VERSION, QUOTE_COHERENCE_CONTRACT_VERSION
 
 
 FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
@@ -51,6 +51,27 @@ class PaperStore:
         connection = duckdb.connect(str(self.path), read_only=read_only)
         connection.execute("SET TimeZone='UTC'")
         return connection
+
+    @classmethod
+    def reconcile_database(
+        cls,
+        path: Path,
+        *,
+        account_id: str,
+        quantity_tolerance: float,
+        fee_rate: float,
+        minimum_spread_rate: float,
+        slippage_rate: float,
+    ) -> ReconciliationResult:
+        """Run the authoritative reconciliation path without initializing a database."""
+        store = cls.__new__(cls)
+        store.path = Path(path)
+        store.account_id = account_id
+        store.quantity_tolerance = quantity_tolerance
+        store.fee_rate = fee_rate
+        store.minimum_spread_rate = minimum_spread_rate
+        store.slippage_rate = slippage_rate
+        return store.reconcile()
 
     def _initialize(self, initial_cash: float) -> None:
         now = datetime.now(timezone.utc)
@@ -622,6 +643,113 @@ class PaperStore:
             ).fetchone()[0]
             if invalid_rejection:
                 return ReconciliationResult(False, "Orphan or invalid order rejection detected")
+            execution_contexts = connection.execute(
+                """
+                SELECT run_id, symbol, execution_protocol_version, signal_timestamp_utc,
+                       finalized_candle_open_utc, finalized_candle_close_utc,
+                       quote_timestamp_utc, bid, ask, midpoint, full_spread,
+                       execution_timestamp_utc, execution_delay_seconds, data_age_seconds
+                FROM paper_execution_context
+                """
+            ).fetchall()
+
+            def differs(actual: float, expected: float) -> bool:
+                return abs(actual - expected) > tolerance * max(1.0, abs(expected))
+
+            context_quote_times: dict[str, list[datetime]] = {}
+            for (
+                run_id,
+                symbol,
+                _context_protocol,
+                signal_timestamp,
+                finalized_open,
+                finalized_close,
+                quote_timestamp,
+                bid,
+                ask,
+                midpoint,
+                full_spread,
+                execution_timestamp,
+                execution_delay,
+                data_age,
+            ) in execution_contexts:
+                numeric_values = (bid, ask, midpoint, full_spread, execution_delay, data_age)
+                if any(value is None or not math.isfinite(float(value)) for value in numeric_values):
+                    return ReconciliationResult(
+                        False, f"Non-finite execution context for run={run_id} symbol={symbol}"
+                    )
+                bid = float(bid)
+                ask = float(ask)
+                midpoint = float(midpoint)
+                full_spread = float(full_spread)
+                execution_delay = float(execution_delay)
+                data_age = float(data_age)
+                if bid <= 0 or ask <= 0 or bid > ask:
+                    return ReconciliationResult(
+                        False, f"Execution bid/ask mismatch for run={run_id} symbol={symbol}"
+                    )
+                if differs(midpoint, (bid + ask) / 2.0):
+                    return ReconciliationResult(
+                        False, f"Execution midpoint mismatch for run={run_id} symbol={symbol}"
+                    )
+                if differs(full_spread, ask - bid):
+                    return ReconciliationResult(
+                        False, f"Execution spread mismatch for run={run_id} symbol={symbol}"
+                    )
+                if not (
+                    signal_timestamp <= finalized_open < finalized_close <= quote_timestamp <= execution_timestamp
+                ):
+                    return ReconciliationResult(
+                        False, f"Execution timestamp ordering mismatch for run={run_id} symbol={symbol}"
+                    )
+                expected_execution_delay = (execution_timestamp - finalized_close).total_seconds()
+                expected_data_age = (execution_timestamp - quote_timestamp).total_seconds()
+                if differs(execution_delay, expected_execution_delay):
+                    return ReconciliationResult(
+                        False, f"Execution delay mismatch for run={run_id} symbol={symbol}"
+                    )
+                if differs(data_age, expected_data_age):
+                    return ReconciliationResult(
+                        False, f"Data age mismatch for run={run_id} symbol={symbol}"
+                    )
+                context_quote_times.setdefault(str(run_id), []).append(quote_timestamp)
+
+            quote_contexts = connection.execute(
+                """
+                SELECT run_id, contract_version, max_timestamp_skew_seconds,
+                       earliest_quote_timestamp_utc, latest_quote_timestamp_utc
+                FROM paper_quote_coherence_context
+                """
+            ).fetchall()
+            for run_id, contract_version, max_skew, earliest, latest in quote_contexts:
+                if contract_version != QUOTE_COHERENCE_CONTRACT_VERSION:
+                    return ReconciliationResult(
+                        False, f"Unknown quote coherence contract for run={run_id}"
+                    )
+                if max_skew is None or int(max_skew) <= 0 or earliest > latest:
+                    return ReconciliationResult(
+                        False, f"Quote coherence skew contract mismatch for run={run_id}"
+                    )
+                quote_times = context_quote_times.get(str(run_id), [])
+                if not quote_times:
+                    # A valid no-trade execution records no per-symbol execution context;
+                    # its quote timestamps are intentionally not reconstructable from the DB.
+                    continue
+                observed_earliest = min(quote_times)
+                observed_latest = max(quote_times)
+                if earliest != observed_earliest:
+                    return ReconciliationResult(
+                        False, f"Quote coherence earliest timestamp mismatch for run={run_id}"
+                    )
+                if latest != observed_latest:
+                    return ReconciliationResult(
+                        False, f"Quote coherence latest timestamp mismatch for run={run_id}"
+                    )
+                observed_skew = (observed_latest - observed_earliest).total_seconds()
+                if observed_skew > int(max_skew):
+                    return ReconciliationResult(
+                        False, f"Quote coherence skew exceeds contract for run={run_id}"
+                    )
             missing_fill = connection.execute(
                 """
                 SELECT COUNT(*) FROM paper_orders o

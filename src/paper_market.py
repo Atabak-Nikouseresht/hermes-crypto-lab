@@ -301,6 +301,13 @@ def fetch_public_market_snapshot(
             if reference_payload is None:
                 rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
             elif isinstance(reference_payload, dict):
+                market_info = market.market(symbol)
+                expected_symbol = market_info.get("id") if isinstance(market_info, dict) else None
+                if (
+                    not isinstance(expected_symbol, str)
+                    or reference_payload.get("symbol") != expected_symbol
+                ):
+                    raise ValueError(f"Mismatched Binance reference price symbol for {symbol}")
                 raw_reference = reference_payload.get("referencePrice")
                 if raw_reference is None:
                     rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
@@ -323,7 +330,7 @@ def fetch_public_market_snapshot(
                     raise ValueError(f"Malformed Binance reference price for {symbol}")
             else:
                 raise ValueError(f"Malformed Binance reference price for {symbol}")
-            rules[symbol] = parse_binance_spot_symbol_rules(market.market(symbol))
+            rules[symbol] = parse_binance_spot_symbol_rules(market_info)
     except RETRYABLE_ERRORS as error:
         raise TransientPublicMarketError(str(error)) from error
     finally:

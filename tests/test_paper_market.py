@@ -117,6 +117,7 @@ class FakePublicExchange:
 
     def market(self, symbol):
         return {
+            "id": symbol.replace("/", ""),
             "active": True,
             "limits": {"amount": {"min": 0.001, "max": 1000}, "cost": {"min": 5}},
             "info": {

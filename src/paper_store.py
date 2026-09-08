@@ -8,7 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
 from typing import Any
 
@@ -641,6 +641,20 @@ class PaperStore:
                     ).fetchall()
                     if not evidence:
                         return ReconciliationResult(False, f"Missing market-rule evidence for current run={run_id}")
+                    expected_symbols = {
+                        str(symbol)
+                        for (symbol,) in connection.execute(
+                            """
+                            SELECT symbol FROM paper_execution_context WHERE run_id=?
+                            UNION SELECT symbol FROM paper_orders WHERE run_id=?
+                            UNION SELECT symbol FROM paper_order_rejections WHERE run_id=?
+                            """,
+                            [run_id, run_id, run_id],
+                        ).fetchall()
+                    }
+                    evidence_by_symbol = {str(row[1]): row for row in evidence}
+                    if not expected_symbols or set(evidence_by_symbol) != expected_symbols:
+                        return ReconciliationResult(False, f"Incomplete market-rule evidence symbols for current run={run_id}")
                     for row in evidence:
                         contract, price, source = row[2], row[3], row[4]
                         if contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION or source not in {"REFERENCE_PRICE", "LAST_FALLBACK", "UNVERIFIABLE_AVERAGE"}:
@@ -653,6 +667,50 @@ class PaperStore:
                                     raise InvalidOperation
                         except (InvalidOperation, ValueError):
                             return ReconciliationResult(False, "Invalid market-rule decimal evidence")
+                        min_notional_applies, min_avg = row[13], row[14]
+                        notional_min_applies, notional_max_applies, notional_avg = row[17], row[18], row[19]
+                        requires_average = (
+                            (min_notional_applies and min_avg > 0)
+                            or (notional_min_applies and notional_avg > 0)
+                            or (notional_max_applies and notional_avg > 0)
+                        )
+                        if source == "REFERENCE_PRICE" and row[5] is None:
+                            return ReconciliationResult(False, "Reference-price evidence lacks timestamp")
+                        if source == "LAST_FALLBACK" and requires_average:
+                            return ReconciliationResult(False, "Illegal last-price market-rule fallback")
+                        if source == "UNVERIFIABLE_AVERAGE" and (price is not None or not requires_average):
+                            return ReconciliationResult(False, "Invalid unverifiable-average evidence")
+                        orders = connection.execute(
+                            "SELECT requested_quantity FROM paper_orders WHERE run_id=? AND symbol=?",
+                            [run_id, row[1]],
+                        ).fetchall()
+                        if source == "UNVERIFIABLE_AVERAGE" and orders:
+                            return ReconciliationResult(False, "Accepted order has unverifiable market reference")
+                        if source != "UNVERIFIABLE_AVERAGE":
+                            try:
+                                minimums = (row[6], row[9])
+                                maximums = (row[7], row[10])
+                                steps = (row[8], row[11])
+                                for (quantity,) in orders:
+                                    q = Decimal(str(quantity))
+                                    for minimum in minimums:
+                                        if minimum is not None and Decimal(minimum) > 0 and q < Decimal(minimum):
+                                            return ReconciliationResult(False, "Filled quantity violates persisted market rule")
+                                    for maximum in maximums:
+                                        if maximum is not None and Decimal(maximum) > 0 and q > Decimal(maximum):
+                                            return ReconciliationResult(False, "Filled quantity violates persisted market rule")
+                                    for step in steps:
+                                        if step is not None and Decimal(step) > 0 and (q / Decimal(step)).to_integral_value(rounding=ROUND_FLOOR) * Decimal(step) != q:
+                                            return ReconciliationResult(False, "Filled quantity violates persisted market step")
+                                    reference = Decimal(price)
+                                    if min_notional_applies and row[12] is not None and Decimal(row[12]) > 0 and q * reference < Decimal(row[12]):
+                                        return ReconciliationResult(False, "Filled quantity violates MIN_NOTIONAL")
+                                    if notional_min_applies and row[15] is not None and Decimal(row[15]) > 0 and q * reference < Decimal(row[15]):
+                                        return ReconciliationResult(False, "Filled quantity violates NOTIONAL minimum")
+                                    if notional_max_applies and row[16] is not None and Decimal(row[16]) > 0 and q * reference > Decimal(row[16]):
+                                        return ReconciliationResult(False, "Filled quantity violates NOTIONAL maximum")
+                            except (InvalidOperation, ValueError):
+                                return ReconciliationResult(False, "Invalid persisted market-rule decision")
             account = connection.execute(
                 "SELECT cash FROM paper_accounts WHERE account_id=?", [self.account_id]
             ).fetchone()

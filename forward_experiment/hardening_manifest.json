@@ -77,10 +77,10 @@
     "src/metrics.py": "68d9c7749ccbc272bf517b857fd6aa896990e0d338f0c1e1df97c0388ace764d",
     "src/paper_broker.py": "8ab6484cf880bd01727c42625f07a153f0f9a2374c1d82928c34ffe435383ac8",
     "src/paper_forward.py": "054e3da896e4185444449d8cc3c102fde7058e6900d00e60b37d3cf94c6af79d",
-    "src/paper_market.py": "209849d6effc91c4016bb797288f29a3af5ea9d3a5dcadfdffbe1bbb60a650a6",
+    "src/paper_market.py": "fde46db3388a5b81e4316b50517673bd85b0f784b8c60d407ecd77ee7ead679e",
     "src/paper_notifications.py": "dd9018e121544f492ecc969066f172aac15512030395110b00e175741ae72cc2",
     "src/paper_report.py": "dd89846992e5acd645959143e76a2903eabbfad4c7bf3e8e5931cff93e5c568b",
-    "src/paper_store.py": "ccc7366e4ad1950e9bd347af6479cc5908766fb08616e5211fcf67bdf96d8c7a",
+    "src/paper_store.py": "4192b6ce382c41ec085f4eff8982e383edec0900b65b74106ba0b5cfa840675d",
     "src/portfolio.py": "89e393c466d7850eec5f2d82b2944d8bc6871c12952cf5779baa33d7a5985a02",
     "src/release_provenance.py": "f38341e42954100f5e9550616b34bc90edf8deb9fafc23ba471ae15fe496d242",
     "src/report.py": "59923840ff8f3842ac5a10209b7b4d1ef7213b4f41b7f544fa976607b1dbd3b9",
@@ -95,7 +95,7 @@
     "tests/test_forward_operations.py": "de986c971cc0743a725c6af2102451a1623b7ae9063c069028cfbb3f5010a0d1",
     "tests/test_forward_safety.py": "d24f0f1129637ca68159b8fed6acda4be7fe5e18ff035cdb028d52ff553a304a",
     "tests/test_paper_config.py": "fa607386a3df3942578a7fe0cac4a7fe28e82ebda7636e6f2fdae1c268af60a4",
-    "tests/test_paper_market.py": "d479e380cf8b0b5c31547f355666e960e516bdd1a05f210a699081038c45c7c3",
+    "tests/test_paper_market.py": "86827d096a5e105c82fab9adcf6d0fe717da29845a75c928a3bbb2ac7a5bb4ef",
     "tests/test_paper_notifications.py": "b3fb1a7fdfd1f9e92d29f18e260ad2045a9a420825e60bd755b25409352d8878",
     "tests/test_paper_report.py": "970cfcd74a592f264b3e13131fc0105b61be474a38a3b4c72a2114d4633500e7",
     "tests/test_paper_trading.py": "fefdec907f285c13fccf8b91ddff63c6352139c0724e4cdef7b8c1d3c70c7ddf",
@@ -104,7 +104,7 @@
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-08T08:56:32.767365+00:00",
+  "generated_at_utc": "2026-09-08T10:26:31.516902+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

@@ -169,6 +169,7 @@ class PaperStore:
                     status VARCHAR NOT NULL,
                     mode VARCHAR NOT NULL,
                     official_scheduled BOOLEAN NOT NULL DEFAULT FALSE,
+                    market_rule_evidence_required BOOLEAN NOT NULL DEFAULT FALSE,
                     schedule_key VARCHAR UNIQUE,
                     attempted_schedule_key VARCHAR,
                     signal_timestamp_utc TIMESTAMPTZ,
@@ -335,7 +336,7 @@ class PaperStore:
                     run_id VARCHAR NOT NULL,
                     symbol VARCHAR NOT NULL,
                     contract_version VARCHAR NOT NULL,
-                    reference_price_decimal VARCHAR NOT NULL,
+                    reference_price_decimal VARCHAR,
                     reference_price_source VARCHAR NOT NULL,
                     reference_price_timestamp_utc TIMESTAMPTZ,
                     lot_min_qty VARCHAR, lot_max_qty VARCHAR, lot_step_size VARCHAR,
@@ -390,6 +391,15 @@ class PaperStore:
             )
             connection.execute(
                 "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS attempted_schedule_key VARCHAR"
+            )
+            connection.execute(
+                "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS market_rule_evidence_required BOOLEAN DEFAULT FALSE"
+            )
+            connection.execute(
+                "ALTER TABLE paper_runs ALTER COLUMN market_rule_evidence_required SET DEFAULT FALSE"
+            )
+            connection.execute(
+                "ALTER TABLE paper_runs ALTER COLUMN market_rule_evidence_required SET NOT NULL"
             )
             connection.execute(
                 "ALTER TABLE paper_run_diagnostics "
@@ -621,12 +631,7 @@ class PaperStore:
                     SELECT r.run_id FROM paper_runs r
                     WHERE r.mode='PAPER' AND r.official_scheduled AND r.status='EXECUTED'
                       AND r.started_at_utc >= ?
-                      AND (EXISTS (SELECT 1 FROM paper_orders o WHERE o.run_id=r.run_id)
-                           OR EXISTS (SELECT 1 FROM paper_order_rejections x WHERE x.run_id=r.run_id
-                                      AND x.reason IN ('below_min_quantity', 'above_max_quantity',
-                                      'below_market_min_quantity', 'above_market_max_quantity',
-                                      'below_min_notional', 'below_market_notional', 'above_market_notional',
-                                      'market_notional_reference_unverifiable')))
+                      AND r.market_rule_evidence_required
                     """,
                     [rule_adoption[0]],
                 ).fetchall()
@@ -638,10 +643,10 @@ class PaperStore:
                         return ReconciliationResult(False, f"Missing market-rule evidence for current run={run_id}")
                     for row in evidence:
                         contract, price, source = row[2], row[3], row[4]
-                        if contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION or source not in {"REFERENCE_PRICE", "LAST_FALLBACK"}:
+                        if contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION or source not in {"REFERENCE_PRICE", "LAST_FALLBACK", "UNVERIFIABLE_AVERAGE"}:
                             return ReconciliationResult(False, "Invalid market-rule evidence contract or source")
                         try:
-                            if not Decimal(price).is_finite() or Decimal(price) <= 0:
+                            if source != "UNVERIFIABLE_AVERAGE" and (price is None or not Decimal(price).is_finite() or Decimal(price) <= 0):
                                 raise InvalidOperation
                             for value in (row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[15], row[16]):
                                 if value is not None and not Decimal(value).is_finite():

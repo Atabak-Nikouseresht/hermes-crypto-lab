@@ -1013,7 +1013,7 @@ def test_schema_v8_adds_rejected_order_diagnostics_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
         )
         connection.execute("ALTER TABLE paper_run_diagnostics DROP COLUMN rejected_orders")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=8")
@@ -1045,7 +1045,7 @@ def test_schema_v9_adds_persistent_rejection_audit_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
         )
         connection.execute("DROP TABLE paper_order_rejections")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=9")

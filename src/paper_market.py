@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+import json
 import math
 from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import pandas as pd
 
 from src.download_data import RETRYABLE_ERRORS, call_with_retry, create_exchange
-from src.paper_broker import MarketSnapshot, PaperConfig, Quote, SymbolRules
+from src.paper_broker import (
+    MarketSnapshot,
+    PaperConfig,
+    Quote,
+    RuleReferencePrice,
+    SymbolRules,
+)
 from src.validate_data import rows_to_frame
 
 
@@ -21,6 +32,8 @@ class PublicMarketCapability(Protocol):
     def fetch_ohlcv(self, symbol: str, timeframe: str, since: int, limit: int) -> Any: ...
 
     def fetch_ticker(self, symbol: str) -> Any: ...
+
+    def fetch_reference_price(self, symbol: str) -> Any: ...
 
     def market(self, symbol: str) -> Any: ...
 
@@ -43,6 +56,29 @@ class PublicMarketClient:
 
     def fetch_ticker(self, symbol: str) -> Any:
         return self._client.fetch_ticker(symbol)
+
+    def fetch_reference_price(self, symbol: str) -> Any:
+        """Narrow unauthenticated adapter for Binance's public endpoint."""
+        market = self._client.market(symbol)
+        market_id = market.get("id") if isinstance(market, dict) else None
+        if not isinstance(market_id, str) or not market_id:
+            raise ValueError(f"Binance market id missing for {symbol}")
+        url = "https://api.binance.com/api/v3/referencePrice?" + urlencode(
+            {"symbol": market_id}
+        )
+        try:
+            with urlopen(url, timeout=self._client.timeout / 1000) as response:  # noqa: S310
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            if error.code == 400 and '"code":-2043' in body.replace(" ", ""):
+                return None
+            raise TransientPublicMarketError(str(error)) from error
+        except (URLError, TimeoutError, OSError) as error:
+            raise TransientPublicMarketError(str(error)) from error
+        if not isinstance(payload, dict):
+            raise ValueError(f"Malformed Binance reference price for {symbol}")
+        return payload
 
     def market(self, symbol: str) -> Any:
         return self._client.market(symbol)
@@ -69,6 +105,18 @@ def _filter_decimal(filter_data: dict[str, Any], field: str) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if math.isfinite(parsed) and parsed > 0 else None
+
+
+def _raw_decimal(filter_data: dict[str, Any], field: str) -> Decimal | None:
+    """Parse Binance's string representation without a float round trip."""
+    value = filter_data.get(field)
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation:
+        return None
+    return parsed if parsed.is_finite() else None
 
 
 def _filter_int(filter_data: dict[str, Any], field: str) -> int | None:
@@ -111,11 +159,25 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
     permissions_allow_spot = permissions is None or (
         isinstance(permissions, list) and (not permissions or "SPOT" in permissions)
     )
+    # This is a public-only capability check, not an assertion that any
+    # authenticated account is authorized. Binance evaluates entries inside a
+    # group as OR and groups as AND; evaluate that rule against the only
+    # capability Hermes can establish publicly: SPOT.
     permission_sets_allow_spot = True
     if permission_sets is not None:
-        permission_sets_allow_spot = isinstance(permission_sets, list) and all(
-            isinstance(group, list) and "SPOT" in group for group in permission_sets
-        )
+        permission_sets_allow_spot = isinstance(permission_sets, list) and bool(permission_sets)
+        if permission_sets_allow_spot:
+            valid_groups = all(
+                isinstance(group, list)
+                and group
+                and all(isinstance(permission, str) for permission in group)
+                for group in permission_sets
+            )
+            public_capabilities = {"SPOT"}
+            permission_sets_allow_spot = valid_groups and all(
+                bool(public_capabilities.intersection(group))
+                for group in permission_sets
+            )
     active = bool(market_info.get("active")) and status == "TRADING" and spot_allowed is True
     active = active and permissions_allow_spot and permission_sets_allow_spot
     market_order_allowed = isinstance(order_types, list) and "MARKET" in order_types
@@ -147,6 +209,15 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
         notional_min_applies_to_market=notional.get("applyMinToMarket") is True,
         notional_max_applies_to_market=notional.get("applyMaxToMarket") is True,
         notional_avg_price_mins=_filter_int(notional, "avgPriceMins") or 0,
+        raw_min_quantity=_raw_decimal(lot, "minQty"),
+        raw_max_quantity=_raw_decimal(lot, "maxQty"),
+        raw_step_size=_raw_decimal(lot, "stepSize"),
+        raw_market_min_quantity=_raw_decimal(market_lot, "minQty"),
+        raw_market_max_quantity=_raw_decimal(market_lot, "maxQty"),
+        raw_market_step_size=_raw_decimal(market_lot, "stepSize"),
+        raw_min_notional=_raw_decimal(min_notional, "minNotional"),
+        raw_notional_min=_raw_decimal(notional, "minNotional"),
+        raw_notional_max=_raw_decimal(notional, "maxNotional"),
     )
 
 
@@ -170,6 +241,7 @@ def fetch_public_market_snapshot(
     market = exchange or create_public_market_client(exchange_id, timeout_ms)
     close_series = []
     quotes: dict[str, Quote] = {}
+    rule_reference_prices: dict[str, RuleReferencePrice] = {}
     rules: dict[str, SymbolRules] = {}
     ohlcv: dict[str, pd.DataFrame] = {}
     try:
@@ -221,6 +293,36 @@ def fetch_public_market_snapshot(
                 raise ValueError(f"Quote timestamp missing for {symbol}")
             quote_time = pd.to_datetime(ticker_ms, unit="ms", utc=True)
             quotes[symbol] = Quote(bid=bid, ask=ask, last=last, timestamp=quote_time)
+            reference_payload = call_with_retry(
+                lambda symbol=symbol: market.fetch_reference_price(symbol),
+                max_retries=max_retries,
+                backoff_base_seconds=backoff_base_seconds,
+            )
+            if reference_payload is None:
+                rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
+            elif isinstance(reference_payload, dict):
+                raw_reference = reference_payload.get("referencePrice")
+                if raw_reference is None:
+                    rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
+                elif isinstance(raw_reference, str):
+                    try:
+                        reference = Decimal(raw_reference)
+                    except InvalidOperation as error:
+                        raise ValueError(f"Malformed Binance reference price for {symbol}") from error
+                    if not reference.is_finite() or reference <= 0:
+                        raise ValueError(f"Invalid Binance reference price for {symbol}")
+                    raw_timestamp = reference_payload.get("timestamp")
+                    if type(raw_timestamp) is not int or raw_timestamp < 0:
+                        raise ValueError(f"Malformed Binance reference price timestamp for {symbol}")
+                    rule_reference_prices[symbol] = RuleReferencePrice(
+                        reference,
+                        "REFERENCE_PRICE",
+                        pd.to_datetime(raw_timestamp, unit="ms", utc=True),
+                    )
+                else:
+                    raise ValueError(f"Malformed Binance reference price for {symbol}")
+            else:
+                raise ValueError(f"Malformed Binance reference price for {symbol}")
             rules[symbol] = parse_binance_spot_symbol_rules(market.market(symbol))
     except RETRYABLE_ERRORS as error:
         raise TransientPublicMarketError(str(error)) from error
@@ -237,4 +339,5 @@ def fetch_public_market_snapshot(
         fetched_at=fetched_at,
         symbol_rules=rules,
         ohlcv=ohlcv,
+        rule_reference_prices=rule_reference_prices,
     )

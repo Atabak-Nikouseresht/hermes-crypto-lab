@@ -8,6 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from src.execution_protocol import EXECUTION_PROTOCOL_VERSION, QUOTE_COHERENCE_C
 
 
 FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
+BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v1"
 
 
 @dataclass(frozen=True)
@@ -329,6 +331,24 @@ class PaperStore:
                     execution_protocol_version VARCHAR NOT NULL,
                     captured_at_utc TIMESTAMPTZ NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS paper_market_rule_evidence (
+                    run_id VARCHAR NOT NULL,
+                    symbol VARCHAR NOT NULL,
+                    contract_version VARCHAR NOT NULL,
+                    reference_price_decimal VARCHAR NOT NULL,
+                    reference_price_source VARCHAR NOT NULL,
+                    reference_price_timestamp_utc TIMESTAMPTZ,
+                    lot_min_qty VARCHAR, lot_max_qty VARCHAR, lot_step_size VARCHAR,
+                    market_lot_min_qty VARCHAR, market_lot_max_qty VARCHAR, market_lot_step_size VARCHAR,
+                    min_notional VARCHAR, min_notional_applies_to_market BOOLEAN NOT NULL,
+                    min_notional_avg_price_mins INTEGER NOT NULL,
+                    notional_min VARCHAR, notional_max VARCHAR,
+                    notional_min_applies_to_market BOOLEAN NOT NULL,
+                    notional_max_applies_to_market BOOLEAN NOT NULL,
+                    notional_avg_price_mins INTEGER NOT NULL,
+                    captured_at_utc TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (run_id, symbol)
+                );
                 """
             )
             connection.execute(
@@ -426,6 +446,11 @@ class PaperStore:
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES "
                 "(15, ?, 'official schedule nullability parity')",
+                [now],
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(16, ?, 'prospective Binance market-rule evidence')",
                 [now],
             )
             schema_v6 = connection.execute(
@@ -587,6 +612,42 @@ class PaperStore:
                     return ReconciliationResult(
                         False, "Invalid release provenance for post-adoption forward paper run"
                     )
+            rule_adoption = connection.execute(
+                "SELECT applied_at_utc FROM paper_schema_versions WHERE version=16"
+            ).fetchone()
+            if rule_adoption is not None:
+                applicable_rule_runs = connection.execute(
+                    """
+                    SELECT r.run_id FROM paper_runs r
+                    WHERE r.mode='PAPER' AND r.official_scheduled AND r.status='EXECUTED'
+                      AND r.started_at_utc >= ?
+                      AND (EXISTS (SELECT 1 FROM paper_orders o WHERE o.run_id=r.run_id)
+                           OR EXISTS (SELECT 1 FROM paper_order_rejections x WHERE x.run_id=r.run_id
+                                      AND x.reason IN ('below_min_quantity', 'above_max_quantity',
+                                      'below_market_min_quantity', 'above_market_max_quantity',
+                                      'below_min_notional', 'below_market_notional', 'above_market_notional',
+                                      'market_notional_reference_unverifiable')))
+                    """,
+                    [rule_adoption[0]],
+                ).fetchall()
+                for (run_id,) in applicable_rule_runs:
+                    evidence = connection.execute(
+                        "SELECT * FROM paper_market_rule_evidence WHERE run_id=?", [run_id]
+                    ).fetchall()
+                    if not evidence:
+                        return ReconciliationResult(False, f"Missing market-rule evidence for current run={run_id}")
+                    for row in evidence:
+                        contract, price, source = row[2], row[3], row[4]
+                        if contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION or source not in {"REFERENCE_PRICE", "LAST_FALLBACK"}:
+                            return ReconciliationResult(False, "Invalid market-rule evidence contract or source")
+                        try:
+                            if not Decimal(price).is_finite() or Decimal(price) <= 0:
+                                raise InvalidOperation
+                            for value in (row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[15], row[16]):
+                                if value is not None and not Decimal(value).is_finite():
+                                    raise InvalidOperation
+                        except (InvalidOperation, ValueError):
+                            return ReconciliationResult(False, "Invalid market-rule decimal evidence")
             account = connection.execute(
                 "SELECT cash FROM paper_accounts WHERE account_id=?", [self.account_id]
             ).fetchone()

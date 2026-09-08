@@ -18,7 +18,11 @@ from src.execution_protocol import (
     EXECUTION_PROTOCOL_VERSION,
     QUOTE_COHERENCE_CONTRACT_VERSION,
 )
-from src.paper_store import FINAL_EXECUTABLE_LEDGER_SEMANTICS, PaperStore
+from src.paper_store import (
+    BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION,
+    FINAL_EXECUTABLE_LEDGER_SEMANTICS,
+    PaperStore,
+)
 from src.strategy import StrategyConfig, generate_signal
 from src.validate_data import validate_ohlcv
 
@@ -39,6 +43,14 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class RuleReferencePrice:
+    """Public Binance MARKET-rule price evidence, never a simulated fill."""
+
+    price: Decimal | None
+    source: str
+    timestamp: pd.Timestamp | None = None
+
+@dataclass(frozen=True)
 class SymbolRules:
     active: bool
     min_quantity: float
@@ -57,6 +69,17 @@ class SymbolRules:
     notional_min_applies_to_market: bool = False
     notional_max_applies_to_market: bool = False
     notional_avg_price_mins: int = 0
+    # Exact exchangeInfo values.  Validation must never depend on the float
+    # convenience fields populated for legacy paper-accounting callers.
+    raw_min_quantity: Decimal | None = None
+    raw_max_quantity: Decimal | None = None
+    raw_step_size: Decimal | None = None
+    raw_market_min_quantity: Decimal | None = None
+    raw_market_max_quantity: Decimal | None = None
+    raw_market_step_size: Decimal | None = None
+    raw_min_notional: Decimal | None = None
+    raw_notional_min: Decimal | None = None
+    raw_notional_max: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +89,9 @@ class MarketSnapshot:
     fetched_at: pd.Timestamp
     symbol_rules: dict[str, SymbolRules] = field(default_factory=dict)
     ohlcv: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # Binance's public MARKET-filter price; intentionally distinct from last
+    # and from Hermes's simulated fill price.
+    rule_reference_prices: dict[str, RuleReferencePrice] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -330,12 +356,27 @@ class PaperTradingSystem:
         )
         return account["cash"], positions_value, account["cash"] + positions_value
 
+    @staticmethod
+    def _market_rule_reference_price(snapshot: MarketSnapshot, symbol: str) -> Decimal | None:
+        """Use Binance referencePrice, else its documented MARKET fallback."""
+        reference = snapshot.rule_reference_prices.get(symbol)
+        if reference is not None and reference.source == "REFERENCE_PRICE":
+            return reference.price
+        rules = snapshot.symbol_rules.get(symbol)
+        if rules is not None and (
+            (rules.min_notional_applies_to_market and rules.min_notional_avg_price_mins > 0)
+            or (rules.notional_min_applies_to_market and rules.notional_avg_price_mins > 0)
+            or (rules.notional_max_applies_to_market and rules.notional_avg_price_mins > 0)
+        ):
+            return None
+        return Decimal(str(snapshot.quotes[symbol].last))
+
     def _normalize_exchange_quantity(
         self,
         *,
         symbol: str,
         quantity: float,
-        rule_reference_price: float,
+        rule_reference_price: Decimal | float | None,
         snapshot: MarketSnapshot,
     ) -> tuple[float | None, str | None]:
         """Quantize down and validate a final executable quantity."""
@@ -350,9 +391,39 @@ class PaperTradingSystem:
             return None, "symbol_not_tradable"
         if not rules.market_order_allowed:
             return None, "market_orders_not_allowed"
+        def exact(value: Decimal | float | None) -> Decimal | None:
+            if isinstance(value, Decimal):
+                return value if value.is_finite() else None
+            if value is None:
+                return None
+            try:
+                candidate = Decimal(str(value))
+            except (InvalidOperation, ValueError):
+                return None
+            return candidate if candidate.is_finite() else None
+
+        reference_decimal = exact(rule_reference_price)
+        min_quantity = rules.raw_min_quantity or exact(rules.min_quantity)
+        max_quantity = rules.raw_max_quantity or exact(rules.max_quantity)
+        step_size = rules.raw_step_size or exact(rules.step_size)
+        market_min = rules.raw_market_min_quantity or exact(rules.market_min_quantity)
+        market_max = rules.raw_market_max_quantity or exact(rules.market_max_quantity)
+        market_step = rules.raw_market_step_size or exact(rules.market_step_size)
+        min_notional = rules.raw_min_notional or exact(rules.min_notional)
+        notional_min = rules.raw_notional_min or exact(rules.notional_min)
+        notional_max = rules.raw_notional_max or exact(rules.notional_max)
+        requires_average = (
+            (rules.min_notional_applies_to_market and rules.min_notional_avg_price_mins > 0)
+            or (rules.notional_min_applies_to_market and rules.notional_avg_price_mins > 0)
+            or (rules.notional_max_applies_to_market and rules.notional_avg_price_mins > 0)
+        )
+        if requires_average and not isinstance(rule_reference_price, Decimal):
+            return None, "market_notional_reference_unverifiable"
+        if reference_decimal is None and requires_average:
+            return None, "market_notional_reference_unverifiable"
         if (
-            not math.isfinite(rule_reference_price)
-            or rule_reference_price <= 0
+            reference_decimal is None
+            or reference_decimal <= 0
             or not math.isfinite(rules.min_quantity)
             or rules.min_quantity <= 0
             or not math.isfinite(rules.step_size)
@@ -373,52 +444,45 @@ class PaperTradingSystem:
             return None, "invalid_exchange_rules"
         try:
             quantity_decimal = Decimal(str(quantity))
-            step_decimal = Decimal(str(rules.step_size))
+            if step_size is None or step_size <= 0:
+                return None, "invalid_exchange_rules"
+            step_decimal = step_size
             units = (quantity_decimal / step_decimal).to_integral_value(
                 rounding=ROUND_FLOOR
             )
-            normalized = float(units * step_decimal)
+            normalized_decimal = units * step_decimal
         except (InvalidOperation, OverflowError, ValueError):
             return None, "invalid_quantity"
-        if normalized <= self.config.quantity_tolerance:
+        if normalized_decimal <= Decimal(str(self.config.quantity_tolerance)):
             return None, "non_positive_quantity"
-        if normalized < rules.min_quantity:
+        if min_quantity is None or normalized_decimal < min_quantity:
             return None, "below_min_quantity"
-        if rules.max_quantity is not None and normalized > rules.max_quantity:
+        if max_quantity is not None and normalized_decimal > max_quantity:
             return None, "above_max_quantity"
-        if rules.market_step_size is not None:
+        if market_step is not None and market_step > 0:
             try:
-                market_step = Decimal(str(rules.market_step_size))
-                market_units = (Decimal(str(normalized)) / market_step).to_integral_value(
+                market_units = (normalized_decimal / market_step).to_integral_value(
                     rounding=ROUND_FLOOR
                 )
-                normalized = float(market_units * market_step)
+                normalized_decimal = market_units * market_step
             except (InvalidOperation, OverflowError, ValueError):
                 return None, "invalid_exchange_rules"
-        if rules.market_min_quantity is not None and normalized < rules.market_min_quantity:
+        if market_min is not None and normalized_decimal < market_min:
             return None, "below_market_min_quantity"
-        if normalized <= self.config.quantity_tolerance:
+        if normalized_decimal <= Decimal(str(self.config.quantity_tolerance)):
             return None, "non_positive_quantity"
-        if rules.market_max_quantity is not None and normalized > rules.market_max_quantity:
+        if market_max is not None and normalized_decimal > market_max:
             return None, "above_market_max_quantity"
-        if (
-            (rules.min_notional_applies_to_market and rules.min_notional_avg_price_mins != 0)
-            or (rules.notional_min_applies_to_market and rules.notional_avg_price_mins != 0)
-            or (rules.notional_max_applies_to_market and rules.notional_avg_price_mins != 0)
-        ):
-            return None, "market_notional_reference_unverifiable"
 
-        normalized_decimal = Decimal(str(normalized))
-        reference_decimal = Decimal(str(rule_reference_price))
-        if rules.min_notional_applies_to_market and normalized_decimal * reference_decimal < Decimal(str(rules.min_notional)):
+        if rules.min_notional_applies_to_market and (min_notional is None or normalized_decimal * reference_decimal < min_notional):
             return None, "below_min_notional"
         if rules.notional_min_applies_to_market:
-            if rules.notional_min is None or normalized_decimal * reference_decimal < Decimal(str(rules.notional_min)):
+            if notional_min is None or normalized_decimal * reference_decimal < notional_min:
                 return None, "below_market_notional"
         if rules.notional_max_applies_to_market:
-            if rules.notional_max is None or normalized_decimal * reference_decimal > Decimal(str(rules.notional_max)):
+            if notional_max is None or normalized_decimal * reference_decimal > notional_max:
                 return None, "above_market_notional"
-        return normalized, None
+        return float(normalized_decimal), None
 
     def _reject_quantity(
         self,
@@ -474,7 +538,7 @@ class PaperTradingSystem:
             quantity, invalid_reason = self._normalize_exchange_quantity(
                 symbol=asset,
                 quantity=abs(delta),
-                rule_reference_price=snapshot.quotes[asset].last,
+                rule_reference_price=self._market_rule_reference_price(snapshot, asset),
                 snapshot=snapshot,
             )
             if invalid_reason:
@@ -526,6 +590,41 @@ class PaperTradingSystem:
             "execution_protocol_version": EXECUTION_PROTOCOL_VERSION,
         }
 
+    def _persist_market_rule_evidence(
+        self, connection, *, run_id: str, snapshot: MarketSnapshot, now: pd.Timestamp
+    ) -> None:
+        """Persist prospective raw Binance filter evidence before any decision."""
+        for symbol, quote in snapshot.quotes.items():
+            rules = snapshot.symbol_rules.get(symbol)
+            reference = snapshot.rule_reference_prices.get(symbol)
+            if reference is not None and reference.source == "REFERENCE_PRICE":
+                reference_price, reference_source, reference_timestamp = (
+                    reference.price,
+                    "REFERENCE_PRICE",
+                    reference.timestamp,
+                )
+            else:
+                reference_price = Decimal(str(quote.last))
+                reference_source, reference_timestamp = "LAST_FALLBACK", None
+            if reference_price is None:
+                continue
+            def exact(value: Decimal | None) -> str | None:
+                return None if value is None else format(value, "f")
+            connection.execute(
+                """INSERT INTO paper_market_rule_evidence VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    run_id, symbol, BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION,
+                    exact(reference_price), reference_source, reference_timestamp,
+                    exact(rules.raw_min_quantity) if rules else None, exact(rules.raw_max_quantity) if rules else None, exact(rules.raw_step_size) if rules else None,
+                    exact(rules.raw_market_min_quantity) if rules else None, exact(rules.raw_market_max_quantity) if rules else None, exact(rules.raw_market_step_size) if rules else None,
+                    exact(rules.raw_min_notional) if rules else None, rules.min_notional_applies_to_market if rules else False,
+                    rules.min_notional_avg_price_mins if rules else 0, exact(rules.raw_notional_min) if rules else None, exact(rules.raw_notional_max) if rules else None,
+                    rules.notional_min_applies_to_market if rules else False, rules.notional_max_applies_to_market if rules else False,
+                    rules.notional_avg_price_mins if rules else 0, now,
+                ],
+            )
+
     def _persist_equity(
         self, connection, *, run_id: str, snapshot: MarketSnapshot, now: pd.Timestamp
     ) -> float:
@@ -560,6 +659,9 @@ class PaperTradingSystem:
     ) -> float:
         with self.store.connect() as connection:
             connection.execute("BEGIN TRANSACTION")
+            self._persist_market_rule_evidence(
+                connection, run_id=run_id, snapshot=snapshot, now=now
+            )
             cash = float(
                 connection.execute(
                     "SELECT cash FROM paper_accounts WHERE account_id=?",
@@ -624,7 +726,7 @@ class PaperTradingSystem:
                 quantity, invalid_reason = self._normalize_exchange_quantity(
                     symbol=proposal["symbol"],
                     quantity=requested,
-                    rule_reference_price=snapshot.quotes[proposal["symbol"]].last,
+                    rule_reference_price=self._market_rule_reference_price(snapshot, proposal["symbol"]),
                     snapshot=snapshot,
                 )
                 if invalid_reason:
@@ -758,7 +860,7 @@ class PaperTradingSystem:
                     quantity, invalid_reason = self._normalize_exchange_quantity(
                         symbol=proposal["symbol"],
                         quantity=scaled,
-                        rule_reference_price=snapshot.quotes[proposal["symbol"]].last,
+                        rule_reference_price=self._market_rule_reference_price(snapshot, proposal["symbol"]),
                         snapshot=snapshot,
                     )
                     if invalid_reason:

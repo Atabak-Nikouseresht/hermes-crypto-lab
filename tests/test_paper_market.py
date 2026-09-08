@@ -53,6 +53,29 @@ def test_binance_market_rules_preserve_market_specific_filter_semantics():
 
 
 @pytest.mark.parametrize(
+    ("permission_sets", "expected"),
+    [
+        ([["SPOT", "MARGIN"]], True),
+        ([["SPOT", "MARGIN"], ["TRD_GRP_004", "TRD_GRP_005"]], False),
+        ([["MARGIN"]], False),
+        ("malformed", False),
+        ([["SPOT", 4]], False),
+    ],
+)
+def test_public_spot_capability_handles_permission_sets_without_claiming_account_auth(
+    permission_sets, expected
+):
+    rules = parse_binance_spot_symbol_rules(
+        _binance_market_info(
+            permissions=[], permissionSets=permission_sets,
+            filters=[{"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "10", "stepSize": "0.001"}],
+        )
+    )
+
+    assert rules.active is expected
+
+
+@pytest.mark.parametrize(
     ("overrides", "active", "market_allowed"),
     [
         ({"status": "BREAK"}, False, True),
@@ -112,6 +135,14 @@ class FakePublicExchange:
     def fetch_ticker(self, symbol):
         self.calls.append(("fetch_ticker", symbol))
         return {"bid": 99.9, "ask": 100.1, "last": 100.0, "timestamp": self.now_ms}
+
+    def fetch_reference_price(self, symbol):
+        self.calls.append(("fetch_reference_price", symbol))
+        return {
+            "symbol": symbol.replace("/", ""),
+            "referencePrice": "100.0",
+            "timestamp": self.now_ms,
+        }
 
 
 def test_public_market_client_exposes_no_private_exchange_capability(monkeypatch):
@@ -173,6 +204,7 @@ def test_public_snapshot_uses_only_market_data_methods():
         "load_markets",
         "fetch_ohlcv",
         "fetch_ticker",
+        "fetch_reference_price",
     }
     assert snapshot.symbol_rules["BTC/USDT"].min_notional == 5.0
     assert not hasattr(exchange, "create_order")

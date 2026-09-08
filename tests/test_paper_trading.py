@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from dataclasses import replace
+from decimal import Decimal
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from src.paper_broker import (
     PaperRunResult,
     PaperTradingSystem,
     Quote,
+    RuleReferencePrice,
     SymbolRules,
     classify_execution_outcome,
 )
@@ -78,6 +80,47 @@ def test_quote_timestamp_skew_fails_closed(tmp_path):
     )
 
     assert "timestamp skew" in system._validate_snapshot(snapshot, now).lower()
+
+
+def test_market_notional_uses_dedicated_reference_price_not_ticker_last(tmp_path):
+    system = PaperTradingSystem(
+        tmp_path / "reference-price.duckdb",
+        PaperConfig(assets=("BTC/USDT",), require_exchange_rules=True),
+    )
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(),
+        quotes={"BTC/USDT": Quote(100.0, 100.0, 101.0, pd.Timestamp("2026-09-08T00:10Z"))},
+        fetched_at=pd.Timestamp("2026-09-08T00:10Z"),
+        symbol_rules={
+            "BTC/USDT": SymbolRules(
+                True, 0.001, None, 0.001, 100.0, 0.01,
+                min_notional_applies_to_market=True,
+                raw_min_quantity=Decimal("0.001"), raw_step_size=Decimal("0.001"),
+                raw_min_notional=Decimal("100"),
+            )
+        },
+        rule_reference_prices={"BTC/USDT": RuleReferencePrice(Decimal("99"), "REFERENCE_PRICE")},
+    )
+
+    assert system._normalize_exchange_quantity(
+        symbol="BTC/USDT", quantity=1.0, rule_reference_price=snapshot.rule_reference_prices["BTC/USDT"].price, snapshot=snapshot
+    ) == (None, "below_min_notional")
+
+
+def test_exact_decimal_notional_boundary_avoids_float_round_trip(tmp_path):
+    system = PaperTradingSystem(
+        tmp_path / "decimal-boundary.duckdb",
+        PaperConfig(assets=("BTC/USDT",), require_exchange_rules=True),
+    )
+    rules = SymbolRules(
+        True, 0.1, None, 0.1, 0.03, 0.01,
+        min_notional_applies_to_market=True,
+        raw_min_quantity=Decimal("0.1"), raw_step_size=Decimal("0.1"),
+        raw_min_notional=Decimal("0.03"),
+    )
+    snapshot = MarketSnapshot(pd.DataFrame(), {"BTC/USDT": Quote(1, 1, 1, pd.Timestamp("2026-09-08T00:10Z"))}, pd.Timestamp("2026-09-08T00:10Z"), {"BTC/USDT": rules})
+
+    assert system._normalize_exchange_quantity(symbol="BTC/USDT", quantity=0.1, rule_reference_price=Decimal("0.3"), snapshot=snapshot) == (0.1, None)
 
 
 def test_quote_skew_contract_is_persisted_for_new_execution_context(tmp_path):

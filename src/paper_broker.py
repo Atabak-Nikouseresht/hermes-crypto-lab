@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from decimal import Decimal, InvalidOperation, localcontext
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -402,6 +404,13 @@ class PaperTradingSystem:
                 return None
             return candidate if candidate.is_finite() else None
 
+        def floor_step(value: Decimal, step: Decimal) -> Decimal:
+            # Integer ratios avoid division rounding up just below a boundary.
+            units = Fraction(value) // Fraction(step)
+            with localcontext() as context:
+                context.prec = len(str(abs(units))) + len(step.as_tuple().digits)
+                return units * step
+
         reference_decimal = exact(rule_reference_price)
         min_quantity = rules.raw_min_quantity if rules.raw_min_quantity is not None else exact(rules.min_quantity)
         max_quantity = rules.raw_max_quantity if rules.raw_max_quantity is not None else exact(rules.max_quantity)
@@ -412,6 +421,12 @@ class PaperTradingSystem:
         min_notional = rules.raw_min_notional if rules.raw_min_notional is not None else exact(rules.min_notional)
         notional_min = rules.raw_notional_min if rules.raw_notional_min is not None else exact(rules.notional_min)
         notional_max = rules.raw_notional_max if rules.raw_notional_max is not None else exact(rules.notional_max)
+        if any(
+            value is not None and (not value.is_finite() or value < 0)
+            for value in (min_quantity, max_quantity, step_size, market_min, market_max,
+                          market_step, min_notional, notional_min, notional_max)
+        ):
+            return None, "invalid_exchange_rules"
         requires_average = (
             (rules.min_notional_applies_to_market and rules.min_notional_avg_price_mins > 0)
             or (rules.notional_min_applies_to_market and rules.notional_avg_price_mins > 0)
@@ -436,8 +451,7 @@ class PaperTradingSystem:
         try:
             quantity_decimal = Decimal(str(quantity))
             if step_size is not None and step_size > 0:
-                units = (quantity_decimal / step_size).to_integral_value(rounding=ROUND_FLOOR)
-                normalized_decimal = units * step_size
+                normalized_decimal = floor_step(quantity_decimal, step_size)
             else:
                 normalized_decimal = quantity_decimal
         except (InvalidOperation, OverflowError, ValueError):
@@ -450,26 +464,26 @@ class PaperTradingSystem:
             return None, "above_max_quantity"
         if market_step is not None and market_step > 0:
             try:
-                market_units = (normalized_decimal / market_step).to_integral_value(
-                    rounding=ROUND_FLOOR
-                )
-                normalized_decimal = market_units * market_step
+                normalized_decimal = floor_step(normalized_decimal, market_step)
             except (InvalidOperation, OverflowError, ValueError):
                 return None, "invalid_exchange_rules"
         if market_min is not None and normalized_decimal < market_min:
             return None, "below_market_min_quantity"
         if normalized_decimal <= Decimal(str(self.config.quantity_tolerance)):
             return None, "non_positive_quantity"
-        if market_max is not None and normalized_decimal > market_max:
+        if market_max is not None and market_max > 0 and normalized_decimal > market_max:
             return None, "above_market_max_quantity"
 
-        if rules.min_notional_applies_to_market and (min_notional is None or normalized_decimal * reference_decimal < min_notional):
+        with localcontext() as context:
+            context.prec = len(normalized_decimal.as_tuple().digits) + len(reference_decimal.as_tuple().digits)
+            notional_value = normalized_decimal * reference_decimal
+        if rules.min_notional_applies_to_market and (min_notional is None or notional_value < min_notional):
             return None, "below_min_notional"
         if rules.notional_min_applies_to_market:
-            if notional_min is None or normalized_decimal * reference_decimal < notional_min:
+            if notional_min is None or notional_value < notional_min:
                 return None, "below_market_notional"
         if rules.notional_max_applies_to_market:
-            if notional_max is None or normalized_decimal * reference_decimal > notional_max:
+            if notional_max is None or (notional_max > 0 and notional_value > notional_max):
                 return None, "above_market_notional"
         return float(normalized_decimal), None
 
@@ -655,6 +669,26 @@ class PaperTradingSystem:
             )
             self._persist_market_rule_evidence(
                 connection, run_id=run_id, snapshot=snapshot, now=now
+            )
+            # This is the prospective run-level applicability contract.  It is
+            # captured before rule evaluation and is intentionally separate
+            # from market-rule rows, contexts, orders, fills, and rejections.
+            committed_diagnostics = dict(forward_diagnostics or {})
+            committed_diagnostics["evaluated_symbols"] = sorted(snapshot.quotes)
+            evidence_rows = connection.execute(
+                "SELECT * FROM paper_market_rule_evidence WHERE run_id=? ORDER BY symbol", [run_id]
+            ).fetchall()
+            committed_diagnostics["market_rule_evidence_sha256"] = (
+                self.store.market_rule_evidence_digest(evidence_rows)
+            )
+            self.store.record_committed_forward_evidence(
+                connection,
+                run_id=run_id,
+                diagnostics=committed_diagnostics,
+                observed_prices={
+                    asset: snapshot.quotes[asset].mid for asset in snapshot.quotes
+                },
+                observed_at=now.to_pydatetime(),
             )
             cash = float(
                 connection.execute(
@@ -914,6 +948,12 @@ class PaperTradingSystem:
                     (abs(value) for value in weight_errors.values()), default=0.0
                 ),
             }
+            committed_diagnostics["rejected_orders"] = list(self._last_rejections)
+            committed_diagnostics["target_deviation"] = target_deviation
+            connection.execute(
+                "UPDATE paper_forward_execution_evidence SET diagnostics=? WHERE run_id=?",
+                [json.dumps(committed_diagnostics, sort_keys=True), run_id],
+            )
             for index, rejection in enumerate(self._last_rejections):
                 connection.execute(
                     """
@@ -937,19 +977,7 @@ class PaperTradingSystem:
                         rejection.get("idempotency_key"),
                     ],
                 )
-            if forward_diagnostics is not None:
-                committed_diagnostics = dict(forward_diagnostics)
-                committed_diagnostics["rejected_orders"] = list(self._last_rejections)
-                committed_diagnostics["target_deviation"] = target_deviation
-                self.store.record_committed_forward_evidence(
-                    connection,
-                    run_id=run_id,
-                    diagnostics=committed_diagnostics,
-                    observed_prices={
-                        asset: snapshot.quotes[asset].mid for asset in self.config.assets
-                    },
-                    observed_at=now.to_pydatetime(),
-                )
+
             executed_count = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM paper_orders WHERE run_id=?", [run_id]

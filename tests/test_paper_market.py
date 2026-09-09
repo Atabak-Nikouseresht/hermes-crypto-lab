@@ -52,6 +52,72 @@ def test_binance_market_rules_preserve_market_specific_filter_semantics():
     assert rules.notional_min_applies_to_market and rules.notional_max_applies_to_market
 
 
+RULE_DECIMAL_FIELDS = [
+    ("LOT_SIZE", "minQty", "raw_min_quantity"),
+    ("LOT_SIZE", "maxQty", "raw_max_quantity"),
+    ("LOT_SIZE", "stepSize", "raw_step_size"),
+    ("MARKET_LOT_SIZE", "minQty", "raw_market_min_quantity"),
+    ("MARKET_LOT_SIZE", "maxQty", "raw_market_max_quantity"),
+    ("MARKET_LOT_SIZE", "stepSize", "raw_market_step_size"),
+    ("MIN_NOTIONAL", "minNotional", "raw_min_notional"),
+    ("NOTIONAL", "minNotional", "raw_notional_min"),
+    ("NOTIONAL", "maxNotional", "raw_notional_max"),
+]
+
+
+@pytest.mark.parametrize("kind,field,attribute", RULE_DECIMAL_FIELDS)
+@pytest.mark.parametrize("value", ["0", None], ids=["explicit-zero", "missing"])
+def test_parser_distinguishes_each_zero_bound_from_missing(kind, field, attribute, value):
+    from decimal import Decimal
+
+    rule_filter = {"filterType": kind}
+    if value is not None:
+        rule_filter[field] = value
+    rules = parse_binance_spot_symbol_rules(_binance_market_info(filters=[rule_filter]))
+    assert getattr(rules, attribute) == (Decimal("0") if value is not None else None)
+    if value is not None:
+        assert getattr(rules, attribute.removeprefix("raw_")) == 0
+
+
+@pytest.mark.parametrize("kind,field,attribute", RULE_DECIMAL_FIELDS)
+@pytest.mark.parametrize("value", ["broken", "-1", 0, "NaN", "Infinity"], ids=["malformed", "negative", "nonstring", "nan", "infinite"])
+def test_parser_rejects_invalid_supplied_decimal_bound(kind, field, attribute, value):
+    with pytest.raises(ValueError, match="Invalid Binance rule decimal"):
+        parse_binance_spot_symbol_rules(_binance_market_info(filters=[{"filterType": kind, field: value}]))
+
+
+def test_parser_retains_full_precision_min_notional():
+    from decimal import Decimal
+
+    value = "0.12345678901234567890123456789"
+    rules = parse_binance_spot_symbol_rules(_binance_market_info(filters=[
+        {"filterType": "MIN_NOTIONAL", "minNotional": value},
+    ]))
+    assert rules.raw_min_notional == Decimal(value)
+    assert rules.raw_min_notional != Decimal(str(rules.min_notional))
+
+
+def test_binance_rule_parser_preserves_high_precision_and_disabled_decimal_zeroes():
+    rules = parse_binance_spot_symbol_rules(
+        _binance_market_info(
+            filters=[
+                {"filterType": "LOT_SIZE", "minQty": "0", "maxQty": "0", "stepSize": "0.000000010000000000000001"},
+                {"filterType": "MARKET_LOT_SIZE", "minQty": "0", "maxQty": "0", "stepSize": "0"},
+                {"filterType": "MIN_NOTIONAL", "minNotional": "0", "applyToMarket": True, "avgPriceMins": 0},
+                {"filterType": "NOTIONAL", "minNotional": "0", "maxNotional": "0", "applyMinToMarket": True, "applyMaxToMarket": True, "avgPriceMins": 0},
+            ]
+        )
+    )
+
+    from decimal import Decimal
+
+    assert rules.raw_step_size == Decimal("0.000000010000000000000001")
+    assert rules.raw_min_quantity == rules.raw_max_quantity == Decimal("0")
+    assert rules.raw_market_min_quantity == rules.raw_market_max_quantity == Decimal("0")
+    assert rules.raw_market_step_size == rules.raw_min_notional == Decimal("0")
+    assert rules.raw_notional_min == rules.raw_notional_max == Decimal("0")
+
+
 @pytest.mark.parametrize(
     ("permission_sets", "expected"),
     [
@@ -76,9 +142,50 @@ def test_public_spot_capability_handles_permission_sets_without_claiming_account
 
 
 @pytest.mark.parametrize(
+    ("permissions", "permission_sets", "expected"),
+    [
+        ([], None, True),
+        (["SPOT"], None, True),
+        (["MARGIN"], None, False),
+        (None, None, True),
+        (["SPOT", 123], None, False),
+        ("SPOT", None, False),
+        (None, [], False),
+        (None, [[]], False),
+        (None, [["SPOT"]], True),
+        (None, [["SPOT", "MARGIN"]], True),
+        (None, [["SPOT", "MARGIN"], ["TRD_GRP_004", "TRD_GRP_005"]], False),
+        (None, [["MARGIN"]], False),
+        ([], [["SPOT"]], True),
+        (None, "SPOT", False),
+        (None, [["SPOT"], "MARGIN"], False),
+        (None, [["SPOT", 123]], False),
+    ],
+)
+def test_public_spot_permission_matrix(permissions, permission_sets, expected):
+    info = {"filters": [{"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "10", "stepSize": "0.001"}]}
+    if permissions is not None:
+        info["permissions"] = permissions
+    if permission_sets is not None:
+        info["permissionSets"] = permission_sets
+    market_info = _binance_market_info(**info)
+    if permissions is None:
+        market_info["info"].pop("permissions")
+    rules = parse_binance_spot_symbol_rules(market_info)
+    assert rules.active is expected
+
+
+@pytest.mark.parametrize(
     ("overrides", "active", "market_allowed"),
     [
         ({"status": "BREAK"}, False, True),
+        ({"status": None}, False, True),
+        ({"isSpotTradingAllowed": None}, False, True),
+        ({"isSpotTradingAllowed": "true"}, False, True),
+        ({"isSpotTradingAllowed": 1}, False, True),
+        ({"orderTypes": None}, True, False),
+        ({"orderTypes": "MARKET"}, True, False),
+        ({"orderTypes": ["MARKET", 123]}, True, False),
         ({"isSpotTradingAllowed": False}, False, True),
         ({"orderTypes": ["LIMIT"]}, True, False),
         ({"permissions": ["MARGIN"]}, False, True),
@@ -208,7 +315,59 @@ def test_public_snapshot_uses_only_market_data_methods():
         "fetch_reference_price",
     }
     assert snapshot.symbol_rules["BTC/USDT"].min_notional == 5.0
+    from decimal import Decimal
+
+    # REF1: the native Binance identifier is BTCUSDT, not BTC/USDT.
+    assert snapshot.rule_reference_prices["BTC/USDT"].price == Decimal("100.0")
+    assert snapshot.rule_reference_prices["BTC/USDT"].source == "REFERENCE_PRICE"
+    assert snapshot.rule_reference_prices["BTC/USDT"].timestamp == pd.Timestamp(now)
     assert not hasattr(exchange, "create_order")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"symbol": "ETHUSDT", "referencePrice": "100", "timestamp": 1722816600000},
+        {"referencePrice": "100", "timestamp": 1722816600000},
+        {"symbol": 123, "referencePrice": "100", "timestamp": 1722816600000},
+    ],
+)
+def test_public_snapshot_fails_closed_for_wrong_or_malformed_reference_symbol(payload):
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    dates = pd.date_range(end="2024-08-04", periods=160, freq="D", tz="UTC")
+    rows = [[int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0] for timestamp in dates]
+
+    class BadReferenceExchange(FakePublicExchange):
+        def fetch_reference_price(self, symbol):
+            self.calls.append(("fetch_reference_price", symbol))
+            return payload
+
+    with pytest.raises(ValueError, match="reference price symbol"):
+        fetch_public_market_snapshot(
+            PaperConfig(assets=("BTC/USDT",)),
+            exchange=BadReferenceExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
+            now=now,
+            lookback_days=200,
+            max_retries=0,
+        )
+
+
+def test_public_snapshot_absent_reference_still_loads_symbol_rules():
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    dates = pd.date_range(end="2024-08-04", periods=160, freq="D", tz="UTC")
+    rows = [[int(timestamp.timestamp() * 1000), 100, 101, 99, 100, 10] for timestamp in dates]
+
+    class AbsentReferenceExchange(FakePublicExchange):
+        def fetch_reference_price(self, symbol):
+            return None
+
+    snapshot = fetch_public_market_snapshot(
+        PaperConfig(assets=("BTC/USDT",)),
+        exchange=AbsentReferenceExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
+        now=now, max_retries=0,
+    )
+    assert snapshot.rule_reference_prices["BTC/USDT"].source == "LAST_FALLBACK"
+    assert snapshot.symbol_rules["BTC/USDT"].raw_step_size is not None
 
 
 def test_public_snapshot_derives_informational_last_from_valid_bid_ask():

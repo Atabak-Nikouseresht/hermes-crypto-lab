@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,20 @@ class ReconciliationResult:
 
 
 class PaperStore:
+    @staticmethod
+    def market_rule_evidence_digest(rows: list[tuple[Any, ...]]) -> str:
+        """Stable digest retained in independent run-level evidence."""
+        payload = [[None if value is None else str(value) for value in row] for row in rows]
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _exact_rule_notional(quantity: Decimal, reference: Decimal) -> Decimal:
+        """Do not round a raw exchange reference to Decimal's default precision."""
+        with localcontext() as context:
+            context.prec = max(28, len(quantity.as_tuple().digits) + len(reference.as_tuple().digits))
+            return quantity * reference
+
     def __init__(
         self,
         path: Path,
@@ -641,6 +656,75 @@ class PaperStore:
                     ).fetchall()
                     if not evidence:
                         return ReconciliationResult(False, f"Missing market-rule evidence for current run={run_id}")
+                    scope = connection.execute(
+                        "SELECT diagnostics FROM paper_forward_execution_evidence WHERE run_id=?",
+                        [run_id],
+                    ).fetchone()
+                    if scope is None:
+                        return ReconciliationResult(False, f"Missing authoritative market-rule scope for current run={run_id}")
+                    try:
+                        diagnostics = json.loads(scope[0]) if isinstance(scope[0], str) else dict(scope[0])
+                        evaluated = diagnostics["evaluated_symbols"]
+                        if (
+                            not isinstance(evaluated, list)
+                            or not evaluated
+                            or any(not isinstance(symbol, str) or not symbol for symbol in evaluated)
+                            or len(set(evaluated)) != len(evaluated)
+                        ):
+                            raise ValueError
+                        expected_symbols = set(evaluated)
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                        return ReconciliationResult(False, f"Invalid authoritative market-rule scope for current run={run_id}")
+                    observed_symbols = {
+                        str(symbol)
+                        for (symbol,) in connection.execute(
+                            "SELECT symbol FROM forward_market_observations WHERE run_id=?", [run_id]
+                        ).fetchall()
+                    }
+                    if observed_symbols != expected_symbols:
+                        return ReconciliationResult(False, f"Incomplete authoritative market-rule scope for current run={run_id}")
+                    decision_symbols = {
+                        str(symbol) for (symbol,) in connection.execute(
+                            """SELECT symbol FROM paper_execution_context WHERE run_id=?
+                            UNION SELECT symbol FROM paper_orders WHERE run_id=?
+                            UNION SELECT symbol FROM paper_fills WHERE run_id=?
+                            UNION SELECT symbol FROM paper_order_rejections WHERE run_id=?""",
+                            [run_id, run_id, run_id, run_id],
+                        ).fetchall()
+                    }
+                    if not decision_symbols.issubset(expected_symbols):
+                        return ReconciliationResult(False, "Decision symbol outside authoritative market-rule scope")
+                    evidence_by_symbol = {str(row[1]): row for row in evidence}
+                    if set(evidence_by_symbol) != expected_symbols:
+                        return ReconciliationResult(False, f"Incomplete market-rule evidence symbols for current run={run_id}")
+                    expected_digest = diagnostics.get("market_rule_evidence_sha256")
+                    actual_digest = self.market_rule_evidence_digest(sorted(evidence, key=lambda row: str(row[1])))
+                    if (
+                        not isinstance(expected_digest, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+                        or expected_digest != actual_digest
+                    ):
+                        return ReconciliationResult(False, "Market-rule evidence integrity digest mismatch")
+                    # The prospective run diagnostics independently preserve every
+                    # rejection, including its stage and execution-price notional.
+                    rejection_fields = (
+                        "symbol", "side", "stage", "reason", "notional",
+                        "requested_quantity", "target_weight", "idempotency_key",
+                    )
+                    persisted_rejections = connection.execute(
+                        """SELECT symbol, side, stage, reason, notional,
+                        requested_quantity, target_weight, idempotency_key
+                        FROM paper_order_rejections WHERE run_id=? ORDER BY rejection_index""",
+                        [run_id],
+                    ).fetchall()
+                    declared_rejections = diagnostics.get("rejected_orders")
+                    if (
+                        not isinstance(declared_rejections, list)
+                        or any(not isinstance(item, dict) for item in declared_rejections)
+                        or [tuple(item.get(field) for field in rejection_fields) for item in declared_rejections]
+                        != persisted_rejections
+                    ):
+                        return ReconciliationResult(False, "Market-rule rejection audit mismatch")
                     for row in evidence:
                         contract, price, source = row[2], row[3], row[4]
                         if contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION or source not in {"REFERENCE_PRICE", "LAST_FALLBACK", "UNVERIFIABLE_AVERAGE"}:
@@ -649,10 +733,157 @@ class PaperStore:
                             if source != "UNVERIFIABLE_AVERAGE" and (price is None or not Decimal(price).is_finite() or Decimal(price) <= 0):
                                 raise InvalidOperation
                             for value in (row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[15], row[16]):
-                                if value is not None and not Decimal(value).is_finite():
+                                if value is not None and (not Decimal(value).is_finite() or Decimal(value) < 0):
                                     raise InvalidOperation
+                            if (
+                                type(row[13]) is not bool
+                                or type(row[17]) is not bool
+                                or type(row[18]) is not bool
+                                or type(row[14]) is not int
+                                or type(row[19]) is not int
+                                or row[14] < 0
+                                or row[19] < 0
+                            ):
+                                raise InvalidOperation
+                            if row[6] is not None and row[7] is not None and Decimal(row[6]) > 0 and Decimal(row[7]) > 0 and Decimal(row[6]) > Decimal(row[7]):
+                                raise InvalidOperation
+                            if row[9] is not None and row[10] is not None and Decimal(row[9]) > 0 and Decimal(row[10]) > 0 and Decimal(row[9]) > Decimal(row[10]):
+                                raise InvalidOperation
+                            if row[15] is not None and row[16] is not None and Decimal(row[15]) > 0 and Decimal(row[16]) > 0 and Decimal(row[15]) > Decimal(row[16]):
+                                raise InvalidOperation
                         except (InvalidOperation, ValueError):
                             return ReconciliationResult(False, "Invalid market-rule decimal evidence")
+                        min_notional_applies, min_avg = row[13], row[14]
+                        notional_min_applies, notional_max_applies, notional_avg = row[17], row[18], row[19]
+                        if any(applies and limit is None for applies, limit in (
+                            (min_notional_applies, row[12]),
+                            (notional_min_applies, row[15]),
+                            (notional_max_applies, row[16]),
+                        )):
+                            return ReconciliationResult(False, "Applicable market notional limit is missing")
+                        requires_average = (
+                            (min_notional_applies and min_avg > 0)
+                            or (notional_min_applies and notional_avg > 0)
+                            or (notional_max_applies and notional_avg > 0)
+                        )
+                        if source == "REFERENCE_PRICE" and row[5] is None:
+                            return ReconciliationResult(False, "Reference-price evidence lacks timestamp")
+                        if source == "LAST_FALLBACK" and requires_average:
+                            return ReconciliationResult(False, "Illegal last-price market-rule fallback")
+                        if source == "UNVERIFIABLE_AVERAGE" and (price is not None or not requires_average):
+                            return ReconciliationResult(False, "Invalid unverifiable-average evidence")
+                        orders = connection.execute(
+                            """
+                            SELECT f.filled_quantity FROM paper_orders o
+                            JOIN paper_fills f ON f.order_id=o.order_id
+                            WHERE o.run_id=? AND o.symbol=? AND o.status='FILLED'
+                            """,
+                            [run_id, row[1]],
+                        ).fetchall()
+                        if source == "UNVERIFIABLE_AVERAGE" and orders:
+                            return ReconciliationResult(False, "Accepted order has unverifiable market reference")
+                        if source != "UNVERIFIABLE_AVERAGE":
+                            try:
+                                minimums = (row[6], row[9])
+                                maximums = (row[7], row[10])
+                                steps = (row[8], row[11])
+                                for (quantity,) in orders:
+                                    q = Decimal(str(quantity))
+                                    for minimum in minimums:
+                                        if minimum is not None and Decimal(minimum) > 0 and q < Decimal(minimum):
+                                            return ReconciliationResult(False, "Filled quantity violates persisted market rule")
+                                    for maximum in maximums:
+                                        if maximum is not None and Decimal(maximum) > 0 and q > Decimal(maximum):
+                                            return ReconciliationResult(False, "Filled quantity violates persisted market rule")
+                                    for step in steps:
+                                        if step is not None and Decimal(step) > 0 and (q / Decimal(step)).to_integral_value(rounding=ROUND_FLOOR) * Decimal(step) != q:
+                                            return ReconciliationResult(False, "Filled quantity violates persisted market step")
+                                    reference = Decimal(price)
+                                    if min_notional_applies and row[12] is not None and Decimal(row[12]) > 0 and self._exact_rule_notional(q, reference) < Decimal(row[12]):
+                                        return ReconciliationResult(False, "Filled quantity violates MIN_NOTIONAL")
+                                    if notional_min_applies and row[15] is not None and Decimal(row[15]) > 0 and self._exact_rule_notional(q, reference) < Decimal(row[15]):
+                                        return ReconciliationResult(False, "Filled quantity violates NOTIONAL minimum")
+                                    if notional_max_applies and row[16] is not None and Decimal(row[16]) > 0 and self._exact_rule_notional(q, reference) > Decimal(row[16]):
+                                        return ReconciliationResult(False, "Filled quantity violates NOTIONAL maximum")
+                            except (InvalidOperation, ValueError):
+                                return ReconciliationResult(False, "Invalid persisted market-rule decision")
+                        rejections = connection.execute(
+                            """
+                            SELECT stage, reason, requested_quantity, notional, idempotency_key, side
+                            FROM paper_order_rejections WHERE run_id=? AND symbol=?
+                            """,
+                            [run_id, row[1]],
+                        ).fetchall()
+                        rule_reasons = {
+                            "below_min_quantity", "above_max_quantity",
+                            "below_market_min_quantity", "above_market_max_quantity",
+                            "below_min_notional", "below_market_notional",
+                            "above_market_notional", "market_notional_reference_unverifiable",
+                        }
+                        for stage, reason, quantity, notional, idempotency_key, side in rejections:
+                            if reason not in rule_reasons:
+                                continue
+                            if stage not in {"PROPOSAL", "FINAL", "FINAL_CASH"} or quantity is None or not idempotency_key:
+                                return ReconciliationResult(False, "Invalid market-rule rejection evidence")
+                            try:
+                                q = Decimal(str(quantity))
+                                if not q.is_finite() or q <= 0:
+                                    raise InvalidOperation
+                                # FINAL records retain the original proposal quantity;
+                                # notional records the cash/holding-scaled input at the
+                                # execution price, not Binance's rule reference price.
+                                if stage in {"FINAL", "FINAL_CASH"}:
+                                    context = connection.execute(
+                                        "SELECT bid, ask, midpoint FROM paper_execution_context WHERE run_id=? AND symbol=?",
+                                        [run_id, row[1]],
+                                    ).fetchone()
+                                    if context is None or side not in {"BUY", "SELL"}:
+                                        return ReconciliationResult(False, "Missing final rejection execution context")
+                                    bid, ask, mid = map(float, context)
+                                    execution_price = (
+                                        max(ask, mid * (1.0 + self.minimum_spread_rate)) * (1.0 + self.slippage_rate)
+                                        if side == "BUY" else
+                                        min(bid, mid * (1.0 - self.minimum_spread_rate)) * (1.0 - self.slippage_rate)
+                                    )
+                                    if not math.isfinite(execution_price) or execution_price <= 0 or notional is None:
+                                        raise InvalidOperation
+                                    scaled = float(notional) / execution_price
+                                    if not math.isfinite(scaled) or scaled <= 0 or scaled > float(q) + self.quantity_tolerance:
+                                        raise InvalidOperation
+                                    q = Decimal(str(scaled))
+                                if source == "UNVERIFIABLE_AVERAGE":
+                                    expected_reason = "market_notional_reference_unverifiable" if requires_average else None
+                                else:
+                                    lot_step = Decimal(row[8]) if row[8] is not None else None
+                                    market_step = Decimal(row[11]) if row[11] is not None else None
+                                    normalized = q
+                                    if lot_step is not None and lot_step > 0:
+                                        normalized = (normalized / lot_step).to_integral_value(rounding=ROUND_FLOOR) * lot_step
+                                    if row[6] is not None and Decimal(row[6]) > 0 and normalized < Decimal(row[6]):
+                                        expected_reason = "below_min_quantity"
+                                    elif row[7] is not None and Decimal(row[7]) > 0 and normalized > Decimal(row[7]):
+                                        expected_reason = "above_max_quantity"
+                                    else:
+                                        if market_step is not None and market_step > 0:
+                                            normalized = (normalized / market_step).to_integral_value(rounding=ROUND_FLOOR) * market_step
+                                        if row[9] is not None and Decimal(row[9]) > 0 and normalized < Decimal(row[9]):
+                                            expected_reason = "below_market_min_quantity"
+                                        elif row[10] is not None and Decimal(row[10]) > 0 and normalized > Decimal(row[10]):
+                                            expected_reason = "above_market_max_quantity"
+                                        else:
+                                            reference = Decimal(price)
+                                            if min_notional_applies and row[12] is not None and Decimal(row[12]) > 0 and self._exact_rule_notional(normalized, reference) < Decimal(row[12]):
+                                                expected_reason = "below_min_notional"
+                                            elif notional_min_applies and row[15] is not None and Decimal(row[15]) > 0 and self._exact_rule_notional(normalized, reference) < Decimal(row[15]):
+                                                expected_reason = "below_market_notional"
+                                            elif notional_max_applies and row[16] is not None and Decimal(row[16]) > 0 and self._exact_rule_notional(normalized, reference) > Decimal(row[16]):
+                                                expected_reason = "above_market_notional"
+                                            else:
+                                                expected_reason = None
+                            except (InvalidOperation, ValueError):
+                                return ReconciliationResult(False, "Invalid market-rule rejection decision")
+                            if reason != expected_reason:
+                                return ReconciliationResult(False, "Inconsistent market-rule rejection reason")
             account = connection.execute(
                 "SELECT cash FROM paper_accounts WHERE account_id=?", [self.account_id]
             ).fetchone()

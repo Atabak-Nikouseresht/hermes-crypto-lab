@@ -109,14 +109,18 @@ def _filter_decimal(filter_data: dict[str, Any], field: str) -> float | None:
 
 def _raw_decimal(filter_data: dict[str, Any], field: str) -> Decimal | None:
     """Parse Binance's string representation without a float round trip."""
-    value = filter_data.get(field)
-    if not isinstance(value, str):
+    if field not in filter_data:
         return None
+    value = filter_data[field]
+    if not isinstance(value, str):
+        raise ValueError(f"Invalid Binance rule decimal {field}: expected string")
     try:
         parsed = Decimal(value)
-    except InvalidOperation:
-        return None
-    return parsed if parsed.is_finite() else None
+    except InvalidOperation as error:
+        raise ValueError(f"Invalid Binance rule decimal {field}") from error
+    if not parsed.is_finite() or parsed < 0:
+        raise ValueError(f"Invalid Binance rule decimal {field}: expected finite nonnegative value")
+    return parsed
 
 
 def _filter_int(filter_data: dict[str, Any], field: str) -> int | None:
@@ -157,7 +161,9 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
     permissions = info.get("permissions")
     permission_sets = info.get("permissionSets")
     permissions_allow_spot = permissions is None or (
-        isinstance(permissions, list) and (not permissions or "SPOT" in permissions)
+        isinstance(permissions, list)
+        and all(isinstance(permission, str) for permission in permissions)
+        and (not permissions or "SPOT" in permissions)
     )
     # This is a public-only capability check, not an assertion that any
     # authenticated account is authorized. Binance evaluates entries inside a
@@ -180,44 +186,53 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
             )
     active = bool(market_info.get("active")) and status == "TRADING" and spot_allowed is True
     active = active and permissions_allow_spot and permission_sets_allow_spot
-    market_order_allowed = isinstance(order_types, list) and "MARKET" in order_types
+    market_order_allowed = (
+        isinstance(order_types, list)
+        and all(isinstance(order_type, str) for order_type in order_types)
+        and "MARKET" in order_types
+    )
 
-    lot_min = _filter_decimal(lot, "minQty")
-    lot_max = _filter_decimal(lot, "maxQty")
-    lot_step = _filter_decimal(lot, "stepSize")
-    market_min = _filter_decimal(market_lot, "minQty")
-    market_max = _filter_decimal(market_lot, "maxQty")
-    market_step = _filter_decimal(market_lot, "stepSize")
+    # Retain an explicit Binance zero.  A zero filter value disables that
+    # bound; it must not be mistaken for a missing field and replaced by a
+    # CCXT convenience limit.
+    lot_min_raw = _raw_decimal(lot, "minQty")
+    lot_max_raw = _raw_decimal(lot, "maxQty")
+    lot_step_raw = _raw_decimal(lot, "stepSize")
+    market_min_raw = _raw_decimal(market_lot, "minQty")
+    market_max_raw = _raw_decimal(market_lot, "maxQty")
+    market_step_raw = _raw_decimal(market_lot, "stepSize")
+    min_notional_raw = _raw_decimal(min_notional, "minNotional")
+    notional_min_raw = _raw_decimal(notional, "minNotional")
+    notional_max_raw = _raw_decimal(notional, "maxNotional")
     return SymbolRules(
         active=active,
-        min_quantity=lot_min or float(amount_limits.get("min") or 0.0),
-        max_quantity=lot_max
-        if lot_max is not None
+        min_quantity=(float(lot_min_raw) if lot_min_raw is not None else float(amount_limits.get("min") or 0.0)),
+        max_quantity=(float(lot_max_raw) if lot_max_raw is not None else None)
+        if lot_max_raw is not None
         else (float(amount_limits["max"]) if amount_limits.get("max") is not None else None),
-        step_size=lot_step or 0.0,
-        min_notional=_filter_decimal(min_notional, "minNotional")
-        or float(cost_limits.get("min") or 0.0),
+        step_size=float(lot_step_raw) if lot_step_raw is not None else 0.0,
+        min_notional=(float(min_notional_raw) if min_notional_raw is not None else float(cost_limits.get("min") or 0.0)),
         price_tick=_filter_decimal(price_filter, "tickSize") or 0.0,
         market_order_allowed=market_order_allowed,
-        market_min_quantity=market_min,
-        market_max_quantity=market_max,
-        market_step_size=market_step,
+        market_min_quantity=float(market_min_raw) if market_min_raw is not None else None,
+        market_max_quantity=float(market_max_raw) if market_max_raw is not None else None,
+        market_step_size=float(market_step_raw) if market_step_raw is not None else None,
         min_notional_applies_to_market=min_notional.get("applyToMarket") is True,
         min_notional_avg_price_mins=_filter_int(min_notional, "avgPriceMins") or 0,
-        notional_min=_filter_decimal(notional, "minNotional"),
-        notional_max=_filter_decimal(notional, "maxNotional"),
+        notional_min=float(notional_min_raw) if notional_min_raw is not None else None,
+        notional_max=float(notional_max_raw) if notional_max_raw is not None else None,
         notional_min_applies_to_market=notional.get("applyMinToMarket") is True,
         notional_max_applies_to_market=notional.get("applyMaxToMarket") is True,
         notional_avg_price_mins=_filter_int(notional, "avgPriceMins") or 0,
-        raw_min_quantity=_raw_decimal(lot, "minQty"),
-        raw_max_quantity=_raw_decimal(lot, "maxQty"),
-        raw_step_size=_raw_decimal(lot, "stepSize"),
-        raw_market_min_quantity=_raw_decimal(market_lot, "minQty"),
-        raw_market_max_quantity=_raw_decimal(market_lot, "maxQty"),
-        raw_market_step_size=_raw_decimal(market_lot, "stepSize"),
-        raw_min_notional=_raw_decimal(min_notional, "minNotional"),
-        raw_notional_min=_raw_decimal(notional, "minNotional"),
-        raw_notional_max=_raw_decimal(notional, "maxNotional"),
+        raw_min_quantity=lot_min_raw,
+        raw_max_quantity=lot_max_raw,
+        raw_step_size=lot_step_raw,
+        raw_market_min_quantity=market_min_raw,
+        raw_market_max_quantity=market_max_raw,
+        raw_market_step_size=market_step_raw,
+        raw_min_notional=min_notional_raw,
+        raw_notional_min=notional_min_raw,
+        raw_notional_max=notional_max_raw,
     )
 
 
@@ -298,9 +313,16 @@ def fetch_public_market_snapshot(
                 max_retries=max_retries,
                 backoff_base_seconds=backoff_base_seconds,
             )
+            market_info = market.market(symbol)
             if reference_payload is None:
                 rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
             elif isinstance(reference_payload, dict):
+                expected_symbol = market_info.get("id") if isinstance(market_info, dict) else None
+                if (
+                    not isinstance(expected_symbol, str)
+                    or reference_payload.get("symbol") != expected_symbol
+                ):
+                    raise ValueError(f"Mismatched Binance reference price symbol for {symbol}")
                 raw_reference = reference_payload.get("referencePrice")
                 if raw_reference is None:
                     rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
@@ -323,7 +345,7 @@ def fetch_public_market_snapshot(
                     raise ValueError(f"Malformed Binance reference price for {symbol}")
             else:
                 raise ValueError(f"Malformed Binance reference price for {symbol}")
-            rules[symbol] = parse_binance_spot_symbol_rules(market.market(symbol))
+            rules[symbol] = parse_binance_spot_symbol_rules(market_info)
     except RETRYABLE_ERRORS as error:
         raise TransientPublicMarketError(str(error)) from error
     finally:

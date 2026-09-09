@@ -123,6 +123,100 @@ def test_exact_decimal_notional_boundary_avoids_float_round_trip(tmp_path):
     assert system._normalize_exchange_quantity(symbol="BTC/USDT", quantity=0.1, rule_reference_price=Decimal("0.3"), snapshot=snapshot) == (0.1, None)
 
 
+def _normalize_rule_case(rules, quantity=1.0, reference=Decimal("1")):
+    # Exercise the real admission path without unrelated database setup.
+    system = object.__new__(PaperTradingSystem)
+    system.config = PaperConfig(assets=("BTC/USDT",), require_exchange_rules=True)
+    snapshot = MarketSnapshot(pd.DataFrame(), {}, pd.Timestamp("2026-09-08T00:10Z"), {"BTC/USDT": rules})
+    return system._normalize_exchange_quantity(
+        symbol="BTC/USDT", quantity=quantity, rule_reference_price=reference, snapshot=snapshot
+    )
+
+
+@pytest.mark.parametrize("field", [
+    "raw_min_quantity", "raw_max_quantity", "raw_step_size",
+    "raw_market_min_quantity", "raw_market_max_quantity", "raw_market_step_size",
+    "raw_min_notional", "raw_notional_min", "raw_notional_max",
+])
+def test_explicit_zero_disables_each_exchange_bound(field):
+    rules = SymbolRules(True, 0.001, None, 0.001, 0.001, 0.01)
+    # Contradictory convenience values must not replace exact zero evidence.
+    convenience = field.removeprefix("raw_")
+    rules = replace(rules, **{field: Decimal("0"), convenience: 999.0},
+                    notional_min_applies_to_market=field == "raw_notional_min",
+                    notional_max_applies_to_market=field == "raw_notional_max")
+    assert _normalize_rule_case(rules) == (1.0, None)
+
+
+@pytest.mark.parametrize("field,convenience,reason", [
+    ("raw_min_quantity", 2.0, "below_min_quantity"),
+    ("raw_max_quantity", 0.5, "above_max_quantity"),
+    ("raw_step_size", 2.0, "non_positive_quantity"),
+    ("raw_market_min_quantity", 2.0, "below_market_min_quantity"),
+    ("raw_market_max_quantity", 0.5, "above_market_max_quantity"),
+    ("raw_market_step_size", 2.0, "non_positive_quantity"),
+    ("raw_min_notional", 2.0, "below_min_notional"),
+    ("raw_notional_min", 2.0, "below_market_notional"),
+    ("raw_notional_max", 0.5, "above_market_notional"),
+])
+def test_missing_raw_bound_does_not_disable_legacy_convenience_rule(field, convenience, reason):
+    rules = SymbolRules(True, 0.001, None, 0.001, 0.001, 0.01)
+    rules = replace(rules, **{field: None, field.removeprefix("raw_"): convenience},
+                    notional_min_applies_to_market=field == "raw_notional_min",
+                    notional_max_applies_to_market=field == "raw_notional_max")
+    assert _normalize_rule_case(rules) == (None, reason)
+
+
+@pytest.mark.parametrize("kind,reference,reason", [
+    ("MIN_NOTIONAL", "10", None), ("MIN_NOTIONAL", "9.99999999999999999999999999999", "below_min_notional"),
+    ("NOTIONAL", "10", None), ("NOTIONAL", "9.99999999999999999999999999999", "below_market_notional"),
+    ("NOTIONAL", "20", None), ("NOTIONAL", "20.00000000000000000000000000001", "above_market_notional"),
+])
+def test_exact_market_notional_inclusive_boundaries(kind, reference, reason):
+    rules = SymbolRules(True, 0.001, None, 0.001, 10, 0.01,
+                        raw_min_notional=Decimal("10"), raw_notional_min=Decimal("10"), raw_notional_max=Decimal("20"),
+                        min_notional_applies_to_market=kind == "MIN_NOTIONAL",
+                        notional_min_applies_to_market=kind == "NOTIONAL", notional_max_applies_to_market=kind == "NOTIONAL")
+    assert _normalize_rule_case(rules, reference=Decimal(reference)) == ((1.0, None) if reason is None else (None, reason))
+
+
+@pytest.mark.parametrize("quantity", [0.003, 0.0039])
+def test_market_step_three_millis_aligned_or_floored(quantity):
+    rules = SymbolRules(True, 0.0001, None, 0.0001, 0.0001, 0.01,
+                        raw_market_step_size=Decimal("0.003"))
+    assert _normalize_rule_case(rules, quantity=quantity) == (0.003, None)
+
+
+@pytest.mark.parametrize("field", [
+    "raw_min_quantity", "raw_max_quantity", "raw_step_size",
+    "raw_market_min_quantity", "raw_market_max_quantity", "raw_market_step_size",
+    "raw_min_notional", "raw_notional_min", "raw_notional_max",
+])
+@pytest.mark.parametrize("value", [Decimal("-1"), Decimal("NaN"), Decimal("Infinity")], ids=["negative", "malformed", "infinite"])
+def test_invalid_raw_bound_is_not_a_disabled_zero(field, value):
+    rules = SymbolRules(True, 0.001, None, 0.001, 0.001, 0.01)
+    assert _normalize_rule_case(replace(rules, **{field: value})) == (None, "invalid_exchange_rules")
+
+
+@pytest.mark.parametrize("field", ["raw_step_size", "raw_market_step_size"])
+def test_high_precision_step_never_rounds_up_to_next_unit(field):
+    step = Decimal("0.000000010000000000000001")
+    rules = SymbolRules(True, 0.0, None, 0.0, 0.0, 0.01,
+                        raw_min_quantity=Decimal("0"), raw_step_size=Decimal("0"),
+                        raw_min_notional=Decimal("0"))
+    rules = replace(rules, **{field: step})
+    quantity = Decimal("0.000000020000000000000001999999999999999999")
+    assert _normalize_rule_case(rules, quantity=quantity) == (float(step), None)
+
+
+def test_high_precision_notional_comparison_does_not_round_product():
+    boundary = Decimal("0.12345678901234567890123456789")
+    rules = SymbolRules(True, 0.001, None, 0.001, float(boundary), 0.01,
+                        raw_min_notional=boundary)
+    assert _normalize_rule_case(rules, reference=Decimal("0.12345678901234567890123456788")) == (None, "below_min_notional")
+    assert _normalize_rule_case(rules, reference=boundary) == (1.0, None)
+
+
 def test_quote_skew_contract_is_persisted_for_new_execution_context(tmp_path):
     now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     system = PaperTradingSystem(tmp_path / "quote-contract.duckdb", _config())
@@ -2085,7 +2179,7 @@ def test_recovers_terminal_run_missing_post_commit_evidence(tmp_path):
             "SELECT COUNT(*) FROM forward_baselines WHERE run_id=?",
             [result.run_id],
         ).fetchone()[0]
-    assert outcome == "RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE"
+    assert outcome == "CASH_ONLY"
     assert window_run == result.run_id
     assert baseline_count == 0
     recovery_kwargs = {

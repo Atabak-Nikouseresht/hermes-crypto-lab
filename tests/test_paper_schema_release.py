@@ -237,23 +237,169 @@ def test_release_provenance_is_immutable_and_required_after_adoption(tmp_path):
 
 def _schema_structure(connection, table: str) -> tuple[dict, set]:
     return (
-        {row[1]: (row[2].upper(), bool(row[3]), bool(row[5])) for row in connection.execute(f"PRAGMA table_info('{table}')").fetchall()},
+        {
+            row[1]: (row[2].upper(), bool(row[3]), row[4], bool(row[5]))
+            for row in connection.execute(f"PRAGMA table_info('{table}')").fetchall()
+        },
         {(row[0], tuple(row[1])) for row in connection.execute("SELECT constraint_type, constraint_column_names FROM duckdb_constraints() WHERE table_name=? AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')", [table]).fetchall()},
     )
 
 
-def test_fresh_runtime_schema_structurally_matches_checked_in_snapshot(tmp_path):
+@pytest.mark.parametrize("other_default", ["TRUE", None])
+def test_schema_structure_detects_default_drift(other_default):
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE expected (flag BOOLEAN NOT NULL DEFAULT FALSE)")
+        default_clause = "" if other_default is None else f" DEFAULT {other_default}"
+        connection.execute(f"CREATE TABLE changed (flag BOOLEAN NOT NULL{default_clause})")
+        assert _schema_structure(connection, "expected") != _schema_structure(connection, "changed")
+
+
+def _schema_tables(connection) -> set[str]:
+    return {
+        row[0]
+        for row in connection.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+        ).fetchall()
+    }
+
+
+def _seed_v15_database(path: Path) -> None:
+    """Use the committed v15 DDL, never a current store with its version removed."""
+    snapshot = (Path(__file__).parent / "fixtures" / "v15" / "paper_schema.sql").read_text(
+        encoding="utf-8"
+    )
+    with duckdb.connect(str(path)) as connection:
+        for statement in re.findall(r"CREATE TABLE [^;]+", snapshot):
+            connection.execute(statement)
+        versions = _schema_versions_from_snapshot(snapshot)
+        assert set(versions) == set(range(2, 16))
+        connection.executemany(
+            "INSERT INTO paper_schema_versions VALUES (?, ?, ?)",
+            [
+                (version, datetime(2026, 9, 5, tzinfo=timezone.utc), description)
+                for version, description in versions.items()
+            ],
+        )
+        # A retained pre-adoption fill in a real v15 store, including the v7
+        # preservation row. Amounts reconcile: 2,000 - 100 notional - 1 fee.
+        connection.execute(
+            """
+            INSERT INTO paper_accounts VALUES
+                ('locked_strategy', 2000, 1899, 'ACTIVE', '2024-01-01T00:00:00Z', '2024-01-08T00:00:00Z');
+            INSERT INTO paper_runs VALUES
+                ('legacy-paper', '2024-01-08T00:05:00Z', '2024-01-08T00:10:00Z',
+                 'EXECUTED', 'PAPER', TRUE, '2024-01-08T00:05Z', NULL,
+                 '2024-01-07T00:00:00Z', '2024-01-08T00:00:00Z', 'preserved v15 trade', '{"valid":true}');
+            INSERT INTO paper_orders VALUES
+                ('legacy-order', 'legacy-idempotency', 'legacy-paper', 'locked_strategy',
+                 '2024-01-07T00:00:00Z', 'BTC/USDT', 'BUY', 0.01, 0.05, 'FILLED',
+                 '2024-01-08T00:10:00Z', NULL, NULL);
+            INSERT INTO paper_fills VALUES
+                ('legacy-fill', 'legacy-order', 'legacy-paper', 'BTC/USDT', 'BUY',
+                 0.01, 10000, 10000, 0, 0, 1, '2024-01-08T00:10:00Z', NULL);
+            INSERT INTO paper_legacy_order_semantics VALUES
+                ('legacy-order', '2026-09-05T00:00:00Z', NULL);
+            INSERT INTO cash_ledger VALUES
+                ('initial:locked_strategy', NULL, 'locked_strategy', 'INITIAL_CAPITAL',
+                 2000, 2000, '2024-01-01T00:00:00Z'),
+                ('legacy-cash', 'legacy-paper', 'locked_strategy', 'BUY',
+                 -101, 1899, '2024-01-08T00:10:00Z');
+            INSERT INTO paper_positions VALUES
+                ('locked_strategy', 'BTC/USDT', 0.01, 10100, '2024-01-08T00:10:00Z');
+            INSERT INTO position_ledger VALUES
+                ('legacy-position', 'legacy-paper', 'locked_strategy', 'BTC/USDT',
+                 0.01, 0.01, '2024-01-08T00:10:00Z');
+            INSERT INTO equity_snapshots VALUES
+                ('legacy-equity', 'legacy-paper', 'locked_strategy', 1899, 100, 1999,
+                 '2024-01-08T00:10:00Z');
+            """
+        )
+
+
+def test_real_v15_migration_preserves_history_and_is_idempotent(tmp_path):
+    path = tmp_path / "historical-v15.duckdb"
+    _seed_v15_database(path)
+    with duckdb.connect(str(path), read_only=True) as connection:
+        tables = _schema_tables(connection)
+        assert "paper_market_rule_evidence" not in tables
+        run_columns = _schema_structure(connection, "paper_runs")[0]
+        assert "market_rule_evidence_required" not in run_columns
+        assert run_columns["official_scheduled"] == ("BOOLEAN", True, "CAST('f' AS BOOLEAN)", False)
+        assert connection.execute(
+            "SELECT version FROM paper_schema_versions ORDER BY version"
+        ).fetchall() == [(version,) for version in range(2, 16)]
+        columns = {
+            table: [row[1] for row in connection.execute(f"PRAGMA table_info('{table}')").fetchall()]
+            for table in tables
+        }
+        historical = {
+            table: connection.execute(f'SELECT * FROM "{table}" ORDER BY ALL').fetchall()
+            for table in tables
+        }
+        assert historical["paper_orders"] and historical["paper_fills"]
+        assert historical["cash_ledger"] and historical["position_ledger"]
+
+    first_structure = first_rows = None
+    for initialization in range(3):
+        store = _store(path)
+        assert store.account() == {"initial_cash": 2000.0, "cash": 1899.0, "status": "ACTIVE"}
+        assert store.positions() == {"BTC/USDT": {"quantity": 0.01, "average_cost": 10100.0}}
+        assert store.reconcile().valid
+        with store.connect() as connection:
+            for table in tables:
+                selected = ", ".join(f'"{column}"' for column in columns[table])
+                where = " WHERE version < 16" if table == "paper_schema_versions" else ""
+                assert connection.execute(
+                    f'SELECT {selected} FROM "{table}"{where} ORDER BY ALL'
+                ).fetchall() == historical[table], (initialization, table)
+            assert connection.execute("SELECT * FROM paper_market_rule_evidence").fetchall() == []
+            assert connection.execute(
+                "SELECT run_id, official_scheduled, market_rule_evidence_required FROM paper_runs"
+            ).fetchall() == [("legacy-paper", True, False)]
+            assert connection.execute(
+                "SELECT version, description FROM paper_schema_versions WHERE version >= 16"
+            ).fetchall() == [(16, V16_MARKET_RULES)]
+            current_tables = _schema_tables(connection)
+            assert current_tables == tables | {"paper_market_rule_evidence"}
+            structure = {table: _schema_structure(connection, table) for table in current_tables}
+            rows = {
+                table: connection.execute(f'SELECT * FROM "{table}" ORDER BY ALL').fetchall()
+                for table in current_tables
+            }
+            if initialization == 0:
+                first_structure, first_rows = structure, rows
+            else:
+                assert structure == first_structure
+                assert rows == first_rows  # Includes the original v16 adoption timestamp.
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                connection.execute(
+                    "INSERT INTO paper_runs (run_id, started_at_utc, status, mode) "
+                    "VALUES ('default-probe', '2024-01-01T00:00:00Z', 'RUNNING', 'PAPER')"
+                )
+                assert connection.execute(
+                    "SELECT market_rule_evidence_required FROM paper_runs WHERE run_id='default-probe'"
+                ).fetchone() == (False,)
+            finally:
+                connection.execute("ROLLBACK")
+
+
+@pytest.mark.parametrize("schema_origin", ["fresh", "v15"])
+def test_fresh_runtime_schema_structurally_matches_checked_in_snapshot(tmp_path, schema_origin):
     snapshot = (Path(__file__).resolve().parents[1] / "forward_experiment" / "paper_schema.sql").read_text(encoding="utf-8")
     canonical = duckdb.connect(str(tmp_path / "canonical.duckdb"))
     try:
         for statement in re.findall(r"CREATE TABLE [^;]+", snapshot):
             canonical.execute(statement)
-        runtime_store = _store(tmp_path / "runtime.duckdb")
+        runtime_path = tmp_path / "runtime.duckdb"
+        if schema_origin == "v15":
+            _seed_v15_database(runtime_path)
+        runtime_store = _store(runtime_path)
         with runtime_store.connect(read_only=True) as runtime:
-            tables = {row[0] for row in canonical.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()}
-            assert tables == {row[0] for row in runtime.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()}
+            tables = _schema_tables(canonical)
+            assert tables == _schema_tables(runtime)
             for table in tables:
-                assert _schema_structure(runtime, table) == _schema_structure(canonical, table)
+                assert _schema_structure(runtime, table) == _schema_structure(canonical, table), table
             runtime_versions = dict(runtime.execute("SELECT version, description FROM paper_schema_versions").fetchall())
             assert set(runtime_versions) == set(range(2, 17))
             assert runtime_versions[15] == V15_OFFICIAL_SCHEDULE

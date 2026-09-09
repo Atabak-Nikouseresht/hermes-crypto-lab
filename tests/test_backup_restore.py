@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
@@ -8,8 +9,8 @@ import pandas as pd
 import pytest
 
 from src.backup_restore import create_verified_backup, verify_backup, verify_restore_to_temporary
-from src.paper_broker import MarketSnapshot, PaperConfig, PaperTradingSystem, Quote
-from src.paper_store import ReconciliationResult
+from src.paper_broker import MarketSnapshot, PaperConfig, PaperTradingSystem, Quote, RuleReferencePrice, SymbolRules
+from src.paper_store import PaperStore, ReconciliationResult
 from src.release_provenance import ReleaseProvenance
 
 
@@ -60,13 +61,13 @@ def test_corrupted_backup_is_detected(tmp_path):
         verify_backup(backup)
 
 
-def _verified_execution_system(tmp_path) -> tuple[PaperTradingSystem, Path]:
+def _verified_execution_system(tmp_path, *, v16=False, rejected=False) -> tuple[PaperTradingSystem, Path]:
     project = tmp_path / "project"
     (project / "database").mkdir(parents=True)
     (project / "forward_experiment").mkdir()
     (project / "forward_experiment" / "governance.json").write_text("{}", encoding="utf-8")
     database = project / "database" / "paper_trading.duckdb"
-    config = PaperConfig(assets=("BTC/USDT",), initial_cash=100.0)
+    config = PaperConfig(assets=("BTC/USDT",), initial_cash=100.0, require_exchange_rules=v16)
     system = PaperTradingSystem(database, config)
     now = datetime.now(timezone.utc)
     with system.store.connect() as connection:
@@ -100,6 +101,18 @@ def _verified_execution_system(tmp_path) -> tuple[PaperTradingSystem, Path]:
         quotes={"BTC/USDT": Quote(100.0, 100.0, 100.0, timestamp)},
         fetched_at=timestamp,
     )
+    if v16:
+        snapshot = MarketSnapshot(
+            closes=snapshot.closes, quotes=snapshot.quotes, fetched_at=timestamp,
+            symbol_rules={"BTC/USDT": SymbolRules(
+                active=True, min_quantity=0.1, max_quantity=None, step_size=0.1, price_tick=0.01,
+                min_notional=60.0 if rejected else 1.0,
+                raw_min_quantity=Decimal("0.1"), raw_step_size=Decimal("0.1"),
+                raw_min_notional=Decimal("60" if rejected else "1"),
+                min_notional_applies_to_market=True,
+            )},
+            rule_reference_prices={"BTC/USDT": RuleReferencePrice(Decimal("100"), "REFERENCE_PRICE", timestamp)},
+        )
     system._execute(
         run_id="backup-run",
         signal_timestamp=pd.Timestamp("2024-08-04T00:00:00Z"),
@@ -223,3 +236,56 @@ def test_backup_rejects_coordinated_execution_evidence_stripping(tmp_path):
     _refresh_backup_database_checksum(backup)
     with pytest.raises(ValueError, match="runtime reconciliation"):
         verify_backup(backup)
+
+
+@pytest.mark.parametrize(
+    ("statement", "rejected"),
+    [
+        ("UPDATE paper_market_rule_evidence SET min_notional='60'", False),
+        ("DELETE FROM paper_market_rule_evidence", False),
+        ("UPDATE paper_market_rule_evidence SET reference_price_source='UNVERIFIABLE_AVERAGE'", False),
+        ("UPDATE paper_order_rejections SET requested_quantity=1.0, notional=100.0", True),
+    ],
+    ids=["BACKUP-1-notional", "BACKUP-2-deletion", "BACKUP-3-reference", "BACKUP-4-rejection"],
+)
+def test_v16_backup_uses_runtime_semantics_and_is_read_only(tmp_path, statement, rejected):
+    import duckdb
+
+    system, project = _verified_execution_system(tmp_path, v16=True, rejected=rejected)
+    with system.store.connect(read_only=True) as connection:
+        assert connection.execute("SELECT market_rule_evidence_required FROM paper_runs").fetchone() == (True,)
+        assert connection.execute("SELECT COUNT(*) FROM paper_market_rule_evidence").fetchone() == (1,)
+        if rejected:
+            assert connection.execute("SELECT reason FROM paper_order_rejections").fetchone() == ("below_min_notional",)
+    backup = create_verified_backup(
+        project_root=project, database_path=system.store.path,
+        output_root=tmp_path / "backups", lock_path=project / "runtime" / "forward_writer.lock",
+        timestamp="v16", commit_hash="a" * 40,
+        reconciliation_settings={
+            "account_id": system.config.account_id,
+            "quantity_tolerance": system.config.quantity_tolerance,
+            "fee_rate": system.config.fee_rate,
+            "minimum_spread_rate": system.config.minimum_spread_rate,
+            "slippage_rate": system.config.slippage_rate,
+            "max_quote_timestamp_skew_seconds": system.config.max_quote_timestamp_skew_seconds,
+        },
+    )
+    database = backup / "paper_trading.duckdb"
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    assert verify_backup(backup)["valid"]
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("SET TimeZone='UTC'")
+        connection.execute(statement)
+        # Defeat the row digest deliberately: this regression must exercise
+        # decision reconstruction, not just the independent integrity seal.
+        if "UPDATE paper_market_rule_evidence" in statement:
+            rows = connection.execute("SELECT * FROM paper_market_rule_evidence ORDER BY symbol").fetchall()
+            diagnostics = json.loads(connection.execute("SELECT diagnostics FROM paper_forward_execution_evidence WHERE run_id='backup-run'").fetchone()[0])
+            diagnostics["market_rule_evidence_sha256"] = PaperStore.market_rule_evidence_digest(rows)
+            connection.execute("UPDATE paper_forward_execution_evidence SET diagnostics=? WHERE run_id='backup-run'", [json.dumps(diagnostics)])
+    _refresh_backup_database_checksum(backup)
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="runtime reconciliation"):
+        verify_backup(backup)
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before

@@ -56,6 +56,21 @@ def _validate_schema_v2(manifest: dict[str, Any], processed_dir: Path) -> None:
     datasets = manifest.get("datasets")
     if not isinstance(datasets, dict) or not datasets:
         raise ValueError("Canonical schema-v2 manifest has invalid datasets")
+    common_start_value = manifest.get("canonical_common_start_utc")
+    common_end_value = manifest.get("canonical_common_end_utc")
+    if (common_start_value is None) != (common_end_value is None):
+        raise ValueError("Canonical schema-v2 manifest has incomplete common calendar")
+    common_start = common_end = None
+    if common_start_value is not None:
+        if not isinstance(common_start_value, str) or not isinstance(common_end_value, str):
+            raise ValueError("Canonical schema-v2 manifest has invalid common calendar")
+        try:
+            common_start = pd.Timestamp(common_start_value)
+            common_end = pd.Timestamp(common_end_value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Canonical schema-v2 manifest has invalid common calendar") from error
+        if common_start.tzinfo is None or common_end.tzinfo is None or common_start > common_end:
+            raise ValueError("Canonical schema-v2 manifest has invalid common calendar")
     data_root = processed_dir.parent.resolve()
     for asset, entry in datasets.items():
         if not isinstance(asset, str) or not isinstance(entry, dict):
@@ -80,6 +95,8 @@ def _validate_schema_v2(manifest: dict[str, Any], processed_dir: Path) -> None:
             raise ValueError(f"Canonical schema-v2 manifest has invalid UTC bounds for {asset}") from error
         if start.tzinfo is None or end.tzinfo is None or start > end:
             raise ValueError(f"Canonical schema-v2 manifest has invalid UTC bounds for {asset}")
+        if common_start is not None and (start != common_start or end != common_end):
+            raise ValueError(f"Canonical schema-v2 manifest common-calendar mismatch for {asset}")
         for root, relative, label in (
             (processed_dir.resolve(), entry["path"], "dataset"),
             (data_root, entry["raw_path"], "raw evidence"),
@@ -204,6 +221,41 @@ def _paths_and_manifest(
             paths[asset] = candidate
         return paths, manifest, manifest_path
     raise ValueError("canonical dataset manifest is required")
+
+
+def resolve_canonical_dataset(
+    processed_dir: Path, timeframe: str = "1d"
+) -> tuple[dict[str, Path], dict[str, Any]]:
+    """Resolve the active immutable canonical publication once for all consumers."""
+    if timeframe != "1d":
+        raise ValueError("Canonical research requires the 1d timeframe")
+    pointer = processed_dir / "dataset_manifest.json"
+    try:
+        pointer_payload = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("canonical dataset manifest is required") from error
+    datasets = pointer_payload.get("datasets") if isinstance(pointer_payload, dict) else None
+    if not isinstance(datasets, dict) or not datasets:
+        raise ValueError("Canonical dataset manifest is invalid")
+    assets = sorted(datasets)
+    if not all(isinstance(asset, str) and asset for asset in assets):
+        raise ValueError("Canonical dataset manifest has invalid dataset symbol")
+    paths, manifest, immutable_path = _paths_and_manifest(processed_dir, assets, timeframe)
+    if immutable_path is None:
+        raise ValueError("canonical dataset pointer requires an immutable version manifest")
+    return paths, {
+        "run_id": manifest.get("run_id", "unknown"),
+        "timeframe": timeframe,
+        "immutable_manifest_path": immutable_path.relative_to(processed_dir).as_posix(),
+        "immutable_manifest_sha256": _sha256(immutable_path),
+        "datasets": {
+            asset: {
+                "path": paths[asset].relative_to(processed_dir).as_posix(),
+                "sha256": _sha256(paths[asset]),
+            }
+            for asset in assets
+        },
+    }
 
 
 def load_canonical_close_prices(

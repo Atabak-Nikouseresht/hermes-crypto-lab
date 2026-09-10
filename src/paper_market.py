@@ -20,6 +20,7 @@ from src.paper_broker import (
     Quote,
     RuleReferencePrice,
     SymbolRules,
+    validate_reference_price_evidence,
 )
 from src.validate_data import rows_to_frame
 
@@ -96,17 +97,6 @@ def create_public_market_client(exchange_id: str, timeout_ms: int) -> PublicMark
     return PublicMarketClient(create_exchange(exchange_id, timeout_ms))
 
 
-def _filter_decimal(filter_data: dict[str, Any], field: str) -> float | None:
-    value = filter_data.get(field)
-    if value is None:
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) and parsed > 0 else None
-
-
 def _raw_decimal(filter_data: dict[str, Any], field: str) -> Decimal | None:
     """Parse Binance's string representation without a float round trip."""
     if field not in filter_data:
@@ -124,8 +114,21 @@ def _raw_decimal(filter_data: dict[str, Any], field: str) -> Decimal | None:
 
 
 def _filter_int(filter_data: dict[str, Any], field: str) -> int | None:
-    value = filter_data.get(field)
-    return value if type(value) is int and value >= 0 else None
+    if field not in filter_data:
+        return None
+    value = filter_data[field]
+    if type(value) is not int or value < 0:
+        raise ValueError(f"Invalid Binance rule integer {field}: expected nonnegative integer")
+    return value
+
+
+def _filter_bool(filter_data: dict[str, Any], field: str) -> bool | None:
+    if field not in filter_data:
+        return None
+    value = filter_data[field]
+    if type(value) is not bool:
+        raise ValueError(f"Invalid Binance rule boolean {field}: expected boolean")
+    return value
 
 
 def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
@@ -138,14 +141,19 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
     info = market_info.get("info")
     if not isinstance(info, dict):
         info = {}
-    raw_filters = info.get("filters")
+    raw_filters = info.get("filters", [])
     if not isinstance(raw_filters, list):
-        raw_filters = []
-    filters = {
-        item.get("filterType"): item
-        for item in raw_filters
-        if isinstance(item, dict)
-    }
+        raise ValueError("Invalid Binance rule filters: expected list")
+    filters: dict[str, dict[str, Any]] = {}
+    for item in raw_filters:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid Binance rule filter entry")
+        filter_type = item.get("filterType")
+        if not isinstance(filter_type, str):
+            raise ValueError("Invalid Binance rule filter type")
+        if filter_type in filters:
+            raise ValueError(f"Duplicate Binance rule filter {filter_type}")
+        filters[filter_type] = item
     lot = filters.get("LOT_SIZE", {})
     market_lot = filters.get("MARKET_LOT_SIZE", {})
     min_notional = filters.get("MIN_NOTIONAL", {})
@@ -195,6 +203,9 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
     # Retain an explicit Binance zero.  A zero filter value disables that
     # bound; it must not be mistaken for a missing field and replaced by a
     # CCXT convenience limit.
+    _raw_decimal(price_filter, "minPrice")
+    _raw_decimal(price_filter, "maxPrice")
+    price_tick_raw = _raw_decimal(price_filter, "tickSize")
     lot_min_raw = _raw_decimal(lot, "minQty")
     lot_max_raw = _raw_decimal(lot, "maxQty")
     lot_step_raw = _raw_decimal(lot, "stepSize")
@@ -212,17 +223,17 @@ def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
         else (float(amount_limits["max"]) if amount_limits.get("max") is not None else None),
         step_size=float(lot_step_raw) if lot_step_raw is not None else 0.0,
         min_notional=(float(min_notional_raw) if min_notional_raw is not None else float(cost_limits.get("min") or 0.0)),
-        price_tick=_filter_decimal(price_filter, "tickSize") or 0.0,
+        price_tick=float(price_tick_raw) if price_tick_raw is not None else 0.0,
         market_order_allowed=market_order_allowed,
         market_min_quantity=float(market_min_raw) if market_min_raw is not None else None,
         market_max_quantity=float(market_max_raw) if market_max_raw is not None else None,
         market_step_size=float(market_step_raw) if market_step_raw is not None else None,
-        min_notional_applies_to_market=min_notional.get("applyToMarket") is True,
+        min_notional_applies_to_market=_filter_bool(min_notional, "applyToMarket") is True,
         min_notional_avg_price_mins=_filter_int(min_notional, "avgPriceMins") or 0,
         notional_min=float(notional_min_raw) if notional_min_raw is not None else None,
         notional_max=float(notional_max_raw) if notional_max_raw is not None else None,
-        notional_min_applies_to_market=notional.get("applyMinToMarket") is True,
-        notional_max_applies_to_market=notional.get("applyMaxToMarket") is True,
+        notional_min_applies_to_market=_filter_bool(notional, "applyMinToMarket") is True,
+        notional_max_applies_to_market=_filter_bool(notional, "applyMaxToMarket") is True,
         notional_avg_price_mins=_filter_int(notional, "avgPriceMins") or 0,
         raw_min_quantity=lot_min_raw,
         raw_max_quantity=lot_max_raw,
@@ -336,11 +347,23 @@ def fetch_public_market_snapshot(
                     raw_timestamp = reference_payload.get("timestamp")
                     if type(raw_timestamp) is not int or raw_timestamp < 0:
                         raise ValueError(f"Malformed Binance reference price timestamp for {symbol}")
-                    rule_reference_prices[symbol] = RuleReferencePrice(
+                    reference_timestamp = pd.to_datetime(raw_timestamp, unit="ms", utc=True)
+                    evidence = RuleReferencePrice(
                         reference,
                         "REFERENCE_PRICE",
-                        pd.to_datetime(raw_timestamp, unit="ms", utc=True),
+                        reference_timestamp,
                     )
+                    # Binance documents referencePrice as continually changing,
+                    # but publishes no fixed REST update interval.  The governed
+                    # future-only evidence contract reuses quote freshness.
+                    evidence_error = validate_reference_price_evidence(
+                        evidence,
+                        now=current,
+                        max_age_minutes=config.max_quote_staleness_minutes,
+                    )
+                    if evidence_error is not None:
+                        raise ValueError(f"{evidence_error} for {symbol}")
+                    rule_reference_prices[symbol] = evidence
                 else:
                     raise ValueError(f"Malformed Binance reference price for {symbol}")
             else:

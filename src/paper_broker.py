@@ -52,6 +52,27 @@ class RuleReferencePrice:
     source: str
     timestamp: pd.Timestamp | None = None
 
+
+def validate_reference_price_evidence(
+    reference: RuleReferencePrice, *, now: pd.Timestamp, max_age_minutes: int
+) -> str | None:
+    """Validate one public Binance referencePrice under the future-only contract."""
+    if reference.source != "REFERENCE_PRICE":
+        return None
+    if reference.price is None or not reference.price.is_finite() or reference.price <= 0:
+        return "Invalid data: reference price"
+    if reference.timestamp is None:
+        return "Invalid data: reference price timestamp missing"
+    timestamp = pd.Timestamp(reference.timestamp)
+    if timestamp.tzinfo is None:
+        return "Invalid data: reference price timestamp"
+    timestamp = timestamp.tz_convert("UTC")
+    if timestamp > now:
+        return "Invalid data: future reference price timestamp"
+    if now - timestamp > pd.Timedelta(minutes=max_age_minutes):
+        return "Stale data: reference price timestamp"
+    return None
+
 @dataclass(frozen=True)
 class SymbolRules:
     active: bool
@@ -342,6 +363,13 @@ class PaperTradingSystem:
                 minutes=self.config.max_quote_staleness_minutes
             ):
                 return f"Stale data: quote for {asset}"
+            reference = snapshot.rule_reference_prices.get(asset)
+            if reference is not None:
+                reference_error = validate_reference_price_evidence(
+                    reference, now=now, max_age_minutes=self.config.max_quote_staleness_minutes
+                )
+                if reference_error is not None:
+                    return f"{reference_error} for {asset}"
         quote_times = [self._utc(snapshot.quotes[asset].timestamp) for asset in self.config.assets]
         if max(quote_times) - min(quote_times) > pd.Timedelta(
             seconds=self.config.max_quote_timestamp_skew_seconds

@@ -52,6 +52,49 @@ def test_binance_market_rules_preserve_market_specific_filter_semantics():
     assert rules.notional_min_applies_to_market and rules.notional_max_applies_to_market
 
 
+@pytest.mark.parametrize(
+    ("filter_type", "field", "value"),
+    [
+        ("MIN_NOTIONAL", "avgPriceMins", -1),
+        ("MIN_NOTIONAL", "avgPriceMins", True),
+        ("MIN_NOTIONAL", "avgPriceMins", "5"),
+        ("MIN_NOTIONAL", "avgPriceMins", 5.0),
+        ("MIN_NOTIONAL", "avgPriceMins", None),
+        ("MIN_NOTIONAL", "applyToMarket", "true"),
+        ("MIN_NOTIONAL", "applyToMarket", 1),
+        ("NOTIONAL", "applyMinToMarket", "true"),
+        ("NOTIONAL", "applyMaxToMarket", 0),
+    ],
+)
+def test_recognized_binance_rule_metadata_rejects_present_malformed_values(
+    filter_type, field, value
+):
+    with pytest.raises(ValueError, match="Invalid Binance rule"):
+        parse_binance_spot_symbol_rules(
+            _binance_market_info(filters=[{"filterType": filter_type, field: value}])
+        )
+
+
+@pytest.mark.parametrize(
+    ("filter_type", "field", "value", "attribute"),
+    [
+        ("MIN_NOTIONAL", "avgPriceMins", 0, "min_notional_avg_price_mins"),
+        ("MIN_NOTIONAL", "avgPriceMins", 5, "min_notional_avg_price_mins"),
+        ("MIN_NOTIONAL", "applyToMarket", True, "min_notional_applies_to_market"),
+        ("MIN_NOTIONAL", "applyToMarket", False, "min_notional_applies_to_market"),
+        ("NOTIONAL", "applyMinToMarket", True, "notional_min_applies_to_market"),
+        ("NOTIONAL", "applyMaxToMarket", False, "notional_max_applies_to_market"),
+    ],
+)
+def test_recognized_binance_rule_metadata_accepts_exact_documented_types(
+    filter_type, field, value, attribute
+):
+    rules = parse_binance_spot_symbol_rules(
+        _binance_market_info(filters=[{"filterType": filter_type, field: value}])
+    )
+    assert getattr(rules, attribute) == value
+
+
 RULE_DECIMAL_FIELDS = [
     ("LOT_SIZE", "minQty", "raw_min_quantity"),
     ("LOT_SIZE", "maxQty", "raw_max_quantity"),
@@ -349,6 +392,68 @@ def test_public_snapshot_fails_closed_for_wrong_or_malformed_reference_symbol(pa
             now=now,
             lookback_days=200,
             max_retries=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("timestamp_offset_ms", "expect_error"),
+    [(0, False), (1, True), (-5 * 60 * 1000 - 1, True)],
+    ids=["current", "future", "stale"],
+)
+def test_public_snapshot_enforces_reference_price_timestamp_freshness(
+    timestamp_offset_ms, expect_error
+):
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    now_ms = int(pd.Timestamp(now).timestamp() * 1000)
+    dates = pd.date_range(end="2024-08-04", periods=160, freq="D", tz="UTC")
+    rows = [[int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0] for timestamp in dates]
+
+    class TimestampedReferenceExchange(FakePublicExchange):
+        def fetch_reference_price(self, symbol):
+            return {
+                "symbol": symbol.replace("/", ""),
+                "referencePrice": "100",
+                "timestamp": now_ms + timestamp_offset_ms,
+            }
+
+    def fetch():
+        return fetch_public_market_snapshot(
+            PaperConfig(assets=("BTC/USDT",)),
+            exchange=TimestampedReferenceExchange(rows, now_ms), now=now,
+            lookback_days=200, max_retries=0,
+        )
+
+    if expect_error:
+        with pytest.raises(ValueError, match="reference price timestamp"):
+            fetch()
+    else:
+        assert fetch().rule_reference_prices["BTC/USDT"].timestamp == pd.Timestamp(now)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"symbol": "BTCUSDT", "referencePrice": "0", "timestamp": 1722816600000},
+        {"symbol": "BTCUSDT", "referencePrice": "NaN", "timestamp": 1722816600000},
+        {"symbol": "BTCUSDT", "referencePrice": "Infinity", "timestamp": 1722816600000},
+        {"symbol": "BTCUSDT", "referencePrice": "100"},
+    ],
+    ids=["non-positive", "nan", "infinity", "missing-timestamp"],
+)
+def test_public_snapshot_rejects_invalid_reference_price_evidence(payload):
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    dates = pd.date_range(end="2024-08-04", periods=160, freq="D", tz="UTC")
+    rows = [[int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0] for timestamp in dates]
+
+    class InvalidReferenceExchange(FakePublicExchange):
+        def fetch_reference_price(self, _symbol):
+            return payload
+
+    with pytest.raises(ValueError, match="reference price"):
+        fetch_public_market_snapshot(
+            PaperConfig(assets=("BTC/USDT",)),
+            exchange=InvalidReferenceExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
+            now=now, lookback_days=200, max_retries=0,
         )
 
 

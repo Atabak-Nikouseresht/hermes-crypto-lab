@@ -1,0 +1,15 @@
+{
+  "created_at_utc": "2026-09-09T09:00:00Z",
+  "economic_spec_changed": false,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "historical_governance_records_rewritten": false,
+  "historical_protocol_records_rewritten": false,
+  "parameter_retuning": false,
+  "prior_transient_failure_governance_amendment_sha256": "56e114adbd812cc07301d0122e7b1363a7605601d0f93f486d64ebd25f62e038",
+  "purpose": "Future-only fail-closed validation of public Binance GET /api/v3/referencePrice evidence. Binance documents referencePrice as continually changing but provides no fixed REST freshness interval; a nonnull reference price must carry a UTC timestamp no later than acquisition/execution and no older than the existing governed five-minute public quote-evidence freshness interval. This changes only prospective admission of incomplete market evidence, not price formation, fees, spread, slippage, strategy, candidate selection, schedule, or sealed history.",
+  "reference_price_evidence_contract_sha256": "9513187c4508676fb7fc86fcbc91e897fbe2a14c428e8176441e6be4638c94ec",
+  "research_results_changed": false,
+  "status": "active additive future-only operational amendment; all earlier sealed governance remains unchanged",
+  "strategy_reselection": false,
+  "version": "forward-governance-reference-price-evidence-amendment-v6"
+}

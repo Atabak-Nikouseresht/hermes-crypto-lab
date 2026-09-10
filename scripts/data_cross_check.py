@@ -12,8 +12,10 @@ import zipfile
 
 import pandas as pd
 
+from src.research_data import resolve_canonical_dataset
+
 SAMPLES = ("2019-04-07", "2023-04-09", "2025-11-02")
-SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "TRXUSDT")
+
 
 
 def _get(url: str) -> bytes:
@@ -35,11 +37,13 @@ def _vision_close(symbol: str, day: str) -> float:
 
 
 def run(project_root: Path, output_path: Path) -> dict:
+    canonical_paths, canonical_provenance = resolve_canonical_dataset(
+        project_root / "data" / "processed"
+    )
     archive_checks = []
-    for symbol in SYMBOLS:
-        frame = pd.read_parquet(
-            project_root / "data" / "processed" / f"{symbol[:-4]}_USDT_1d.parquet"
-        )
+    for asset, path in canonical_paths.items():
+        symbol = asset.replace("/", "")
+        frame = pd.read_parquet(path)
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         indexed = frame.set_index("timestamp")
         for day in SAMPLES:
@@ -59,6 +63,8 @@ def run(project_root: Path, output_path: Path) -> dict:
 
     independent = []
     for coin, symbol in (("bitcoin", "BTCUSDT"), ("ethereum", "ETHUSDT")):
+        if f"{symbol[:-4]}/USDT" not in canonical_paths:
+            continue
         payload = json.loads(
             _get(
                 "https://api.coingecko.com/api/v3/coins/"
@@ -98,6 +104,7 @@ def run(project_root: Path, output_path: Path) -> dict:
             else "FAIL_CLOSED"
         ),
         "replacement_performed": False,
+        "canonical_provenance": canonical_provenance,
         "archive_checks": archive_checks,
         "independent_checks": independent,
     }

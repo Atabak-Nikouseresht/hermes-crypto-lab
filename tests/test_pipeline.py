@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import replace
 
 import duckdb
+import pandas as pd
 import pytest
 
 import run_data_pipeline
@@ -13,6 +14,7 @@ from run_data_pipeline import run_pipeline as _run_pipeline
 from src.config import Settings, load_settings
 from src.database import start_run
 from src.forward_operations import AlreadyRunningError, InterProcessLock
+from src.research_data import load_canonical_close_prices
 
 
 @pytest.fixture(autouse=True)
@@ -91,6 +93,80 @@ def test_pipeline_creates_raw_parquet_metadata_and_report(tmp_path):
     with duckdb.connect(str(settings.database_path), read_only=True) as connection:
         assert connection.execute("SELECT status FROM ingestion_runs").fetchone()[0] == "completed"
         assert connection.execute("SELECT COUNT(*) FROM dataset_metadata").fetchone()[0] == 1
+
+
+def test_canonical_publication_trims_to_validated_common_calendar(tmp_path):
+    assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+    (tmp_path / "config" / "assets.yaml").write_text(
+        "assets: [BTC/USDT, ETH/USDT, XRP/USDT]\n", encoding="utf-8"
+    )
+    settings = _pipeline_settings(tmp_path)
+
+    def rows(first_day: int, last_day: int = 10):
+        return [
+            [
+                int(pd.Timestamp(f"2024-01-{day:02d}T00:00:00Z").timestamp() * 1000),
+                float(100 + day), float(101 + day), float(99 + day), float(100 + day), 100.0,
+            ]
+            for day in range(first_day, last_day + 1)
+        ]
+
+    source_rows = {
+        "BTC/USDT": rows(1),
+        "ETH/USDT": rows(3),
+        "XRP/USDT": rows(5),
+    }
+    result = run_pipeline(
+        settings=settings,
+        assets=assets,
+        downloader=lambda _market, symbol, **_kwargs: source_rows[symbol],
+        exchange=object(),
+        run_id="different-starts",
+        now_utc=datetime(2024, 1, 11, tzinfo=timezone.utc),
+    )
+
+    expected = pd.date_range("2024-01-05", "2024-01-10", freq="D", tz="UTC")
+    loaded = load_canonical_close_prices(settings.processed_dir, assets, "1d")
+    assert loaded.index.equals(expected)
+    assert list(loaded.columns) == assets
+    manifest = json.loads(Path(result["dataset_manifest"]).read_text(encoding="utf-8"))
+    assert manifest["canonical_common_start_utc"] == expected[0].isoformat()
+    assert manifest["canonical_common_end_utc"] == expected[-1].isoformat()
+    for symbol, raw_rows in source_rows.items():
+        entry = manifest["datasets"][symbol]
+        processed = pd.read_parquet(settings.processed_dir / entry["path"])
+        assert pd.DatetimeIndex(pd.to_datetime(processed["timestamp"], utc=True)).equals(expected)
+        assert entry["rows"] == len(expected)
+        assert entry["start_utc"] == expected[0].isoformat()
+        assert entry["end_utc"] == expected[-1].isoformat()
+        assert json.loads((tmp_path / "data" / entry["raw_path"]).read_text(encoding="utf-8")) == raw_rows
+
+
+def test_canonical_publication_rejects_internal_gap_after_common_start(tmp_path):
+    assets = ["BTC/USDT", "ETH/USDT"]
+    (tmp_path / "config" / "assets.yaml").write_text(
+        "assets: [BTC/USDT, ETH/USDT]\n", encoding="utf-8"
+    )
+    settings = _pipeline_settings(tmp_path)
+
+    def row(day):
+        timestamp = int(pd.Timestamp(f"2024-01-{day:02d}T00:00:00Z").timestamp() * 1000)
+        return [timestamp, 100.0, 101.0, 99.0, 100.0, 100.0]
+
+    source_rows = {
+        "BTC/USDT": [row(day) for day in range(1, 11)],
+        "ETH/USDT": [row(day) for day in (5, 6, 8, 9, 10)],
+    }
+    with pytest.raises(ValueError, match="quality validation failed"):
+        run_pipeline(
+            settings=settings, assets=assets,
+            downloader=lambda _market, symbol, **_kwargs: source_rows[symbol],
+            exchange=object(), run_id="internal-gap",
+            now_utc=datetime(2024, 1, 11, tzinfo=timezone.utc),
+        )
+    # Source rows are immutable raw evidence even though no canonical pointer was published.
+    assert (settings.raw_dir / "internal-gap" / "ETH_USDT_1d.json").is_file()
+    assert not (settings.processed_dir / "dataset_manifest.json").exists()
 
 
 def test_git_provenance_supports_clean_dirty_and_unavailable(monkeypatch, tmp_path):

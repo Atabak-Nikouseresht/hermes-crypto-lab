@@ -82,6 +82,27 @@ def test_quote_timestamp_skew_fails_closed(tmp_path):
     assert "timestamp skew" in system._validate_snapshot(snapshot, now).lower()
 
 
+@pytest.mark.parametrize(
+    ("reference_timestamp", "reason"),
+    [
+        (pd.Timestamp("2024-08-05T09:10:01Z"), "future reference price timestamp"),
+        (pd.Timestamp("2024-08-05T09:04:59Z"), "reference price timestamp"),
+        (None, "reference price timestamp missing"),
+    ],
+)
+def test_snapshot_validation_fails_closed_on_invalid_reference_price_freshness(
+    tmp_path, reference_timestamp, reason
+):
+    now = pd.Timestamp("2024-08-05T09:10:00Z")
+    system = PaperTradingSystem(tmp_path / "reference-freshness.duckdb", _config())
+    snapshot = _snapshot(now.to_pydatetime())
+    snapshot.rule_reference_prices["BTC/USDT"] = RuleReferencePrice(
+        Decimal("100"), "REFERENCE_PRICE", reference_timestamp
+    )
+
+    assert reason in system._validate_snapshot(snapshot, now).lower()
+
+
 def test_market_notional_uses_dedicated_reference_price_not_ticker_last(tmp_path):
     system = PaperTradingSystem(
         tmp_path / "reference-price.duckdb",

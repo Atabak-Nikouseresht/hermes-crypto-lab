@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import ccxt
+import pandas as pd
 
 from src.config import (
     Settings,
@@ -230,7 +231,6 @@ def _run_pipeline_locked(
 
             filename = f"{_safe_symbol(symbol)}_{settings.timeframe}"
             raw_path = settings.raw_dir / run_id / f"{filename}.json"
-            parquet_path = settings.processed_dir / run_id / f"{filename}.parquet"
             save_raw_json(rows, raw_path)
 
             normalized = rows_to_frame(rows)
@@ -245,45 +245,69 @@ def _run_pipeline_locked(
                     f"{symbol}: actual_end={actual_end.isoformat()} "
                     f"expected_end={expected_end.isoformat()}"
                 )
-            save_clean_parquet(cleaned, parquet_path)
-            start_utc = cleaned["timestamp"].min().isoformat() if not cleaned.empty else None
-            end_utc = cleaned["timestamp"].max().isoformat() if not cleaned.empty else None
-            quality_payload = {
-                **quality.summary,
-                "missing_date_values_utc": quality.missing_dates,
-            }
-            result = {
+            results.append(
+                {
                 "symbol": symbol,
-                "parquet_path": str(parquet_path),
-                "sha256": _sha256(parquet_path),
                 "raw_path": str(raw_path),
                 "raw_sha256": _sha256(raw_path),
                 "raw_rows": len(rows),
-                "clean_rows": len(cleaned),
-                "start_utc": start_utc,
-                "end_utc": end_utc,
-                "quality": quality_payload,
-            }
-            results.append(result)
+                "cleaned": cleaned,
+                "quality": {
+                    **quality.summary,
+                    "missing_date_values_utc": quality.missing_dates,
+                },
+                }
+            )
+
+        common_start = max(result["cleaned"]["timestamp"].min() for result in results)
+        common_end = pd.Timestamp(expected_end)
+        expected_calendar = pd.date_range(common_start, common_end, freq="D", tz="UTC")
+        if expected_calendar.empty:
+            raise ValueError("Canonical common calendar is empty")
+        for result in results:
+            symbol = result["symbol"]
+            cleaned = result.pop("cleaned")
+            canonical = cleaned.loc[
+                (cleaned["timestamp"] >= common_start)
+                & (cleaned["timestamp"] <= common_end)
+            ].reset_index(drop=True)
+            calendar = pd.DatetimeIndex(pd.to_datetime(canonical["timestamp"], utc=True))
+            if not calendar.equals(expected_calendar):
+                raise ValueError(
+                    "Canonical common-calendar coverage failed for "
+                    f"{symbol}: expected={common_start.isoformat()}..{common_end.isoformat()}"
+                )
+            filename = f"{_safe_symbol(symbol)}_{settings.timeframe}"
+            parquet_path = settings.processed_dir / run_id / f"{filename}.parquet"
+            save_clean_parquet(canonical, parquet_path)
+            start_utc = canonical["timestamp"].min().isoformat()
+            end_utc = canonical["timestamp"].max().isoformat()
+            result.update(
+                parquet_path=str(parquet_path),
+                sha256=_sha256(parquet_path),
+                clean_rows=len(canonical),
+                start_utc=start_utc,
+                end_utc=end_utc,
+            )
             record_dataset_metadata(
                 settings.database_path,
                 run_id=run_id,
                 symbol=symbol,
                 timeframe=settings.timeframe,
-                raw_path=str(raw_path.relative_to(settings.project_root)),
+                raw_path=str(Path(result["raw_path"]).relative_to(settings.project_root)),
                 parquet_path=str(parquet_path.relative_to(settings.project_root)),
-                raw_rows=len(rows),
-                clean_rows=len(cleaned),
+                raw_rows=result["raw_rows"],
+                clean_rows=len(canonical),
                 start_utc=start_utc,
                 end_utc=end_utc,
-                quality_summary=quality_payload,
+                quality_summary=result["quality"],
             )
             LOGGER.info(
                 "Stored %s: raw=%d clean=%d quality=%s",
                 symbol,
-                len(rows),
-                len(cleaned),
-                quality.summary,
+                result["raw_rows"],
+                len(canonical),
+                result["quality"],
             )
 
         dataset_manifest = {
@@ -302,6 +326,8 @@ def _run_pipeline_locked(
             },
             "ingestion_git_commit": ingestion_git_commit,
             "git_dirty": git_dirty,
+            "canonical_common_start_utc": common_start.isoformat(),
+            "canonical_common_end_utc": common_end.isoformat(),
             "datasets": {
                 result["symbol"]: {
                     "path": (

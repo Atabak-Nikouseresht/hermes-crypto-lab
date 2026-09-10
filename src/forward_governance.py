@@ -12,6 +12,7 @@ from typing import Any
 from src.execution_protocol import (
     EXECUTION_PROTOCOL_VERSION,
     QUOTE_COHERENCE_CONTRACT_VERSION,
+    REFERENCE_PRICE_EVIDENCE_CONTRACT_VERSION,
 )
 from src.forward_operations import verify_immutable_manifest
 from src.paper_broker import PaperConfig
@@ -37,6 +38,12 @@ QUOTE_COHERENCE_CONTRACT_HASH_SHA256 = (
 )
 TRANSIENT_FAILURE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
     "56e114adbd812cc07301d0122e7b1363a7605601d0f93f486d64ebd25f62e038"
+)
+REFERENCE_PRICE_EVIDENCE_CONTRACT_HASH_SHA256 = (
+    "9513187c4508676fb7fc86fcbc91e897fbe2a14c428e8176441e6be4638c94ec"
+)
+REFERENCE_PRICE_EVIDENCE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
+    "5426acb5824d7776e1cced3eb3b99cb83d2482e927aa56e1f11f519ccd423e58"
 )
 
 
@@ -191,6 +198,30 @@ def verify_quote_coherence_runtime_contract(
         raise ValueError("Runtime quote timestamp skew differs from governed contract")
 
 
+def verify_reference_price_evidence_runtime_contract(
+    payload: dict[str, Any], config: PaperConfig
+) -> None:
+    """Bind future reference-price freshness to its immutable evidence contract."""
+    if type(payload) is not dict:
+        raise ValueError("Reference-price evidence contract must be an object")
+    if payload.get("version") != REFERENCE_PRICE_EVIDENCE_CONTRACT_VERSION:
+        raise ValueError("Reference-price evidence contract version is not governed")
+    if payload.get("execution_protocol_version") != EXECUTION_PROTOCOL_VERSION:
+        raise ValueError("Reference-price evidence execution protocol is not governed")
+    rule = payload.get("rule")
+    if type(rule) is not dict:
+        raise ValueError("Reference-price evidence contract rule is missing")
+    max_age = rule.get("max_age_seconds")
+    if type(max_age) is not int or max_age <= 0:
+        raise ValueError("Reference-price evidence max age must be a positive exact integer")
+    if max_age != config.max_quote_staleness_minutes * 60:
+        raise ValueError("Reference-price evidence freshness differs from governed quote freshness")
+    if rule.get("future_timestamp_permitted") is not False:
+        raise ValueError("Reference-price evidence contract permits future timestamps")
+    if rule.get("missing_timestamp_permitted_for_nonnull_reference_price") is not False:
+        raise ValueError("Reference-price evidence contract permits missing timestamps")
+
+
 def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, str]:
     """Verify files against code-anchored release digests, not mutable sidecars alone."""
     project_root = Path(project_root)
@@ -211,6 +242,12 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     transient_failure_amendment = (
         project_root / "forward_experiment" / "governance_amendment_v5_transient_failure_semantics.json"
     )
+    reference_price_amendment = (
+        project_root / "forward_experiment" / "governance_amendment_v6_reference_price_evidence.json"
+    )
+    reference_price_contract = (
+        project_root / "forward_experiment" / "reference_price_evidence_contract_v1.json"
+    )
     actual_checkpoint = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     actual_governance = hashlib.sha256(governance.read_bytes()).hexdigest()
     actual_locked = locked_strategy_hash(config)
@@ -228,6 +265,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     actual_transient_failure_amendment = hashlib.sha256(
         transient_failure_amendment.read_bytes()
     ).hexdigest()
+    actual_reference_price_amendment = hashlib.sha256(reference_price_amendment.read_bytes()).hexdigest()
+    actual_reference_price_contract = hashlib.sha256(reference_price_contract.read_bytes()).hexdigest()
     expected = {
         "checkpoint": CHECKPOINT_MANIFEST_HASH_SHA256,
         "governance": GOVERNANCE_HASH_SHA256,
@@ -238,6 +277,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "quote_coherence_governance_amendment": QUOTE_COHERENCE_GOVERNANCE_AMENDMENT_HASH_SHA256,
         "quote_coherence_contract": QUOTE_COHERENCE_CONTRACT_HASH_SHA256,
         "transient_failure_governance_amendment": TRANSIENT_FAILURE_GOVERNANCE_AMENDMENT_HASH_SHA256,
+        "reference_price_evidence_governance_amendment": REFERENCE_PRICE_EVIDENCE_GOVERNANCE_AMENDMENT_HASH_SHA256,
+        "reference_price_evidence_contract": REFERENCE_PRICE_EVIDENCE_CONTRACT_HASH_SHA256,
     }
     actual = {
         "checkpoint": actual_checkpoint,
@@ -249,6 +290,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "quote_coherence_governance_amendment": actual_quote_coherence_amendment,
         "quote_coherence_contract": actual_quote_coherence_contract,
         "transient_failure_governance_amendment": actual_transient_failure_amendment,
+        "reference_price_evidence_governance_amendment": actual_reference_price_amendment,
+        "reference_price_evidence_contract": actual_reference_price_contract,
     }
     if actual != expected:
         raise ValueError(f"Forward trust-anchor mismatch: expected={expected}, actual={actual}")
@@ -281,6 +324,14 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         project_root
         / "forward_experiment"
         / "governance_amendment_v5_transient_failure_semantics.json.sha256",
+    )
+    verify_immutable_manifest(
+        reference_price_amendment,
+        project_root / "forward_experiment" / "governance_amendment_v6_reference_price_evidence.json.sha256",
+    )
+    verify_immutable_manifest(
+        reference_price_contract,
+        project_root / "forward_experiment" / "reference_price_evidence_contract_v1.json.sha256",
     )
     amendment_payload = json.loads(amendment.read_text(encoding="utf-8"))
     if amendment_payload["base_governance_sha256"] != actual_governance:
@@ -353,6 +404,28 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         )
     ):
         raise ValueError("Transient failure amendment declares a prohibited change")
+    reference_payload = json.loads(reference_price_amendment.read_text(encoding="utf-8"))
+    reference_contract_payload = json.loads(reference_price_contract.read_text(encoding="utf-8"))
+    if (
+        reference_payload["prior_transient_failure_governance_amendment_sha256"]
+        != actual_transient_failure_amendment
+    ):
+        raise ValueError("Reference-price amendment does not anchor transient-failure governance")
+    if reference_payload["reference_price_evidence_contract_sha256"] != actual_reference_price_contract:
+        raise ValueError("Reference-price amendment does not anchor its future-only contract")
+    if any(
+        reference_payload[field]
+        for field in (
+            "strategy_reselection",
+            "parameter_retuning",
+            "research_results_changed",
+            "historical_governance_records_rewritten",
+            "historical_protocol_records_rewritten",
+            "economic_spec_changed",
+        )
+    ):
+        raise ValueError("Reference-price amendment declares a prohibited change")
+    verify_reference_price_evidence_runtime_contract(reference_contract_payload, config)
     declared_schedule = amendment_payload["operational_schedule"]
     actual_schedule = {
         "schedule_weekday": config.schedule_weekday,

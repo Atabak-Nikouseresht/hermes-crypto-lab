@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.research_data import _validate_schema_v2, load_canonical_close_prices
+from src.research_data import _validate_schema_v2, load_canonical_close_prices, resolve_canonical_dataset
 from src.research_data import load_canonical_timestamp_index
 
 
@@ -61,6 +61,11 @@ def test_canonical_loader_rejects_compressed_misaligned_calendars(tmp_path):
 
     with pytest.raises(ValueError, match="missing daily candles|calendar mismatch"):
         load_canonical_close_prices(processed, ["BTC/USDT", "ETH/USDT"], "1d")
+
+
+def test_active_canonical_resolver_rejects_non_daily_requests(tmp_path):
+    with pytest.raises(ValueError, match="1d timeframe"):
+        resolve_canonical_dataset(tmp_path / "processed", "4h")
 
 
 def test_canonical_loader_rejects_duplicate_or_invalid_ohlcv(tmp_path):

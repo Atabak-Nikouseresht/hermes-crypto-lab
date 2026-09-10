@@ -1,0 +1,21 @@
+{
+  "classification": "additive future-only public market-rule evidence admissibility contract; not a reinterpretation of v3 price, fee, spread, or slippage semantics",
+  "economic_spec_changed": false,
+  "effective_for_new_runs_only": true,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "historical_v3_records_rewritten": false,
+  "official_documentation": [
+    "https://developers.binance.com/docs/binance-spot-api-docs/faqs/price_range_execution_rules",
+    "https://developers.binance.com/docs/binance-spot-api-docs"
+  ],
+  "reference_price_endpoint": "GET /api/v3/referencePrice",
+  "rule": {
+    "future_timestamp_permitted": false,
+    "max_age_seconds": 300,
+    "missing_timestamp_permitted_for_nonnull_reference_price": false,
+    "timestamp_basis": "UTC Binance response timestamp compared to acquisition/execution UTC; the bound reuses the governed five-minute public quote-evidence freshness interval because Binance documents referencePrice as continually changing but publishes no fixed REST update interval."
+  },
+  "status": "future-only operational market-rule reference-price evidence admissibility contract",
+  "strategy_or_candidate_changed": false,
+  "version": "reference-price-evidence-v1-utc-freshness"
+}

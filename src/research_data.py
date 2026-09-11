@@ -224,9 +224,20 @@ def _paths_and_manifest(
 
 
 def resolve_canonical_dataset(
-    processed_dir: Path, timeframe: str = "1d"
+    processed_dir: Path, timeframe: str = "1d", expected_assets: list[str] | None = None
 ) -> tuple[dict[str, Path], dict[str, Any]]:
-    """Resolve the active immutable canonical publication once for all consumers."""
+    """Resolve immutable artifacts; expected assets use exact, order-free set equality."""
+    processed_dir = processed_dir.resolve()
+    if expected_assets is not None and (
+        not isinstance(expected_assets, list)
+        or not expected_assets
+        or not all(
+            isinstance(asset, str) and re.fullmatch(r"[A-Z0-9]+/[A-Z0-9]+", asset)
+            for asset in expected_assets
+        )
+        or len(set(expected_assets)) != len(expected_assets)
+    ):
+        raise ValueError("Invalid governed assets: require a nonempty unique list of BASE/QUOTE symbols")
     if timeframe != "1d":
         raise ValueError("Canonical research requires the 1d timeframe")
     pointer = processed_dir / "dataset_manifest.json"
@@ -240,7 +251,13 @@ def resolve_canonical_dataset(
     assets = sorted(datasets)
     if not all(isinstance(asset, str) and asset for asset in assets):
         raise ValueError("Canonical dataset manifest has invalid dataset symbol")
+    # Governance specifies a universe, not an insertion/serialization order.
+    if expected_assets is not None and set(datasets) != set(expected_assets):
+        raise ValueError("Canonical dataset manifest assets differ from governed assets")
     paths, manifest, immutable_path = _paths_and_manifest(processed_dir, assets, timeframe)
+    # Publication may advance between pointer reads; govern the resolved version too.
+    if expected_assets is not None and set(manifest["datasets"]) != set(expected_assets):
+        raise ValueError("Canonical dataset manifest assets differ from governed assets")
     if immutable_path is None:
         raise ValueError("canonical dataset pointer requires an immutable version manifest")
     return paths, {

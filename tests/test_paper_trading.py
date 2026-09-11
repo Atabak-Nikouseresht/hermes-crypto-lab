@@ -97,7 +97,7 @@ def test_snapshot_validation_fails_closed_on_invalid_reference_price_freshness(
     system = PaperTradingSystem(tmp_path / "reference-freshness.duckdb", _config())
     snapshot = _snapshot(now.to_pydatetime())
     snapshot.rule_reference_prices["BTC/USDT"] = RuleReferencePrice(
-        Decimal("100"), "REFERENCE_PRICE", reference_timestamp
+        Decimal("100"), "REFERENCE_PRICE", reference_timestamp, now
     )
 
     assert reason in system._validate_snapshot(snapshot, now).lower()
@@ -1128,7 +1128,7 @@ def test_schema_v8_adds_rejected_order_diagnostics_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}',1)"
         )
         connection.execute("ALTER TABLE paper_run_diagnostics DROP COLUMN rejected_orders")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=8")
@@ -1160,7 +1160,7 @@ def test_schema_v9_adds_persistent_rejection_audit_without_rewriting_runs(tmp_pa
         connection.execute(
             "INSERT INTO paper_runs VALUES "
             "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}')"
+            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}',1)"
         )
         connection.execute("DROP TABLE paper_order_rejections")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=9")

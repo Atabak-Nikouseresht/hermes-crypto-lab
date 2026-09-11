@@ -557,6 +557,16 @@ def main() -> None:
             try:
                 snapshot = fetch_configured_public_market_snapshot(config, settings)
             except TransientPublicMarketError as error:
+                if error.http_status in {418, 429}:
+                    # Preserve D1 exit 4, but forbid outer replay during this invocation.
+                    # Retain safe Retry-After metadata; suppression never shortens it
+                    # to the wrapper's ordinary 60-second delay.
+                    print(json.dumps({
+                        "event": "PUBLIC_MARKET_RATE_LIMIT_DEFER",
+                        "http_status": error.http_status,
+                        "retry_after_seconds": error.retry_after_seconds,
+                        "retry_policy": "suppress_remaining_weekly_attempts",
+                    }), flush=True)
                 reason = f"Transient public market-data fetch failed: {error}"
                 result = commit_operational_failure(
                     system,

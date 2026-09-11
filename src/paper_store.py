@@ -8,18 +8,19 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, localcontext
 from pathlib import Path
 from typing import Any
 
 import duckdb
 
-from src.execution_protocol import EXECUTION_PROTOCOL_VERSION, QUOTE_COHERENCE_CONTRACT_VERSION
+from src.execution_protocol import EXECUTION_PROTOCOL_VERSION, QUOTE_COHERENCE_CONTRACT_VERSION, REFERENCE_PRICE_MAX_AGE_SECONDS
 
 
 FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
-BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v1"
+BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v2"
+_LEGACY_BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v1"
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,11 @@ class PaperStore:
     @staticmethod
     def market_rule_evidence_digest(rows: list[tuple[Any, ...]]) -> str:
         """Stable digest retained in independent run-level evidence."""
-        payload = [[None if value is None else str(value) for value in row] for row in rows]
+        # V1 sealed exactly the original 21 columns; additive migration must
+        # not invalidate historical digests by appending a fabricated NULL.
+        payload = [[None if value is None else str(value) for value in
+                    (row[:21] if row[2] == _LEGACY_BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION else row)]
+                   for row in rows]
         encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
@@ -478,6 +483,13 @@ class PaperStore:
                 "(16, ?, 'prospective Binance market-rule evidence')",
                 [now],
             )
+            connection.execute("ALTER TABLE paper_market_rule_evidence ADD COLUMN IF NOT EXISTS reference_price_acquired_at_utc TIMESTAMPTZ")
+            connection.execute("ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS market_rule_evidence_version INTEGER DEFAULT 1")
+            connection.execute("ALTER TABLE paper_runs ALTER COLUMN market_rule_evidence_version SET DEFAULT 1")
+            connection.execute("ALTER TABLE paper_runs ALTER COLUMN market_rule_evidence_version SET NOT NULL")
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (17, ?, 'prospective market-rule acquisition and admission evidence v2')", [now]
+            )
             schema_v6 = connection.execute(
                 "SELECT 1 FROM paper_schema_versions WHERE version=6"
             ).fetchone()
@@ -646,11 +658,19 @@ class PaperStore:
                     SELECT r.run_id FROM paper_runs r
                     WHERE r.mode='PAPER' AND r.official_scheduled AND r.status='EXECUTED'
                       AND r.started_at_utc >= ?
-                      AND r.market_rule_evidence_required
+                      AND (r.market_rule_evidence_required OR r.market_rule_evidence_version=2
+                           OR r.started_at_utc >= (SELECT applied_at_utc FROM paper_schema_versions WHERE version=17))
                     """,
                     [rule_adoption[0]],
                 ).fetchall()
+                v2_adoption = connection.execute("SELECT applied_at_utc FROM paper_schema_versions WHERE version=17").fetchone()
                 for (run_id,) in applicable_rule_runs:
+                    lifecycle = connection.execute(
+                        "SELECT market_rule_evidence_version, started_at_utc FROM paper_runs WHERE run_id=?", [run_id]
+                    ).fetchone()
+                    required_v2 = lifecycle[0] == 2 or (v2_adoption is not None and lifecycle[1] >= v2_adoption[0])
+                    if lifecycle[0] not in (1, 2) or (required_v2 and lifecycle[0] != 2):
+                        return ReconciliationResult(False, "Invalid market-rule evidence lifecycle version")
                     evidence = connection.execute(
                         "SELECT * FROM paper_market_rule_evidence WHERE run_id=?", [run_id]
                     ).fetchall()
@@ -727,7 +747,7 @@ class PaperStore:
                         return ReconciliationResult(False, "Market-rule rejection audit mismatch")
                     for row in evidence:
                         contract, price, source = row[2], row[3], row[4]
-                        if contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION or source not in {"REFERENCE_PRICE", "LAST_FALLBACK", "UNVERIFIABLE_AVERAGE"}:
+                        if contract not in {BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION, _LEGACY_BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION} or source not in {"REFERENCE_PRICE", "LAST_FALLBACK", "UNVERIFIABLE_AVERAGE"}:
                             return ReconciliationResult(False, "Invalid market-rule evidence contract or source")
                         try:
                             if source != "UNVERIFIABLE_AVERAGE" and (price is None or not Decimal(price).is_finite() or Decimal(price) <= 0):
@@ -768,6 +788,25 @@ class PaperStore:
                         )
                         if source == "REFERENCE_PRICE" and row[5] is None:
                             return ReconciliationResult(False, "Reference-price evidence lacks timestamp")
+                        if required_v2 and contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION:
+                            return ReconciliationResult(False, "Market-rule evidence v2 downgrade")
+                        if contract == BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION:
+                            admission = connection.execute(
+                                "SELECT captured_at_utc FROM paper_forward_execution_evidence WHERE run_id=?", [run_id]
+                            ).fetchone()[0]
+                            if row[20] != admission:
+                                return ReconciliationResult(False, "Market-rule admission timestamp mismatch")
+                            if source == "REFERENCE_PRICE":
+                                if row[21] is None:
+                                    return ReconciliationResult(False, "Reference-price evidence lacks acquisition timestamp")
+                                if (row[5] > row[21] or row[21] > admission
+                                        or row[21] - row[5] > timedelta(seconds=REFERENCE_PRICE_MAX_AGE_SECONDS)
+                                        or admission - row[5] > timedelta(seconds=REFERENCE_PRICE_MAX_AGE_SECONDS)):
+                                    return ReconciliationResult(False, "Reference-price evidence violates freshness contract")
+                            elif row[5] is not None or row[21] is not None:
+                                return ReconciliationResult(False, "Incompatible market-rule source timing")
+                        elif row[21] is not None:
+                            return ReconciliationResult(False, "Historical market-rule acquisition was fabricated")
                         if source == "LAST_FALLBACK" and requires_average:
                             return ReconciliationResult(False, "Illegal last-price market-rule fallback")
                         if source == "UNVERIFIABLE_AVERAGE" and (price is not None or not requires_average):

@@ -79,7 +79,7 @@ def _system(tmp_path, *, rules: SymbolRules | None = None, reference: Decimal | 
     timestamp = pd.Timestamp(NOW)
     symbol_rules = {symbol: rules or _rules() for symbol in SYMBOLS}
     references = {
-        symbol: RuleReferencePrice(reference, "REFERENCE_PRICE", timestamp)
+        symbol: RuleReferencePrice(reference, "REFERENCE_PRICE", timestamp, timestamp)
         if reference is not None
         else RuleReferencePrice(None, "UNVERIFIABLE_AVERAGE")
         for symbol in SYMBOLS
@@ -94,8 +94,13 @@ def _system(tmp_path, *, rules: SymbolRules | None = None, reference: Decimal | 
     return system, snapshot, timestamp
 
 
-def _current_run(tmp_path, *, rules: SymbolRules | None = None, reference: Decimal | None = Decimal("100"), quantity: float | None = 1.0, stage: str = "FINAL"):
+def _current_run(tmp_path, *, rules: SymbolRules | None = None, reference: Decimal | None = Decimal("100"), quantity: float | None = 1.0, stage: str = "FINAL", source_age: int = 0, acquisition_age: int = 0):
     system, snapshot, timestamp = _system(tmp_path, rules=rules, reference=reference)
+    if reference is not None:
+        snapshot.rule_reference_prices.update({
+            symbol: replace(value, timestamp=timestamp-pd.Timedelta(seconds=source_age), acquired_at=timestamp-pd.Timedelta(seconds=acquisition_age))
+            for symbol, value in snapshot.rule_reference_prices.items()
+        })
     system.store.insert_run(
         run_id="run",
         started_at=NOW,
@@ -324,7 +329,7 @@ REJECTION_CASES = [
     ("below_min_notional", replace(_rules(), raw_min_notional=Decimal("101")), Decimal("100"), "min_notional='1'"),
     ("below_market_notional", replace(_rules(), raw_notional_min=Decimal("101")), Decimal("100"), "notional_min='1'"),
     ("above_market_notional", replace(_rules(), raw_notional_max=Decimal("99")), Decimal("100"), "notional_max='1000'"),
-    ("market_notional_reference_unverifiable", _rules(average=5), None, "reference_price_source='REFERENCE_PRICE', reference_price_decimal='100', reference_price_timestamp_utc='2026-09-08T09:10:00Z'"),
+    ("market_notional_reference_unverifiable", _rules(average=5), None, "reference_price_source='REFERENCE_PRICE', reference_price_decimal='100', reference_price_timestamp_utc='2026-09-08T09:10:00Z', reference_price_acquired_at_utc='2026-09-08T09:10:00Z'"),
 ]
 
 

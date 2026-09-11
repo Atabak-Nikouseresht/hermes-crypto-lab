@@ -6,11 +6,13 @@ from datetime import datetime, timezone
 import csv
 import io
 import json
+import math
 from pathlib import Path
 import urllib.request
 import zipfile
 
 import pandas as pd
+import yaml
 
 from src.research_data import resolve_canonical_dataset
 
@@ -33,12 +35,24 @@ def _vision_close(symbol: str, day: str) -> float:
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         name = archive.namelist()[0]
         row = next(csv.reader(io.TextIOWrapper(archive.open(name), encoding="utf-8")))
+    # Binance archives use milliseconds historically and microseconds in newer files.
+    requested = pd.Timestamp(day, tz="UTC")
+    if int(row[0]) not in (requested.value // 1_000_000, requested.value // 1_000):
+        raise ValueError("Archive timestamp does not match requested sample")
     return float(row[4])
 
 
 def run(project_root: Path, output_path: Path) -> dict:
+    # Read governance independently of pointer contents and environment overrides.
+    try:
+        governance = yaml.safe_load((project_root / "config" / "assets.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        raise ValueError("Cannot read governed assets from config/assets.yaml") from error
+    if not isinstance(governance, dict) or governance.get("assets") is None:
+        raise ValueError("Invalid governed assets in config/assets.yaml")
+    governed_assets = governance["assets"]
     canonical_paths, canonical_provenance = resolve_canonical_dataset(
-        project_root / "data" / "processed"
+        project_root / "data" / "processed", expected_assets=governed_assets
     )
     archive_checks = []
     for asset, path in canonical_paths.items():
@@ -47,18 +61,46 @@ def run(project_root: Path, output_path: Path) -> dict:
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         indexed = frame.set_index("timestamp")
         for day in SAMPLES:
-            expected = float(indexed.loc[pd.Timestamp(day, tz="UTC"), "close"])
-            observed = _vision_close(symbol, day)
-            relative_error = abs(observed - expected) / expected
-            archive_checks.append(
-                {
-                    "symbol": symbol,
-                    "date_utc": day,
-                    "processed_close": expected,
-                    "binance_vision_close": observed,
-                    "relative_error": relative_error,
-                    "within_tolerance": relative_error <= 1e-10,
-                }
+            check = {
+                "asset": asset,
+                "symbol": symbol,
+                "date_utc": day,
+                "timestamp_utc": None,
+                "processed_close": None,
+                "binance_vision_close": None,
+                "relative_error": None,
+                "within_tolerance": False,
+                "status": "INSUFFICIENT_DATA",
+            }
+            archive_checks.append(check)
+            timestamp = pd.Timestamp(day, tz="UTC")
+            if timestamp not in indexed.index:
+                check["reason"] = "requested_sample_not_in_canonical_history"
+                continue
+            if indexed.index.has_duplicates:
+                check.update(status="FAIL_CLOSED", reason="duplicate_canonical_timestamps")
+                continue
+            check["timestamp_utc"] = indexed.index[indexed.index.get_loc(timestamp)].isoformat()
+            try:
+                expected = float(indexed.loc[timestamp, "close"])
+                if not math.isfinite(expected) or expected <= 0:
+                    raise ValueError("invalid canonical close")
+                check["processed_close"] = expected
+                observed = _vision_close(symbol, day)
+                if not math.isfinite(observed) or observed <= 0:
+                    raise ValueError("invalid archive close")
+                relative_error = abs(observed - expected) / expected
+                if not math.isfinite(relative_error):
+                    raise ValueError("invalid relative error")
+            except (OSError, ValueError, TypeError, KeyError, IndexError, StopIteration, zipfile.BadZipFile):
+                # Do not leak absolute local paths or transport exception payloads.
+                check.update(status="FAIL_CLOSED", reason="archive_comparison_unavailable_or_invalid")
+                continue
+            check.update(
+                binance_vision_close=observed,
+                relative_error=relative_error,
+                within_tolerance=relative_error <= 1e-10,
+                status="PASS" if relative_error <= 1e-10 else "FAIL_CLOSED",
             )
 
     independent = []
@@ -99,11 +141,14 @@ def run(project_root: Path, output_path: Path) -> dict:
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "status": (
             "PASS"
-            if all(row["within_tolerance"] for row in archive_checks)
+            if archive_checks
+            and {row["asset"] for row in archive_checks if row["within_tolerance"]} == set(governed_assets)
+            and all(row["within_tolerance"] for row in archive_checks)
             and all(row["within_declared_2pct_tolerance"] for row in independent)
             else "FAIL_CLOSED"
         ),
         "replacement_performed": False,
+        "governed_assets": sorted(governed_assets),
         "canonical_provenance": canonical_provenance,
         "archive_checks": archive_checks,
         "independent_checks": independent,

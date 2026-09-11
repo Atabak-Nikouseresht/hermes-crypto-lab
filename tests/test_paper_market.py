@@ -1,4 +1,3 @@
-import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -344,7 +343,7 @@ def test_public_snapshot_uses_only_market_data_methods():
     snapshot = fetch_public_market_snapshot(
         config,
         exchange=exchange,
-        now=now,
+        now=now, acquisition_clock=lambda: now,
         lookback_days=200,
         max_retries=0,
     )
@@ -389,7 +388,7 @@ def test_public_snapshot_fails_closed_for_wrong_or_malformed_reference_symbol(pa
         fetch_public_market_snapshot(
             PaperConfig(assets=("BTC/USDT",)),
             exchange=BadReferenceExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
-            now=now,
+            now=now, acquisition_clock=lambda: now,
             lookback_days=200,
             max_retries=0,
         )
@@ -419,7 +418,7 @@ def test_public_snapshot_enforces_reference_price_timestamp_freshness(
     def fetch():
         return fetch_public_market_snapshot(
             PaperConfig(assets=("BTC/USDT",)),
-            exchange=TimestampedReferenceExchange(rows, now_ms), now=now,
+            exchange=TimestampedReferenceExchange(rows, now_ms), now=now, acquisition_clock=lambda: now,
             lookback_days=200, max_retries=0,
         )
 
@@ -453,7 +452,7 @@ def test_public_snapshot_rejects_invalid_reference_price_evidence(payload):
         fetch_public_market_snapshot(
             PaperConfig(assets=("BTC/USDT",)),
             exchange=InvalidReferenceExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
-            now=now, lookback_days=200, max_retries=0,
+            now=now, acquisition_clock=lambda: now, lookback_days=200, max_retries=0,
         )
 
 
@@ -469,7 +468,7 @@ def test_public_snapshot_absent_reference_still_loads_symbol_rules():
     snapshot = fetch_public_market_snapshot(
         PaperConfig(assets=("BTC/USDT",)),
         exchange=AbsentReferenceExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
-        now=now, max_retries=0,
+        now=now, acquisition_clock=lambda: now, max_retries=0,
     )
     assert snapshot.rule_reference_prices["BTC/USDT"].source == "LAST_FALLBACK"
     assert snapshot.symbol_rules["BTC/USDT"].raw_step_size is not None
@@ -491,7 +490,7 @@ def test_public_snapshot_derives_informational_last_from_valid_bid_ask():
     snapshot = fetch_public_market_snapshot(
         PaperConfig(assets=("BTC/USDT",)),
         exchange=MissingLastExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
-        now=now,
+        now=now, acquisition_clock=lambda: now,
         lookback_days=200,
         max_retries=0,
     )
@@ -523,7 +522,7 @@ def test_public_snapshot_replaces_invalid_informational_last_with_midpoint(
     snapshot = fetch_public_market_snapshot(
         PaperConfig(assets=("BTC/USDT",)),
         exchange=InvalidLastExchange(rows, int(pd.Timestamp(now).timestamp() * 1000)),
-        now=now,
+        now=now, acquisition_clock=lambda: now,
         lookback_days=200,
         max_retries=0,
     )
@@ -561,7 +560,7 @@ def test_public_snapshot_still_rejects_invalid_executable_quote_sides(tmp_path, 
         exchange=InvalidExecutableSideExchange(
             rows, int(pd.Timestamp(now).timestamp() * 1000)
         ),
-        now=now,
+        now=now, acquisition_clock=lambda: now,
         lookback_days=200,
         max_retries=0,
     )
@@ -591,7 +590,7 @@ def test_public_snapshot_rejects_missing_executable_quote_side(missing_field):
             exchange=MissingExecutableSideExchange(
                 rows, int(pd.Timestamp(now).timestamp() * 1000)
             ),
-            now=now,
+            now=now, acquisition_clock=lambda: now,
             lookback_days=200,
             max_retries=0,
         )
@@ -610,7 +609,6 @@ def test_public_snapshot_fetched_at_is_after_all_network_calls():
 
         def fetch_ticker(self, symbol):
             result = super().fetch_ticker(symbol)
-            time.sleep(0.01)
             self.completed_at = pd.Timestamp.now(tz="UTC")
             return result
 

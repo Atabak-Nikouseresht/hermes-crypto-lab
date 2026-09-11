@@ -1,0 +1,19 @@
+{
+  "adoption": "Schema version 17 records installation time; a run-level v2 requirement is written transactionally before prospective market-rule evaluation. Historical v1 rows retain their original contract and digest; no acquisition timestamps are backfilled.",
+  "economic_spec_changed": false,
+  "effective_for_new_runs_only": true,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "historical_evidence_fabricated": false,
+  "historical_executions_reinterpreted": false,
+  "prior_reference_price_governance_amendment_sha256": "5426acb5824d7776e1cced3eb3b99cb83d2482e927aa56e1f11f519ccd423e58",
+  "rule": {
+    "acquisition_timestamp_required_for_reference_price": true,
+    "admission_freshness_required": true,
+    "future_timestamp_permitted": false,
+    "max_age_seconds": 300,
+    "missing_timestamp_permitted_for_nonnull_reference_price": false,
+    "non_reference_sources_require_null_reference_timestamps": true
+  },
+  "scope": "Additive prospective persistence and offline reconciliation of the v6 reference-price freshness policy. The Binance response timestamp is compared to fresh acquisition UTC after receipt, and to authoritative final admission UTC. The inclusive freshness bound is 300 seconds; acquisition must not follow admission. LAST_FALLBACK and UNVERIFIABLE_AVERAGE retain their distinct existing rule semantics. No executionRules simulation is introduced; that remains Batch H.",
+  "version": "binance-market-rule-evidence-v2"
+}

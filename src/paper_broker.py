@@ -19,6 +19,7 @@ import pandas as pd
 from src.execution_protocol import (
     EXECUTION_PROTOCOL_VERSION,
     QUOTE_COHERENCE_CONTRACT_VERSION,
+    REFERENCE_PRICE_MAX_AGE_SECONDS,
 )
 from src.paper_store import (
     BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION,
@@ -51,6 +52,7 @@ class RuleReferencePrice:
     price: Decimal | None
     source: str
     timestamp: pd.Timestamp | None = None
+    acquired_at: pd.Timestamp | None = None
 
 
 def validate_reference_price_evidence(
@@ -58,18 +60,28 @@ def validate_reference_price_evidence(
 ) -> str | None:
     """Validate one public Binance referencePrice under the future-only contract."""
     if reference.source != "REFERENCE_PRICE":
+        if reference.timestamp is not None or reference.acquired_at is not None:
+            return "Invalid data: incompatible reference price timing"
         return None
+    if reference.acquired_at is None:
+        return "Invalid data: reference price acquisition timestamp missing"
+    acquired = pd.Timestamp(reference.acquired_at)
+    if pd.isna(acquired) or acquired.tzinfo is None:
+        return "Invalid data: reference price acquisition timestamp"
+    if acquired > now:
+        return "Invalid data: future reference price acquisition timestamp"
     if reference.price is None or not reference.price.is_finite() or reference.price <= 0:
         return "Invalid data: reference price"
     if reference.timestamp is None:
         return "Invalid data: reference price timestamp missing"
     timestamp = pd.Timestamp(reference.timestamp)
-    if timestamp.tzinfo is None:
+    if pd.isna(timestamp) or timestamp.tzinfo is None:
         return "Invalid data: reference price timestamp"
     timestamp = timestamp.tz_convert("UTC")
-    if timestamp > now:
+    if timestamp > now or timestamp > acquired:
         return "Invalid data: future reference price timestamp"
-    if now - timestamp > pd.Timedelta(minutes=max_age_minutes):
+    if (now - timestamp > pd.Timedelta(seconds=REFERENCE_PRICE_MAX_AGE_SECONDS)
+            or acquired - timestamp > pd.Timedelta(seconds=REFERENCE_PRICE_MAX_AGE_SECONDS)):
         return "Stale data: reference price timestamp"
     return None
 
@@ -634,17 +646,20 @@ class PaperTradingSystem:
                     "REFERENCE_PRICE",
                     reference.timestamp,
                 )
+                acquired_at = reference.acquired_at
             elif self._market_rule_reference_price(snapshot, symbol) is None:
                 reference_price = None
                 reference_source, reference_timestamp = "UNVERIFIABLE_AVERAGE", None
+                acquired_at = None
             else:
                 reference_price = Decimal(str(quote.last))
                 reference_source, reference_timestamp = "LAST_FALLBACK", None
+                acquired_at = None
             def exact(value: Decimal | None) -> str | None:
                 return None if value is None else format(value, "f")
             connection.execute(
                 """INSERT OR IGNORE INTO paper_market_rule_evidence VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     run_id, symbol, BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION,
                     exact(reference_price), reference_source, reference_timestamp,
@@ -653,7 +668,7 @@ class PaperTradingSystem:
                     exact(rules.raw_min_notional) if rules else None, rules.min_notional_applies_to_market if rules else False,
                     rules.min_notional_avg_price_mins if rules else 0, exact(rules.raw_notional_min) if rules else None, exact(rules.raw_notional_max) if rules else None,
                     rules.notional_min_applies_to_market if rules else False, rules.notional_max_applies_to_market if rules else False,
-                    rules.notional_avg_price_mins if rules else 0, now,
+                    rules.notional_avg_price_mins if rules else 0, now, acquired_at,
                 ],
             )
 
@@ -689,10 +704,14 @@ class PaperTradingSystem:
         now: pd.Timestamp,
         forward_diagnostics: dict[str, Any] | None = None,
     ) -> float:
+        for reference in snapshot.rule_reference_prices.values():
+            error = validate_reference_price_evidence(reference, now=now, max_age_minutes=5)
+            if error is not None:
+                raise ValueError(error)
         with self.store.connect() as connection:
             connection.execute("BEGIN TRANSACTION")
             connection.execute(
-                "UPDATE paper_runs SET market_rule_evidence_required=TRUE WHERE run_id=?",
+                "UPDATE paper_runs SET market_rule_evidence_required=TRUE, market_rule_evidence_version=2 WHERE run_id=?",
                 [run_id],
             )
             self._persist_market_rule_evidence(
@@ -1188,7 +1207,7 @@ class PaperTradingSystem:
             with self.store.connect() as connection:
                 connection.execute("BEGIN TRANSACTION")
                 connection.execute(
-                    "UPDATE paper_runs SET market_rule_evidence_required=TRUE WHERE run_id=?",
+                    "UPDATE paper_runs SET market_rule_evidence_required=TRUE, market_rule_evidence_version=2 WHERE run_id=?",
                     [run_id],
                 )
                 self._persist_market_rule_evidence(

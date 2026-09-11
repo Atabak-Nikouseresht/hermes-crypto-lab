@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
 import math
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+import ccxt
 import pandas as pd
 
 from src.download_data import RETRYABLE_ERRORS, call_with_retry, create_exchange
@@ -72,11 +73,32 @@ class PublicMarketClient:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
-            if error.code == 400 and '"code":-2043' in body.replace(" ", ""):
+            try:
+                error_payload = json.loads(body)
+            except json.JSONDecodeError:
+                error_payload = None
+            if (
+                error.code == 400 and isinstance(error_payload, dict)
+                and type(error_payload.get("code")) is int and error_payload["code"] == -2043
+            ):
                 return None
-            raise TransientPublicMarketError(str(error)) from error
+            if error.code in {418, 429}:
+                raw_retry_after = error.headers.get("Retry-After") if error.headers else None
+                retry_after = (
+                    int(raw_retry_after)
+                    if isinstance(raw_retry_after, str) and len(raw_retry_after) <= 10
+                    and raw_retry_after.isascii() and raw_retry_after.isdecimal()
+                    else None
+                )
+                raise TransientPublicMarketError(
+                    f"Binance reference-price HTTP {error.code}; Retry-After seconds: {retry_after}",
+                    http_status=error.code, retry_after_seconds=retry_after,
+                ) from error
+            if 500 <= error.code <= 599:
+                raise _RetryableReferenceTransportError(str(error)) from error
+            raise ValueError(f"Terminal Binance reference-price HTTP {error.code} for {symbol}") from error
         except (URLError, TimeoutError, OSError) as error:
-            raise TransientPublicMarketError(str(error)) from error
+            raise _RetryableReferenceTransportError(str(error)) from error
         if not isinstance(payload, dict):
             raise ValueError(f"Malformed Binance reference price for {symbol}")
         return payload
@@ -90,7 +112,17 @@ class PublicMarketClient:
 
 
 class TransientPublicMarketError(RuntimeError):
-    """A retry-exhausted public transport or exchange-availability failure."""
+    """Public failure eligible for governed outer retry, not a fallback price."""
+
+    def __init__(self, message: str, *, http_status: int | None = None,
+                 retry_after_seconds: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.retry_after_seconds = retry_after_seconds
+
+
+class _RetryableReferenceTransportError(TransientPublicMarketError, ccxt.NetworkError):
+    """Bridge urllib to the existing single call_with_retry layer, never rate bans."""
 
 
 def create_public_market_client(exchange_id: str, timeout_ms: int) -> PublicMarketClient:
@@ -257,6 +289,7 @@ def fetch_public_market_snapshot(
     max_retries: int = 5,
     backoff_base_seconds: float = 1.0,
     timeout_ms: int = 30_000,
+    acquisition_clock: Callable[[], datetime] | None = None,
 ) -> MarketSnapshot:
     """Fetch public OHLCV and ticker data; no trading method is ever called."""
     current = pd.Timestamp(now or datetime.now(timezone.utc)).tz_convert("UTC")
@@ -324,6 +357,10 @@ def fetch_public_market_snapshot(
                 max_retries=max_retries,
                 backoff_base_seconds=backoff_base_seconds,
             )
+            # Receipt is independent of the caller's snapshot-start/candle clock.
+            acquired_at = pd.Timestamp(
+                acquisition_clock() if acquisition_clock is not None else datetime.now(timezone.utc)
+            ).tz_convert("UTC")
             market_info = market.market(symbol)
             if reference_payload is None:
                 rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
@@ -334,7 +371,9 @@ def fetch_public_market_snapshot(
                     or reference_payload.get("symbol") != expected_symbol
                 ):
                     raise ValueError(f"Mismatched Binance reference price symbol for {symbol}")
-                raw_reference = reference_payload.get("referencePrice")
+                if "referencePrice" not in reference_payload:
+                    raise ValueError(f"Malformed Binance reference price for {symbol}")
+                raw_reference = reference_payload["referencePrice"]
                 if raw_reference is None:
                     rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
                 elif isinstance(raw_reference, str):
@@ -352,13 +391,14 @@ def fetch_public_market_snapshot(
                         reference,
                         "REFERENCE_PRICE",
                         reference_timestamp,
+                        acquired_at,
                     )
                     # Binance documents referencePrice as continually changing,
                     # but publishes no fixed REST update interval.  The governed
                     # future-only evidence contract reuses quote freshness.
                     evidence_error = validate_reference_price_evidence(
                         evidence,
-                        now=current,
+                        now=acquired_at,
                         max_age_minutes=config.max_quote_staleness_minutes,
                     )
                     if evidence_error is not None:

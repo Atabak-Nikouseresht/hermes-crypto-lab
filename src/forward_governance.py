@@ -13,10 +13,11 @@ from src.execution_protocol import (
     EXECUTION_PROTOCOL_VERSION,
     QUOTE_COHERENCE_CONTRACT_VERSION,
     REFERENCE_PRICE_EVIDENCE_CONTRACT_VERSION,
+    REFERENCE_PRICE_MAX_AGE_SECONDS,
 )
 from src.forward_operations import verify_immutable_manifest
 from src.paper_broker import PaperConfig
-from src.paper_store import PaperStore
+from src.paper_store import BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION, PaperStore
 
 LOCKED_STRATEGY_HASH_SHA256 = "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6"
 CHECKPOINT_MANIFEST_HASH_SHA256 = "97e8d1770a1d78010566760ac3d4121b8b6eafd8f13b617782286cbfaab31c4b"
@@ -44,6 +45,9 @@ REFERENCE_PRICE_EVIDENCE_CONTRACT_HASH_SHA256 = (
 )
 REFERENCE_PRICE_EVIDENCE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
     "5426acb5824d7776e1cced3eb3b99cb83d2482e927aa56e1f11f519ccd423e58"
+)
+MARKET_RULE_EVIDENCE_V2_CONTRACT_HASH_SHA256 = (
+    "2d55dfbc2962e165507da4a2f76a57704160a2334050761b298e3fb4b7e53f51"
 )
 
 
@@ -214,12 +218,46 @@ def verify_reference_price_evidence_runtime_contract(
     max_age = rule.get("max_age_seconds")
     if type(max_age) is not int or max_age <= 0:
         raise ValueError("Reference-price evidence max age must be a positive exact integer")
-    if max_age != config.max_quote_staleness_minutes * 60:
+    if max_age != REFERENCE_PRICE_MAX_AGE_SECONDS or max_age != config.max_quote_staleness_minutes * 60:
         raise ValueError("Reference-price evidence freshness differs from governed quote freshness")
     if rule.get("future_timestamp_permitted") is not False:
         raise ValueError("Reference-price evidence contract permits future timestamps")
     if rule.get("missing_timestamp_permitted_for_nonnull_reference_price") is not False:
         raise ValueError("Reference-price evidence contract permits missing timestamps")
+
+
+def verify_market_rule_evidence_v2_runtime_contract(
+    payload: dict[str, Any], config: PaperConfig
+) -> None:
+    """Bind prospective persistence to v6 without rewriting its sealed contract."""
+    if (
+        payload.get("version") != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION
+        or payload.get("execution_protocol_version") != EXECUTION_PROTOCOL_VERSION
+        or payload.get("prior_reference_price_governance_amendment_sha256")
+        != REFERENCE_PRICE_EVIDENCE_GOVERNANCE_AMENDMENT_HASH_SHA256
+        or payload.get("effective_for_new_runs_only") is not True
+        or any(payload.get(field) is not False for field in (
+            "economic_spec_changed", "historical_evidence_fabricated",
+            "historical_executions_reinterpreted",
+        ))
+    ):
+        raise ValueError("Market-rule evidence v2 governance mismatch")
+    rule = payload.get("rule")
+    expected_rule = {
+        "acquisition_timestamp_required_for_reference_price": True,
+        "admission_freshness_required": True,
+        "future_timestamp_permitted": False,
+        "max_age_seconds": REFERENCE_PRICE_MAX_AGE_SECONDS,
+        "missing_timestamp_permitted_for_nonnull_reference_price": False,
+        "non_reference_sources_require_null_reference_timestamps": True,
+    }
+    if (
+        not isinstance(rule, dict)
+        or rule != expected_rule
+        or any(type(rule[key]) is not type(value) for key, value in expected_rule.items())
+        or config.max_quote_staleness_minutes * 60 != REFERENCE_PRICE_MAX_AGE_SECONDS
+    ):
+        raise ValueError("Market-rule evidence v2 freshness policy mismatch")
 
 
 def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, str]:
@@ -267,6 +305,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     ).hexdigest()
     actual_reference_price_amendment = hashlib.sha256(reference_price_amendment.read_bytes()).hexdigest()
     actual_reference_price_contract = hashlib.sha256(reference_price_contract.read_bytes()).hexdigest()
+    market_v2_contract = project_root / "forward_experiment" / "market_rule_evidence_contract_v2.json"
+    actual_market_v2_contract = hashlib.sha256(market_v2_contract.read_bytes()).hexdigest()
     expected = {
         "checkpoint": CHECKPOINT_MANIFEST_HASH_SHA256,
         "governance": GOVERNANCE_HASH_SHA256,
@@ -279,6 +319,7 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "transient_failure_governance_amendment": TRANSIENT_FAILURE_GOVERNANCE_AMENDMENT_HASH_SHA256,
         "reference_price_evidence_governance_amendment": REFERENCE_PRICE_EVIDENCE_GOVERNANCE_AMENDMENT_HASH_SHA256,
         "reference_price_evidence_contract": REFERENCE_PRICE_EVIDENCE_CONTRACT_HASH_SHA256,
+        "market_rule_evidence_v2_contract": MARKET_RULE_EVIDENCE_V2_CONTRACT_HASH_SHA256,
     }
     actual = {
         "checkpoint": actual_checkpoint,
@@ -292,9 +333,14 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "transient_failure_governance_amendment": actual_transient_failure_amendment,
         "reference_price_evidence_governance_amendment": actual_reference_price_amendment,
         "reference_price_evidence_contract": actual_reference_price_contract,
+        "market_rule_evidence_v2_contract": actual_market_v2_contract,
     }
     if actual != expected:
         raise ValueError(f"Forward trust-anchor mismatch: expected={expected}, actual={actual}")
+    verify_immutable_manifest(market_v2_contract, Path(str(market_v2_contract) + ".sha256"))
+    verify_market_rule_evidence_v2_runtime_contract(
+        json.loads(market_v2_contract.read_text(encoding="utf-8")), config
+    )
     verify_immutable_manifest(
         checkpoint, project_root / "forward_experiment" / "checkpoint_manifest.sha256"
     )

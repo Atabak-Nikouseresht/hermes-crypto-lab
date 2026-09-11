@@ -20,7 +20,7 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
             [now, specification],
         )
         connection.execute(
-            "INSERT INTO paper_runs VALUES (?, ?, ?, 'DRY_RUN', 'DRY_RUN', FALSE, FALSE, NULL, NULL, NULL, NULL, '', '{}')",
+            "INSERT INTO paper_runs VALUES (?, ?, ?, 'DRY_RUN', 'DRY_RUN', FALSE, FALSE, NULL, NULL, NULL, NULL, '', '{}', 1)",
             ["dry", now, now],
         )
         connection.execute(
@@ -40,7 +40,7 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
 
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_runs VALUES (?, ?, ?, 'RECOVERED_ABORTED', 'PAPER', TRUE, FALSE, NULL, NULL, NULL, NULL, '', '{}')",
+            "INSERT INTO paper_runs VALUES (?, ?, ?, 'RECOVERED_ABORTED', 'PAPER', TRUE, FALSE, NULL, NULL, NULL, NULL, '', '{}', 1)",
             ["recovered", now, now],
         )
         connection.execute(
@@ -52,7 +52,7 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
 
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_runs VALUES (?, ?, ?, 'EXECUTED', 'PAPER', TRUE, FALSE, ?, NULL, NULL, NULL, '', '{}')",
+            "INSERT INTO paper_runs VALUES (?, ?, ?, 'EXECUTED', 'PAPER', TRUE, FALSE, ?, NULL, NULL, NULL, '', '{}', 1)",
             ["official", now, now, "2026-01-05T00:05Z"],
         )
         connection.execute(

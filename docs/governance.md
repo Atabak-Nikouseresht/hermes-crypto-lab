@@ -79,6 +79,30 @@ Documentation, naming, repository metadata, and generated-artifact policy may ch
 
 ## Historical integrity
 
+### Prospective market-rule evidence v2
+
+The additive [market-rule evidence v2 contract](../forward_experiment/market_rule_evidence_contract_v2.json)
+anchors the unchanged v6 reference-price governance amendment. A fresh acquisition
+UTC is captured after each reference response; snapshot-start UTC is not its
+clock basis. `REFERENCE_PRICE` requires source and acquisition timestamps, source
+not later than acquisition, and an age of at most 300 seconds (inclusive).
+Final execution admission applies the same source-age bound and must not precede
+acquisition. Persisted admission and acquisition times allow the same checks
+offline, including during read-only backup verification; neither wall clock nor
+live Binance is used in reconciliation.
+
+Schema version 17 and an independent run-level requirement establish prospective
+adoption. Historical v1 evidence retains its historical contract and digest.
+Migration does not fill historical acquisition timestamps, rewrite executions,
+or infer v2 provenance from removable child rows. Prospective runs cannot
+downgrade their required contract to v1. `LAST_FALLBACK` and
+`UNVERIFIABLE_AVERAGE` retain their separate existing semantics and cannot carry
+incompatible reference timestamps.
+
+This is evidence-integrity maintenance, not a strategy or economic-spec change.
+Current Binance `executionRules` are a material known limitation, explicitly
+[audited and deferred to Batch H](binance-execution-rules-audit.md).
+
 Existing v2 orders and fills remain unchanged and retain their original protocol version, timestamps, identifiers, and state. Future fills use v3. The two protocols are never merged into an unversioned series.
 
 The tracked controlled-research run directories are preserved because they contain candidate locks, hash-chained ledgers, final-test records, and audit provenance. Apparent duplication is disclosed rather than deleted.

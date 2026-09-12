@@ -255,8 +255,8 @@ See [Forward validation](docs/forward-validation.md) and [Governance](docs/gover
 MSc Applied Economics and Markets — University of Bologna  
 Quantitative Research · Financial Risk · Data Analytics
 
-GitHub: [Atabak-Nikouseresht](https://github.com/Atabak-Nikouseresht)  
-LinkedIn: [Atabak Nikouseresht](https://linkedin.com/in/atabak-nikouseresht)
+GitHub: [Atabak-Nikouseresht](@url:`https://github.com/Atabak-Nikouseresht`)  
+LinkedIn: [Atabak Nikouseresht](@url:`https://linkedin.com/in/atabak-nikouseresht`)
 
 ## License status
 

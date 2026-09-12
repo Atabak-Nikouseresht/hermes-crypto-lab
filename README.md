@@ -249,6 +249,15 @@ See [Forward validation](docs/forward-validation.md) and [Governance](docs/gover
 - [Public history rewrite and commit mapping](docs/public-history-rewrite.md)
 - [Security policy](SECURITY.md)
 
+## Author
+
+**Atabak Nikouseresht**  
+MSc Applied Economics and Markets — University of Bologna  
+Quantitative Research · Financial Risk · Data Analytics
+
+GitHub: [Atabak-Nikouseresht](@url:`https://github.com/Atabak-Nikouseresht`)  
+LinkedIn: [Atabak Nikouseresht](@url:`https://linkedin.com/in/atabak-nikouseresht`)
+
 ## License status
 
 No open-source license has been selected. Until the owner chooses one, normal copyright restrictions apply. MIT or Apache-2.0 are common options for a portfolio project, but licensing should be selected deliberately before public reuse is invited.

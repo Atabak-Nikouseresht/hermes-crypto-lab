@@ -111,7 +111,7 @@ def _verified_execution_system(tmp_path, *, v16=False, rejected=False) -> tuple[
                 raw_min_notional=Decimal("60" if rejected else "1"),
                 min_notional_applies_to_market=True,
             )},
-            rule_reference_prices={"BTC/USDT": RuleReferencePrice(Decimal("100"), "REFERENCE_PRICE", timestamp)},
+            rule_reference_prices={"BTC/USDT": RuleReferencePrice(Decimal("100"), "REFERENCE_PRICE", timestamp, timestamp)},
         )
     system._execute(
         run_id="backup-run",
@@ -245,8 +245,18 @@ def test_backup_rejects_coordinated_execution_evidence_stripping(tmp_path):
         ("DELETE FROM paper_market_rule_evidence", False),
         ("UPDATE paper_market_rule_evidence SET reference_price_source='UNVERIFIABLE_AVERAGE'", False),
         ("UPDATE paper_order_rejections SET requested_quantity=1.0, notional=100.0", True),
+        ("UPDATE paper_market_rule_evidence SET reference_price_acquired_at_utc=NULL", False),
+        ("UPDATE paper_market_rule_evidence SET reference_price_timestamp_utc=captured_at_utc-INTERVAL 301 SECOND, reference_price_acquired_at_utc=captured_at_utc-INTERVAL 300 SECOND", False),
+        ("UPDATE paper_market_rule_evidence SET contract_version='binance-market-rule-evidence-v1', reference_price_acquired_at_utc=NULL", False),
+        ("UPDATE paper_market_rule_evidence SET captured_at_utc=captured_at_utc-INTERVAL 1 SECOND", False),
+        ("UPDATE paper_market_rule_evidence SET reference_price_acquired_at_utc=captured_at_utc+INTERVAL 1 SECOND", True),
+        ("UPDATE paper_market_rule_evidence SET reference_price_timestamp_utc=reference_price_acquired_at_utc-INTERVAL 301 SECOND", False),
+        ("UPDATE paper_market_rule_evidence SET reference_price_timestamp_utc=reference_price_acquired_at_utc+INTERVAL 1 SECOND", False),
+        ("UPDATE paper_market_rule_evidence SET reference_price_source='LAST_FALLBACK'", False),
+        ("UPDATE paper_market_rule_evidence SET contract_version='binance-market-rule-evidence-v1'", False),
+        ("UPDATE paper_market_rule_evidence SET reference_price_timestamp_utc=NULL", False),
     ],
-    ids=["BACKUP-1-notional", "BACKUP-2-deletion", "BACKUP-3-reference", "BACKUP-4-rejection"],
+    ids=["notional", "deletion", "reference", "rejection", "BACKUP-3-null-acquisition", "final-stale", "coordinated-downgrade", "admission", "zero-order-future", "BACKUP-1-stale-reference", "BACKUP-2-future-reference", "BACKUP-5-source-coherence", "BACKUP-4-contract-downgrade", "missing-reference-timestamp"],
 )
 def test_v16_backup_uses_runtime_semantics_and_is_read_only(tmp_path, statement, rejected):
     import duckdb
@@ -255,6 +265,7 @@ def test_v16_backup_uses_runtime_semantics_and_is_read_only(tmp_path, statement,
     with system.store.connect(read_only=True) as connection:
         assert connection.execute("SELECT market_rule_evidence_required FROM paper_runs").fetchone() == (True,)
         assert connection.execute("SELECT COUNT(*) FROM paper_market_rule_evidence").fetchone() == (1,)
+        assert connection.execute("SELECT contract_version FROM paper_market_rule_evidence").fetchone() == ('binance-market-rule-evidence-v2',)
         if rejected:
             assert connection.execute("SELECT reason FROM paper_order_rejections").fetchone() == ("below_min_notional",)
     backup = create_verified_backup(

@@ -79,6 +79,8 @@ def _valid_release_provenance(now: datetime) -> SimpleNamespace:
 
 def _record_current_no_rebalance_evidence(store: PaperStore, *, run_id: str, now: datetime) -> None:
     with store.connect() as connection:
+        # This fixture exercises the v13 release contract, before v17 adoption.
+        connection.execute("UPDATE paper_schema_versions SET applied_at_utc=? + INTERVAL 1 DAY WHERE version=17", [now])
         connection.execute(
             "INSERT INTO paper_execution_outcomes VALUES (?, 'NO_REBALANCE_REQUIRED', ?)",
             [run_id, now],
@@ -141,7 +143,7 @@ def test_fresh_schema_has_unambiguous_v5_and_release_provenance_snapshot(tmp_pat
             for row in connection.execute("PRAGMA table_info('paper_run_release_provenance')").fetchall()
         }
 
-    assert set(versions) == set(range(2, 17))
+    assert set(versions) == set(range(2, 18))
     assert versions[5] == V5_EXECUTION
     assert versions[12] == V12_QUOTE
     assert versions[13] == V13_RELEASE
@@ -358,7 +360,7 @@ def test_real_v15_migration_preserves_history_and_is_idempotent(tmp_path):
             ).fetchall() == [("legacy-paper", True, False)]
             assert connection.execute(
                 "SELECT version, description FROM paper_schema_versions WHERE version >= 16"
-            ).fetchall() == [(16, V16_MARKET_RULES)]
+            ).fetchall() == [(16, V16_MARKET_RULES), (17, "prospective market-rule acquisition and admission evidence v2")]
             current_tables = _schema_tables(connection)
             assert current_tables == tables | {"paper_market_rule_evidence"}
             structure = {table: _schema_structure(connection, table) for table in current_tables}
@@ -401,7 +403,7 @@ def test_fresh_runtime_schema_structurally_matches_checked_in_snapshot(tmp_path,
             for table in tables:
                 assert _schema_structure(runtime, table) == _schema_structure(canonical, table), table
             runtime_versions = dict(runtime.execute("SELECT version, description FROM paper_schema_versions").fetchall())
-            assert set(runtime_versions) == set(range(2, 17))
+            assert set(runtime_versions) == set(range(2, 18))
             assert runtime_versions[15] == V15_OFFICIAL_SCHEDULE
             assert runtime_versions[16] == V16_MARKET_RULES
             assert _schema_versions_from_snapshot(snapshot) == runtime_versions

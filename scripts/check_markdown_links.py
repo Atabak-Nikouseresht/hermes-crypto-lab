@@ -25,7 +25,7 @@ def broken_links(project_root: Path = PROJECT_ROOT) -> list[tuple[str, str]]:
     for document in tracked_markdown(project_root):
         text = document.read_text(encoding="utf-8")
         for target in MARKDOWN_LINK.findall(text):
-            if target.startswith(("http://", "https://", "mailto:", "#", "@url:`")):
+            if target.startswith(("http://", "https://", "mailto:", "#")):
                 continue
             path_part = target.split("#", 1)[0]
             if not path_part:

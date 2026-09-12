@@ -9,7 +9,7 @@
     ".gitignore": "06f27bef925ebf9aca61bd0474cfe368fcde0d84039e99ba695cfcad981638ba",
     ".python-version": "03520ee77719f14d31fd23cdbe29ea0e6dc6e7f181f8d8f99ef053500c192223",
     "CONTRIBUTING.md": "a8cb86c87bb7a368522840572150f0ae8a5013a03786950544e5774f4fa89cd1",
-    "README.md": "cef120f71830aaed6d2e7f77a47312c56a4b025c0355ff4dff78d15d2971fe76",
+    "README.md": "81528c861693ecdbc3f9f8edc11d8e1d82f7b041d34ed6831e7d34bddaf40e8d",
     "SECURITY.md": "89a38b4f7b4cf9bcd6287157897a3c0f5a92833b368756291bfd652f5d0ad6e8",
     "audits/README.md": "4c753f98c9a595cd1dcf5126bc51a5267a3046be16cd19da178d2220a6b72236",
     "config/assets.yaml": "5fa14abbed5257ce0083c291779735e212b308f35e7405036303a55a7b4309f8",
@@ -50,7 +50,7 @@
     "run_monthly_report.py": "940d8c56f885295c317b1a38f053c277a219675a2640f92140bf37d9b97d64fd",
     "run_paper.py": "96112327bba8d2693b81033399791cb4e7990e06aa44091bfbe4bc55257e08fe",
     "scripts/backup_forward.py": "d0b189950e00b8f663759fa59e7955ce97ab79f486af5d3fa95d1e480216318c",
-    "scripts/check_markdown_links.py": "438d11af3f6f6953e21747b0046d424cf9d2b80fd292f8979cb6fcd956131716",
+    "scripts/check_markdown_links.py": "2ae389ad79e85596a005d3d2890b5334be791490133d26beb4fda5ab7713379a",
     "scripts/data_cross_check.py": "c2ce77ad9a887561585cf92028827a9721221f8845305f7fd2e50be44c0d5f06",
     "scripts/generate_hardening_manifest.py": "1affa2359eb47c49b50dadc7b15ef39794713e432bb94b69d77b45aaf928d334",
     "scripts/hermes_gateway_watchdog.ps1": "895a57ca0b416433df829cdca46f29561e56a289ce3f86a0b4baf4a95fa867ce",
@@ -110,7 +110,7 @@
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-12T11:37:23.429425+00:00",
+  "generated_at_utc": "2026-09-12T12:07:06.012608+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

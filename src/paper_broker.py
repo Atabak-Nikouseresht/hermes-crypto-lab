@@ -439,6 +439,9 @@ class PaperTradingSystem:
                 context.prec = len(str(abs(units))) + len(step.as_tuple().digits)
                 return units * step
 
+        def step_aligned(value: Decimal, step: Decimal) -> bool:
+            return Fraction(value) % Fraction(step) == 0
+
         reference_decimal = exact(rule_reference_price)
         min_quantity = rules.raw_min_quantity if rules.raw_min_quantity is not None else exact(rules.min_quantity)
         max_quantity = rules.raw_max_quantity if rules.raw_max_quantity is not None else exact(rules.max_quantity)
@@ -453,6 +456,15 @@ class PaperTradingSystem:
             value is not None and (not value.is_finite() or value < 0)
             for value in (min_quantity, max_quantity, step_size, market_min, market_max,
                           market_step, min_notional, notional_min, notional_max)
+        ):
+            return None, "invalid_exchange_rules"
+        if any(
+            minimum is not None
+            and minimum > 0
+            and maximum is not None
+            and maximum > 0
+            and maximum < minimum
+            for minimum, maximum in ((min_quantity, max_quantity), (market_min, market_max))
         ):
             return None, "invalid_exchange_rules"
         requires_average = (
@@ -495,12 +507,22 @@ class PaperTradingSystem:
                 normalized_decimal = floor_step(normalized_decimal, market_step)
             except (InvalidOperation, OverflowError, ValueError):
                 return None, "invalid_exchange_rules"
-        if market_min is not None and normalized_decimal < market_min:
+        # Both grids apply to the final executable quantity after the optional
+        # MARKET_LOT_SIZE floor; pre-floor LOT_SIZE checks are insufficient.
+        if market_min is not None and market_min > 0 and normalized_decimal < market_min:
             return None, "below_market_min_quantity"
-        if normalized_decimal <= Decimal(str(self.config.quantity_tolerance)):
-            return None, "non_positive_quantity"
         if market_max is not None and market_max > 0 and normalized_decimal > market_max:
             return None, "above_market_max_quantity"
+        if market_step is not None and market_step > 0 and not step_aligned(normalized_decimal, market_step):
+            return None, "market_lot_step_mismatch"
+        if normalized_decimal <= Decimal(str(self.config.quantity_tolerance)):
+            return None, "non_positive_quantity"
+        if min_quantity is not None and min_quantity > 0 and normalized_decimal < min_quantity:
+            return None, "below_min_quantity"
+        if max_quantity is not None and max_quantity > 0 and normalized_decimal > max_quantity:
+            return None, "above_max_quantity"
+        if step_size is not None and step_size > 0 and not step_aligned(normalized_decimal, step_size):
+            return None, "lot_step_mismatch"
 
         with localcontext() as context:
             context.prec = len(normalized_decimal.as_tuple().digits) + len(reference_decimal.as_tuple().digits)

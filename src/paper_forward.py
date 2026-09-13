@@ -28,6 +28,40 @@ RECOVERED_INCOMPLETE_OUTCOME = "RECOVERED_COMMITTED_INCOMPLETE_EVIDENCE"
 RECOVERED_INCOMPLETE_DELIVERY = "RECOVERED_COMMITTED_INCOMPLETE_DELIVERY"
 
 
+def _persisted_schedule_start(
+    system: PaperTradingSystem,
+    *,
+    mode: str,
+    official_scheduled: bool,
+    status: str,
+    schedule_key: str | None,
+) -> pd.Timestamp | None:
+    """Validate and return the immutable schedule identity recorded at run start."""
+    if mode == "DRY_RUN":
+        return None
+    if schedule_key is None:
+        if official_scheduled and status == "EXECUTED":
+            raise RuntimeError("Official scheduled execution is missing its persisted schedule identity")
+        return None
+    try:
+        scheduled_start = pd.Timestamp(schedule_key)
+        if scheduled_start.tzinfo is None:
+            raise ValueError
+        scheduled_start = scheduled_start.tz_convert("UTC")
+    except (TypeError, ValueError):
+        raise RuntimeError("Persisted schedule identity is invalid") from None
+    expected_start = scheduled_start.normalize() + pd.Timedelta(
+        hours=system.config.schedule_hour, minutes=system.config.schedule_minute
+    )
+    if (
+        scheduled_start != expected_start
+        or scheduled_start.weekday() != system.config.schedule_weekday
+        or schedule_key != scheduled_start.strftime("%Y-%m-%dT%H:%MZ")
+    ):
+        raise RuntimeError("Persisted schedule identity is inconsistent with the governed schedule")
+    return scheduled_start
+
+
 def recover_committed_forward_evidence(
     system: PaperTradingSystem,
     *,
@@ -411,7 +445,8 @@ def finalize_forward_run(
     now_ts = pd.Timestamp(now).tz_convert("UTC")
     with system.store.connect(read_only=True) as connection:
         row = connection.execute(
-            "SELECT status, completed_at_utc, reconciliation FROM paper_runs WHERE run_id=?",
+            "SELECT status, completed_at_utc, reconciliation, mode, official_scheduled, schedule_key "
+            "FROM paper_runs WHERE run_id=?",
             [result.run_id],
         ).fetchone()
     if row is None or row[0] == "RUNNING" or row[1] is None:
@@ -419,6 +454,13 @@ def finalize_forward_run(
     if result.status == "DATA_HALT":
         outcome = "DATA_QUALITY_FAILURE"
         return replace(result, outcome=outcome, diagnostics={})
+    schedule_start = _persisted_schedule_start(
+        system,
+        mode=row[3],
+        official_scheduled=bool(row[4]),
+        status=row[0],
+        schedule_key=row[5],
+    )
     committed_evidence = system.store.committed_forward_evidence(result.run_id)
     if committed_evidence is not None:
         diagnostics, observed_prices, observed_at = committed_evidence
@@ -447,15 +489,15 @@ def finalize_forward_run(
         run_id=result.run_id
     ):
         system.store.ensure_forward_baseline(run_id=result.run_id)
-    schedule_key = system._scheduled_key(now_ts)
-    if schedule_key is not None and result.status != "DRY_RUN":
-        target = now_ts.normalize() + pd.Timedelta(
+    scheduled_for = None
+    if schedule_start is not None:
+        scheduled_for = schedule_start.normalize() + pd.Timedelta(
             hours=system.config.schedule_hour,
             minutes=system.config.execution_target_minute,
         )
         system.store.record_forward_window(
-            schedule_key=schedule_key,
-            scheduled_for=target.to_pydatetime(),
+            schedule_key=row[5],
+            scheduled_for=scheduled_for.to_pydatetime(),
             run_id=result.run_id,
             outcome=outcome,
             now=now_ts.to_pydatetime(),
@@ -466,14 +508,6 @@ def finalize_forward_run(
             reason=result.message,
             now=now_ts.to_pydatetime(),
             run_id=result.run_id,
-            scheduled_for=(
-                now_ts.normalize()
-                + pd.Timedelta(
-                    hours=system.config.schedule_hour,
-                    minutes=system.config.execution_target_minute,
-                )
-            ).to_pydatetime()
-            if schedule_key is not None
-            else None,
+            scheduled_for=scheduled_for.to_pydatetime() if scheduled_for is not None else None,
         )
     return replace(result, outcome=outcome, diagnostics=diagnostics)

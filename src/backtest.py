@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from numbers import Real
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 from src.costs import ExecutionCostModel
 
 TargetWeightFunction = Callable[[pd.DataFrame, pd.Timestamp], Any]
+MAX_QUANTITY_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,15 @@ class BacktestConfig:
             raise ValueError("initial_cash must be positive")
         if self.rebalance_interval_days <= 0 or self.rebalance_interval_days % 7 != 0:
             raise ValueError("rebalance_interval_days must be a positive multiple of 7")
+        if (
+            isinstance(self.quantity_tolerance, bool)
+            or not isinstance(self.quantity_tolerance, Real)
+            or not math.isfinite(float(self.quantity_tolerance))
+            or not 0.0 <= float(self.quantity_tolerance) <= MAX_QUANTITY_TOLERANCE
+        ):
+            raise ValueError(
+                f"quantity_tolerance must be finite and within [0, {MAX_QUANTITY_TOLERANCE}]"
+            )
 
 
 @dataclass(frozen=True)
@@ -40,17 +53,27 @@ class EventDrivenBacktester:
     """Queue weekly close signals and fill them on the next available bar."""
 
     def __init__(self, close_prices: pd.DataFrame, config: BacktestConfig):
-        if close_prices.empty:
-            raise ValueError("close_prices cannot be empty")
+        if not isinstance(close_prices, pd.DataFrame) or close_prices.empty:
+            raise ValueError("close_prices must be a nonempty DataFrame")
         prices = close_prices.copy().sort_index()
-        if prices.index.tz is None:
+        if not isinstance(prices.index, pd.DatetimeIndex) or prices.index.tz is None:
             raise ValueError("close_prices index must be timezone-aware UTC")
         prices.index = prices.index.tz_convert("UTC")
         if prices.index.has_duplicates:
             raise ValueError("close_prices index cannot contain duplicates")
-        if prices.isna().any().any() or (prices <= 0).any().any():
-            raise ValueError("close_prices must contain only positive complete values")
-        self.prices = prices.astype(float)
+        if any(
+            not pd.api.types.is_numeric_dtype(dtype)
+            or pd.api.types.is_bool_dtype(dtype)
+            for dtype in prices.dtypes
+        ):
+            raise ValueError("close_prices must contain only numeric values")
+        try:
+            numeric_prices = prices.astype(float)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("close_prices must contain only numeric finite values") from error
+        if not np.isfinite(numeric_prices.to_numpy()).all() or (numeric_prices <= 0).any().any():
+            raise ValueError("close_prices must contain only positive finite values")
+        self.prices = numeric_prices
         self.config = config
         self.costs = ExecutionCostModel(config.fee_rate, config.slippage_rate)
 
@@ -66,15 +89,34 @@ class EventDrivenBacktester:
             self.prices.index[location + 1]
         )
 
-    @staticmethod
-    def _extract_weights(signal: Any) -> dict[str, float]:
+    def _extract_weights(self, signal: Any) -> dict[str, float]:
         weights = signal.target_weights if hasattr(signal, "target_weights") else signal
-        result = {str(asset): float(weight) for asset, weight in dict(weights).items()}
-        if any(weight < -1e-12 for weight in result.values()):
+        try:
+            raw_weights = dict(weights)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Target weights must be a mapping") from error
+        allowed_symbols = set(self.prices.columns) | {"CASH"}
+        result: dict[str, float] = {}
+        for asset, weight in raw_weights.items():
+            if not isinstance(asset, str) or asset not in allowed_symbols:
+                raise ValueError(f"Unknown target-weight symbol: {asset!r}")
+            if isinstance(weight, bool) or not isinstance(weight, Real):
+                raise ValueError(f"Target weight for {asset} must be numeric")
+            converted = float(weight)
+            if not math.isfinite(converted):
+                raise ValueError(f"Target weight for {asset} must be finite")
+            result[asset] = converted
+        if any(weight < 0.0 for weight in result.values()):
             raise ValueError("Negative target weights are not allowed")
         risky_total = sum(weight for asset, weight in result.items() if asset != "CASH")
-        if risky_total > 1.0 + 1e-12:
+        if risky_total > 1.0 + self.config.quantity_tolerance:
             raise ValueError("Target weights imply leverage")
+        if "CASH" in result:
+            cash = result["CASH"]
+            if cash > 1.0 + self.config.quantity_tolerance:
+                raise ValueError("CASH target weight cannot exceed 1")
+            if abs(risky_total + cash - 1.0) > self.config.quantity_tolerance:
+                raise ValueError("Explicit CASH target weight must complete the allocation")
         return result
 
     def run(

@@ -1975,25 +1975,42 @@ class PaperStore:
         execution_outcome: str | None = None,
     ) -> None:
         with self.connect() as connection:
-            connection.execute(
-                """
-                UPDATE paper_runs
-                SET completed_at_utc=?, status=?, message=?, reconciliation=?
-                WHERE run_id=?
-                """,
-                [
-                    completed_at,
-                    status,
-                    message,
-                    json.dumps(asdict_reconciliation(reconciliation), sort_keys=True),
-                    run_id,
-                ],
-            )
-            if execution_outcome is not None:
+            connection.execute("BEGIN TRANSACTION")
+            try:
                 connection.execute(
-                    "INSERT OR REPLACE INTO paper_execution_outcomes VALUES (?, ?, ?)",
-                    [run_id, execution_outcome, completed_at],
+                    """
+                    UPDATE paper_runs
+                    SET completed_at_utc=?, status=?, message=?, reconciliation=?
+                    WHERE run_id=?
+                    """,
+                    [
+                        completed_at,
+                        status,
+                        message,
+                        json.dumps(asdict_reconciliation(reconciliation), sort_keys=True),
+                        run_id,
+                    ],
                 )
+                if execution_outcome is not None:
+                    self._write_execution_outcome(
+                        connection, run_id, execution_outcome, completed_at
+                    )
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    @staticmethod
+    def _write_execution_outcome(
+        connection: duckdb.DuckDBPyConnection,
+        run_id: str,
+        execution_outcome: str,
+        completed_at: datetime,
+    ) -> None:
+        connection.execute(
+            "INSERT OR REPLACE INTO paper_execution_outcomes VALUES (?, ?, ?)",
+            [run_id, execution_outcome, completed_at],
+        )
 
 
 def asdict_reconciliation(result: ReconciliationResult) -> dict[str, Any]:

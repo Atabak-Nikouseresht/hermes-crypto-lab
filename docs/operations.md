@@ -36,10 +36,13 @@ be reconstructed without fabrication.
 
 Recovery also writes a report from committed database evidence and records the
 notification as `PENDING`; `--resend RUN_ID` retries delivery only and never
-invokes market fetch, signal generation, or execution. Because Telegram does not
-offer a transaction shared with DuckDB, interruption after an external send but
-before the local `DELIVERED` update remains an auditable at-least-once delivery
-ambiguity; the pending record is retained rather than falsely claiming success.
+invokes market fetch, signal generation, or execution. Before the external sender
+is called, delivery atomically claims a durable `SENDING` attempt identity. A
+confirmed sender failure transitions that attempt to `FAILED` and permits retry.
+Because Telegram does not provide an externally enforced idempotency key or a
+transaction shared with DuckDB, a process interruption while `SENDING` is
+ambiguous: automatic resend is refused and explicit manual recovery is required.
+This is ambiguity-safe at-least-once delivery, not exactly-once delivery.
 
 `forward_experiment/scheduler_manifest.json` is the portable static contract:
 job names, UTC triggers, safety settings, wrapper paths, and wrapper hashes.
@@ -110,6 +113,16 @@ trading state.
 On platforms with directory `fsync` support, each published entry is synced
 before the next publication; an orphaned valid marker is recoverable only when
 regenerated pair hashes match its declared hashes.
+
+Monthly `net_return` and drawdown use actual observed equity endpoints. Periodic
+volatility and Sharpe use only a contiguous sequence of equity-backed governed
+weekly schedule windows, annualized as weekly returns times `sqrt(52)`. Every
+scheduled interval must be exactly seven days apart and must have a valid forward
+equity observation; a `MISSED_SCHEDULE`, a non-equity window, or an irregular gap
+makes periodic volatility and Sharpe `insufficient sample`. No missing window is
+imputed and no synthetic zero return is inserted. The report exposes the sampling
+status, equity-sample count, and return count separately from operational
+scheduled/completed/missed window counts.
 
 ## Backup and temporary restore verification
 

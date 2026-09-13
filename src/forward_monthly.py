@@ -225,7 +225,8 @@ def generate_monthly_forward_report(
         effective_start = max(month_start, experiment_start)
         anchor = connection.execute(
             """
-            SELECT w.run_id, e.snapshot_at_utc, e.cash, e.positions_value, e.equity
+            SELECT w.run_id, e.snapshot_at_utc, e.cash, e.positions_value, e.equity,
+                   w.scheduled_for_utc
             FROM forward_schedule_windows w
             JOIN forward_experiment_windows x ON x.schedule_key=w.schedule_key
             JOIN equity_snapshots e ON e.run_id=w.run_id
@@ -238,7 +239,8 @@ def generate_monthly_forward_report(
         if anchor is None:
             anchor = connection.execute(
                 """
-                SELECT b.run_id, b.observed_at_utc, e.cash, e.positions_value, b.equity
+                SELECT b.run_id, b.observed_at_utc, e.cash, e.positions_value, b.equity,
+                       b.observed_at_utc
                 FROM forward_baselines b
                 JOIN equity_snapshots e ON e.run_id=b.run_id
                 WHERE b.experiment_id=?
@@ -350,20 +352,68 @@ def generate_monthly_forward_report(
     )
     if len(equity_values) >= 2:
         net_return = float(equity_values.iloc[-1] / equity_values.iloc[0] - 1.0)
-        returns = equity_values.pct_change().dropna()
-        volatility = float(returns.std(ddof=1) * math.sqrt(52)) if len(returns) > 1 else 0.0
-        sharpe: float | str = (
-            float(returns.mean() / returns.std(ddof=1) * math.sqrt(52))
-            if len(returns) >= 12 and returns.std(ddof=1) > 0
-            else "insufficient sample"
-        )
         drawdowns = equity_values / equity_values.cummax() - 1.0
         maximum_drawdown = abs(float(drawdowns.min()))
     else:
         net_return = 0.0
-        volatility = 0.0
-        sharpe = "insufficient sample"
         maximum_drawdown = 0.0
+
+    equity_by_run = {row[0]: row for row in equities}
+    governed_points: list[tuple[pd.Timestamp, float]] = []
+    missing_or_irregular_window = False
+    for _schedule_key, scheduled_for, run_id, outcome in windows:
+        equity_row = equity_by_run.get(run_id)
+        if outcome == "MISSED_SCHEDULE" or equity_row is None:
+            missing_or_irregular_window = True
+            continue
+        governed_points.append(
+            (pd.Timestamp(scheduled_for).tz_convert("UTC"), float(equity_row[4]))
+        )
+    if any(
+        later[0] - earlier[0] != pd.Timedelta(days=7)
+        for earlier, later in zip(governed_points, governed_points[1:], strict=False)
+    ):
+        missing_or_irregular_window = True
+    periodic_points = governed_points
+    if anchor is not None and governed_points:
+        anchor_schedule = pd.Timestamp(anchor[5]).tz_convert("UTC")
+        if governed_points[0][0] - anchor_schedule == pd.Timedelta(days=7):
+            periodic_points = [(anchor_schedule, float(anchor[4])), *governed_points]
+    if missing_or_irregular_window:
+        periodic_returns = pd.Series(dtype=float)
+        performance_sampling_status = "missing_or_irregular_windows"
+    elif len(periodic_points) < 2:
+        periodic_returns = pd.Series(dtype=float)
+        performance_sampling_status = "insufficient_weekly_returns"
+    else:
+        periodic_returns = pd.Series(
+            [
+                later_equity / earlier_equity - 1.0
+                for (_, earlier_equity), (_, later_equity) in zip(
+                    periodic_points, periodic_points[1:], strict=False
+                )
+            ],
+            dtype=float,
+        )
+        performance_sampling_status = (
+            "valid_contiguous_weekly"
+            if len(periodic_returns) >= 2
+            else "insufficient_weekly_returns"
+        )
+    periodic_return_count = len(periodic_returns)
+    volatility: float | str = (
+        float(periodic_returns.std(ddof=1) * math.sqrt(52))
+        if performance_sampling_status == "valid_contiguous_weekly"
+        else "insufficient sample"
+    )
+    periodic_std = periodic_returns.std(ddof=1) if periodic_return_count >= 2 else math.nan
+    sharpe: float | str = (
+        float(periodic_returns.mean() / periodic_std * math.sqrt(52))
+        if performance_sampling_status == "valid_contiguous_weekly"
+        and periodic_return_count >= 12
+        and periodic_std > 0
+        else "insufficient sample"
+    )
 
     total_fees = sum(float(row[5]) for row in fills)
     spread_cost = sum(float(row[6]) for row in fills)
@@ -424,6 +474,10 @@ def generate_monthly_forward_report(
         "scheduled_windows": scheduled_windows,
         "completed_windows": completed_windows,
         "missed_windows": missed_windows,
+        "performance_sampling_status": performance_sampling_status,
+        "performance_sample_count": len(periodic_points),
+        "periodic_return_count": periodic_return_count,
+        "periodic_annualization": "weekly_returns_x_sqrt_52",
         "paper_trades": len({row[0] for row in fills}),
         "fills": len(fills),
         "weeks_in_cash": weeks_in_cash,
@@ -460,7 +514,10 @@ def generate_monthly_forward_report(
         f"- Net return: **{net_return:.2%}**",
         f"- Fees/spread/slippage: **{total_fees:.4f}/{spread_cost:.4f}/{slippage_cost:.4f} USDT**",
         f"- Turnover: **{turnover:.3f}**",
-        f"- Volatility: **{volatility:.2%}**",
+        f"- Weekly performance sampling: **{performance_sampling_status}** "
+        f"({len(periodic_points)} equity samples, {periodic_return_count} returns; "
+        "no missing schedule is imputed)",
+        f"- Volatility: **{volatility if isinstance(volatility, str) else f'{volatility:.2%}'}**",
         f"- Sharpe: **{sharpe if isinstance(sharpe, str) else f'{sharpe:.3f}'}**",
         f"- Maximum drawdown: **{maximum_drawdown:.2%}**",
         f"- BTC buy-and-hold return (identical timestamps): **{btc_return:.2%}**",

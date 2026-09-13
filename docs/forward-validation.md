@@ -45,7 +45,7 @@ Forward observations live in the paper database and forward-report paths. They m
 - model-development datasets;
 - parameter-selection reports.
 
-The monthly report reads forward observations only and uses identical timestamps for descriptive benchmarks.
+The monthly report reads forward observations only and uses identical timestamps for descriptive benchmarks. Its periodic risk metrics use only contiguous, equity-backed governed weekly windows. A missed, non-equity, or irregular governed window makes volatility and Sharpe insufficient rather than imputing a return; endpoint net return and drawdown remain actual-observation metrics and are labeled separately.
 
 ## Measurement plan
 

@@ -86,79 +86,114 @@ class NotificationService:
                 [run_id, self.target, str(report_path), now, now],
             )
 
+    def _claim_attempt(self, run_id: str, report_path: Path, target: str) -> str:
+        """Durably claim one retryable notification before external delivery."""
+        now = datetime.now(timezone.utc)
+        attempt_id = str(uuid.uuid4())
+        with self.store.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                claimed = connection.execute(
+                    """
+                    UPDATE paper_notifications
+                    SET status='SENDING', attempt_count=attempt_count + 1,
+                        last_error=NULL, updated_at_utc=?
+                    WHERE run_id=? AND status IN ('PENDING', 'FAILED')
+                    RETURNING attempt_count
+                    """,
+                    [now, run_id],
+                ).fetchone()
+                if claimed is None:
+                    raise NotificationError(
+                        f"Notification for run {run_id} requires manual recovery before resend"
+                    )
+                connection.execute(
+                    "INSERT INTO notification_attempts VALUES (?, ?, ?, 'SENDING', NULL)",
+                    [attempt_id, run_id, now],
+                )
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+        return attempt_id
+
+    def _mark_failed(self, run_id: str, attempt_id: str, message: str) -> None:
+        now = datetime.now(timezone.utc)
+        with self.store.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                connection.execute(
+                    """
+                    UPDATE paper_notifications
+                    SET status='FAILED', last_error=?, updated_at_utc=?
+                    WHERE run_id=? AND status='SENDING'
+                    """,
+                    [message, now, run_id],
+                )
+                connection.execute(
+                    """
+                    UPDATE notification_attempts SET status='FAILED', error=?
+                    WHERE attempt_id=? AND run_id=? AND status='SENDING'
+                    """,
+                    [message, attempt_id, run_id],
+                )
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def _mark_delivered(self, run_id: str, attempt_id: str) -> None:
+        now = datetime.now(timezone.utc)
+        with self.store.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                connection.execute(
+                    """
+                    UPDATE paper_notifications
+                    SET status='DELIVERED', last_error=NULL, updated_at_utc=?,
+                        delivered_at_utc=?
+                    WHERE run_id=? AND status='SENDING'
+                    """,
+                    [now, now, run_id],
+                )
+                connection.execute(
+                    """
+                    UPDATE notification_attempts SET status='DELIVERED', error=NULL
+                    WHERE attempt_id=? AND run_id=? AND status='SENDING'
+                    """,
+                    [attempt_id, run_id],
+                )
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
     def _attempt(self, run_id: str, report_path: Path, target: str) -> dict[str, Any]:
         self._assert_committed(run_id)
         report_path = Path(report_path).resolve()
         if not report_path.is_file():
             raise NotificationError(f"Report file does not exist: {report_path}")
-        now = datetime.now(timezone.utc)
-        with self.store.connect(read_only=True) as connection:
-            existing = connection.execute(
-                "SELECT attempt_count, created_at_utc FROM paper_notifications WHERE run_id=?",
-                [run_id],
-            ).fetchone()
-        attempt_count = int(existing[0]) + 1 if existing else 1
-        created_at = existing[1] if existing else now
+        attempt_id = self._claim_attempt(run_id, report_path, target)
         try:
             response = self.sender(target, report_path)
         except Exception as error:
             message = str(error)
-            with self.store.connect() as connection:
-                connection.execute("BEGIN TRANSACTION")
-                connection.execute(
-                    """
-                    INSERT INTO paper_notifications VALUES (?, ?, ?, 'FAILED', ?, ?, ?, ?, NULL)
-                    ON CONFLICT (run_id) DO UPDATE SET
-                        target=excluded.target,
-                        report_path=excluded.report_path,
-                        status='FAILED',
-                        attempt_count=excluded.attempt_count,
-                        last_error=excluded.last_error,
-                        updated_at_utc=excluded.updated_at_utc
-                    """,
-                    [
-                        run_id,
-                        target,
-                        str(report_path),
-                        attempt_count,
-                        message,
-                        created_at,
-                        now,
-                    ],
-                )
-                connection.execute(
-                    "INSERT INTO notification_attempts VALUES (?, ?, ?, 'FAILED', ?)",
-                    [str(uuid.uuid4()), run_id, now, message],
-                )
-                connection.execute("COMMIT")
+            self._mark_failed(run_id, attempt_id, message)
             raise NotificationError(message) from error
 
-        with self.store.connect() as connection:
-            connection.execute("BEGIN TRANSACTION")
-            connection.execute(
-                """
-                INSERT INTO paper_notifications VALUES (?, ?, ?, 'DELIVERED', ?, NULL, ?, ?, ?)
-                ON CONFLICT (run_id) DO UPDATE SET
-                    target=excluded.target,
-                    report_path=excluded.report_path,
-                    status='DELIVERED',
-                    attempt_count=excluded.attempt_count,
-                    last_error=NULL,
-                    updated_at_utc=excluded.updated_at_utc,
-                    delivered_at_utc=excluded.delivered_at_utc
-                """,
-                [run_id, target, str(report_path), attempt_count, created_at, now, now],
-            )
-            connection.execute(
-                "INSERT INTO notification_attempts VALUES (?, ?, ?, 'DELIVERED', NULL)",
-                [str(uuid.uuid4()), run_id, now],
-            )
-            connection.execute("COMMIT")
+        self._mark_delivered(run_id, attempt_id)
         return response if isinstance(response, dict) else {"ok": True}
 
     def send_committed_run(self, run_id: str, report_path: Path) -> dict[str, Any]:
         self.register_pending(run_id, report_path)
-        return self._attempt(run_id, report_path, self.target)
+        with self.store.connect(read_only=True) as connection:
+            row = connection.execute(
+                "SELECT target, report_path FROM paper_notifications WHERE run_id=?",
+                [run_id],
+            ).fetchone()
+        if row is None:
+            raise NotificationError(f"No prior notification record for run {run_id}")
+        return self._attempt(run_id, Path(row[1]), row[0])
 
     def resend(self, run_id: str) -> dict[str, Any]:
         """Retry Telegram only; never fetches data or invokes strategy execution."""
@@ -169,6 +204,10 @@ class NotificationService:
             ).fetchone()
         if row is None:
             raise NotificationError(f"No prior notification record for run {run_id}")
+        if row[2] == "SENDING":
+            raise NotificationError(
+                f"Notification for run {run_id} requires manual recovery before resend"
+            )
         if row[2] not in {"PENDING", "FAILED"}:
             raise NotificationError(
                 f"Notification for run {run_id} is already delivered; resend refused"

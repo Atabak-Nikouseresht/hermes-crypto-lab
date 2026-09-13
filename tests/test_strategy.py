@@ -105,3 +105,47 @@ def test_signal_and_paper_history_boundaries_agree(tmp_path, overrides, required
     now = as_of + pd.Timedelta(days=1)
     snapshot = MarketSnapshot(closes=prices.iloc[1:], quotes={}, fetched_at=now)
     assert system._validate_snapshot(snapshot, now) == f"Missing data: requires at least {required} daily bars"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("momentum_short_days", 0),
+        ("momentum_long_days", -1),
+        ("momentum_skip_days", -1),
+        ("btc_moving_average_days", 0),
+        ("volatility_days", 1),
+        ("annualization_days", 0),
+        ("annualization_days", float("inf")),
+        ("max_assets", 0),
+        ("momentum_short_days", True),
+        ("max_assets", False),
+    ],
+)
+def test_strategy_config_rejects_invalid_window_and_count_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        StrategyConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("asset_caps", {"BTC/USDT": -0.1}),
+        ("asset_caps", {"BTC/USDT": 1.1}),
+        ("asset_caps", {"BTC/USDT": float("nan")}),
+        ("asset_caps", {"BTC/USDT": float("inf")}),
+        ("asset_caps", {"": 0.5}),
+        ("altcoins", {""}),
+        ("max_altcoin_weight", -0.1),
+        ("max_altcoin_weight", float("inf")),
+    ],
+)
+def test_strategy_config_rejects_invalid_allocation_structures(field, value):
+    with pytest.raises(ValueError, match=field):
+        StrategyConfig(**{field: value})
+
+
+def test_strategy_config_retains_governed_skip_formula_without_skip_order_restriction():
+    config = StrategyConfig(momentum_long_days=90, momentum_skip_days=95)
+
+    assert config.momentum_skip_days > config.momentum_long_days

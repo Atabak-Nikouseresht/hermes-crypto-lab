@@ -85,7 +85,7 @@ def test_notification_refuses_running_transaction(tmp_path):
         service.send_committed_run("running", report)
 
 
-def test_process_interruption_before_notification_completion_leaves_retry_eligibility(tmp_path):
+def test_process_interruption_after_durable_send_claim_preserves_ambiguous_delivery(tmp_path):
     database = tmp_path / "paper.duckdb"
     system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
     now = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
@@ -120,7 +120,7 @@ def test_process_interruption_before_notification_completion_leaves_retry_eligib
         trades = connection.execute(
             "SELECT (SELECT COUNT(*) FROM paper_orders), (SELECT COUNT(*) FROM paper_fills)"
         ).fetchone()
-    assert state[:2] == ("PENDING", 0)
+    assert state[:2] == ("SENDING", 1)
     assert state[2] == str(report.resolve())
     assert trades == (0, 0)
     assert externally_sent == [("telegram:test-target", report.resolve())]
@@ -191,3 +191,136 @@ def test_resend_refuses_unknown_run_without_sending(tmp_path):
         service.resend("unknown")
 
     assert sent == []
+
+
+def test_durable_pre_send_claim_records_stable_attempt_without_invoking_sender(tmp_path):
+    database = tmp_path / "paper.duckdb"
+    system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
+    now = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
+    report = tmp_path / "report.md"
+    report.write_text("virtual report", encoding="utf-8")
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_runs (run_id, started_at_utc, completed_at_utc, status, mode) "
+            "VALUES ('claimed', ?, ?, 'EXECUTED', 'PAPER')",
+            [now, now],
+        )
+    sent = []
+    service = NotificationService(
+        system.store,
+        target="telegram:test",
+        sender=lambda *args: sent.append(args),
+    )
+    service.register_pending("claimed", report)
+
+    attempt_id = service._claim_attempt("claimed", report.resolve(), "telegram:test")
+
+    with system.store.connect(read_only=True) as connection:
+        notification = connection.execute(
+            "SELECT status, attempt_count FROM paper_notifications WHERE run_id='claimed'"
+        ).fetchone()
+        attempt = connection.execute(
+            "SELECT attempt_id, status FROM notification_attempts WHERE run_id='claimed'"
+        ).fetchone()
+    assert notification == ("SENDING", 1)
+    assert attempt == (attempt_id, "SENDING")
+    assert sent == []
+    with pytest.raises(NotificationError, match="manual recovery"):
+        service.resend("claimed")
+
+
+def test_sender_success_before_local_delivery_commit_is_not_automatically_duplicated(
+    tmp_path, monkeypatch
+):
+    database = tmp_path / "paper.duckdb"
+    system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
+    now = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
+    report = tmp_path / "report.md"
+    report.write_text("virtual report", encoding="utf-8")
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_runs (run_id, started_at_utc, completed_at_utc, status, mode) "
+            "VALUES ('ambiguous', ?, ?, 'EXECUTED', 'PAPER')",
+            [now, now],
+        )
+    sent = []
+    service = NotificationService(
+        system.store,
+        target="telegram:test",
+        sender=lambda *args: sent.append(args) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        service,
+        "_mark_delivered",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("local delivery commit interrupted")),
+    )
+
+    with pytest.raises(RuntimeError, match="local delivery commit interrupted"):
+        service.send_committed_run("ambiguous", report)
+
+    with system.store.connect(read_only=True) as connection:
+        notification = connection.execute(
+            "SELECT status, attempt_count FROM paper_notifications WHERE run_id='ambiguous'"
+        ).fetchone()
+        attempt = connection.execute(
+            "SELECT status FROM notification_attempts WHERE run_id='ambiguous'"
+        ).fetchone()
+    assert notification == ("SENDING", 1)
+    assert attempt == ("SENDING",)
+    with pytest.raises(NotificationError, match="manual recovery"):
+        service.resend("ambiguous")
+    assert len(sent) == 1
+
+
+def test_concurrent_claim_for_same_notification_is_serialized(tmp_path):
+    database = tmp_path / "paper.duckdb"
+    system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
+    now = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
+    report = tmp_path / "report.md"
+    report.write_text("virtual report", encoding="utf-8")
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_runs (run_id, started_at_utc, completed_at_utc, status, mode) "
+            "VALUES ('serialized', ?, ?, 'EXECUTED', 'PAPER')",
+            [now, now],
+        )
+    first = NotificationService(system.store, target="telegram:test", sender=lambda *_: None)
+    second = NotificationService(system.store, target="telegram:test", sender=lambda *_: None)
+    first.register_pending("serialized", report)
+
+    first._claim_attempt("serialized", report.resolve(), "telegram:test")
+    with pytest.raises(NotificationError, match="manual recovery"):
+        second._claim_attempt("serialized", report.resolve(), "telegram:test")
+
+
+def test_send_committed_run_reuses_persisted_target_and_report_after_failure(tmp_path):
+    database = tmp_path / "paper.duckdb"
+    system = PaperTradingSystem(database, PaperConfig(assets=("BTC/USDT",)))
+    now = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_runs (run_id, started_at_utc, completed_at_utc, status, mode) "
+            "VALUES ('stable-destination', ?, ?, 'EXECUTED', 'PAPER')",
+            [now, now],
+        )
+    original_report = tmp_path / "original.md"
+    original_report.write_text("original", encoding="utf-8")
+    replacement_report = tmp_path / "replacement.md"
+    replacement_report.write_text("replacement", encoding="utf-8")
+    failing = NotificationService(
+        system.store,
+        target="telegram:original",
+        sender=lambda *_: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    with pytest.raises(NotificationError, match="unavailable"):
+        failing.send_committed_run("stable-destination", original_report)
+    sent = []
+    retry = NotificationService(
+        system.store,
+        target="telegram:replacement",
+        sender=lambda target, report: sent.append((target, report)) or {"ok": True},
+    )
+
+    retry.send_committed_run("stable-destination", replacement_report)
+
+    assert sent == [("telegram:original", original_report.resolve())]

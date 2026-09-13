@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -64,3 +65,58 @@ def test_fourteen_day_rebalance_uses_every_other_week_end():
         pd.Timestamp("2024-01-07", tz="UTC"),
         pd.Timestamp("2024-01-21", tz="UTC"),
     ]
+
+
+@pytest.mark.parametrize("price", [np.nan, np.inf, -np.inf, 0.0, -1.0])
+def test_backtester_rejects_nonfinite_or_nonpositive_prices(price):
+    prices = _prices()
+    prices.iloc[0, 0] = price
+
+    with pytest.raises(ValueError, match="positive finite"):
+        EventDrivenBacktester(prices, BacktestConfig())
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        {"BTC/USDT": np.nan},
+        {"BTC/USDT": np.inf},
+        {"BTC/USDT": -np.inf},
+        {"BTC/USDT": -0.1},
+        {"BTC/USDT": 1.1},
+        {"ETH/USDT": 0.5},
+        {"CASH": np.nan},
+        {"CASH": 1.1},
+        {"BTC/USDT": 0.5, "CASH": 0.25},
+        {"BTC/USDT": "0.5"},
+    ],
+)
+def test_backtester_rejects_malformed_or_inconsistent_target_weights(weights):
+    engine = EventDrivenBacktester(_prices(), BacktestConfig())
+
+    with pytest.raises(ValueError):
+        engine.run(None, initial_target_weights=weights)
+
+
+def test_backtester_accepts_partial_risky_allocation_without_explicit_cash():
+    result = EventDrivenBacktester(_prices(), BacktestConfig(initial_cash=1_000.0)).run(
+        None, initial_target_weights={"BTC/USDT": 0.5}
+    )
+
+    assert result.orders.iloc[0]["target_weight"] == 0.5
+
+
+def test_backtester_accepts_consistent_explicit_cash_allocation():
+    result = EventDrivenBacktester(_prices(), BacktestConfig(initial_cash=1_000.0)).run(
+        None, initial_target_weights={"BTC/USDT": 0.5, "CASH": 0.5}
+    )
+
+    assert result.orders.iloc[0]["target_weight"] == 0.5
+
+
+@pytest.mark.parametrize("tolerance", [-1.0, float("inf"), 1.0])
+def test_backtest_config_rejects_tolerances_that_could_bypass_weight_validation(
+    tolerance,
+):
+    with pytest.raises(ValueError, match="quantity_tolerance"):
+        BacktestConfig(quantity_tolerance=tolerance)

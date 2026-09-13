@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from numbers import Real
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,57 @@ class StrategyConfig:
         default_factory=lambda: {"BNB/USDT", "XRP/USDT", "TRX/USDT"}
     )
     max_altcoin_weight: float = 0.60
+
+    def __post_init__(self) -> None:
+        positive_integer_fields = (
+            "momentum_short_days",
+            "momentum_long_days",
+            "btc_moving_average_days",
+            "volatility_days",
+            "max_assets",
+        )
+        for field_name in positive_integer_fields:
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer")
+        if self.volatility_days < 2:
+            raise ValueError("volatility_days must be at least 2 for ddof=1")
+        if (
+            isinstance(self.momentum_skip_days, bool)
+            or not isinstance(self.momentum_skip_days, int)
+            or self.momentum_skip_days < 0
+        ):
+            raise ValueError("momentum_skip_days must be a nonnegative integer")
+        if (
+            isinstance(self.annualization_days, bool)
+            or not isinstance(self.annualization_days, Real)
+            or not math.isfinite(float(self.annualization_days))
+            or self.annualization_days <= 0
+        ):
+            raise ValueError("annualization_days must be a positive finite number")
+        if not isinstance(self.asset_caps, dict):
+            raise ValueError("asset_caps must be a dictionary")
+        for symbol, cap in self.asset_caps.items():
+            if not isinstance(symbol, str) or not symbol.strip():
+                raise ValueError("asset_caps must contain nonempty symbol strings")
+            if (
+                isinstance(cap, bool)
+                or not isinstance(cap, Real)
+                or not math.isfinite(float(cap))
+                or not 0.0 <= float(cap) <= 1.0
+            ):
+                raise ValueError("asset_caps values must be finite values within [0, 1]")
+        if not isinstance(self.altcoins, set):
+            raise ValueError("altcoins must be a set")
+        if any(not isinstance(symbol, str) or not symbol.strip() for symbol in self.altcoins):
+            raise ValueError("altcoins must contain nonempty symbol strings")
+        if (
+            isinstance(self.max_altcoin_weight, bool)
+            or not isinstance(self.max_altcoin_weight, Real)
+            or not math.isfinite(float(self.max_altcoin_weight))
+            or not 0.0 <= float(self.max_altcoin_weight) <= 1.0
+        ):
+            raise ValueError("max_altcoin_weight must be a finite value within [0, 1]")
 
     @property
     def required_observations(self) -> int:

@@ -1625,7 +1625,17 @@ class PaperStore:
                 WHERE r.run_id=?
                   AND r.mode='PAPER' AND r.official_scheduled=TRUE
                   AND r.schedule_key IS NOT NULL AND r.completed_at_utc IS NOT NULL
-                  AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED', 'DATA_HALT')
+                  AND r.status IN ('EXECUTED', 'NO_REBALANCE')
+                  AND json_extract(r.reconciliation, '$.valid') = 'true'
+                  AND EXISTS (
+                      SELECT 1 FROM paper_execution_outcomes x WHERE x.run_id=r.run_id
+                      AND x.execution_outcome IN ('FULL_EXECUTION', 'PARTIAL_EXECUTION',
+                          'EXECUTION_REJECTED', 'NO_REBALANCE_REQUIRED'))
+                  AND EXISTS (
+                      SELECT 1 FROM paper_run_diagnostics d WHERE d.run_id=r.run_id
+                      AND d.kill_switch_active=FALSE AND d.reconciliation_valid=TRUE
+                      AND d.outcome IN ('PAPER_TRADE_COMPLETED', 'PARTIAL_EXECUTION',
+                          'EXECUTION_REJECTED', 'NO_REBALANCE', 'CASH_ONLY', 'NO_ELIGIBLE_ASSET'))
                   AND r.started_at_utc >= e.started_at_utc
                 """,
                 [experiment_id, run_id],
@@ -1661,7 +1671,18 @@ class PaperStore:
                         WHERE r.run_id=? AND r.mode='PAPER'
                           AND r.official_scheduled=TRUE AND r.schedule_key IS NOT NULL
                           AND r.completed_at_utc IS NOT NULL
-                          AND r.status NOT IN ('RUNNING', 'RECOVERED_ABORTED', 'DATA_HALT')
+                          AND r.status IN ('EXECUTED', 'NO_REBALANCE')
+                          AND json_extract(r.reconciliation, '$.valid') = 'true'
+                          AND EXISTS (
+                              SELECT 1 FROM paper_execution_outcomes x WHERE x.run_id=r.run_id
+                              AND x.execution_outcome IN ('FULL_EXECUTION', 'PARTIAL_EXECUTION',
+                                  'EXECUTION_REJECTED', 'NO_REBALANCE_REQUIRED'))
+                          AND EXISTS (
+                              SELECT 1 FROM paper_run_diagnostics d WHERE d.run_id=r.run_id
+                              AND d.kill_switch_active=FALSE AND d.reconciliation_valid=TRUE
+                              AND d.outcome IN ('PAPER_TRADE_COMPLETED', 'PARTIAL_EXECUTION',
+                                  'EXECUTION_REJECTED', 'NO_REBALANCE', 'CASH_ONLY', 'NO_ELIGIBLE_ASSET'))
+                          AND EXISTS (SELECT 1 FROM equity_snapshots s WHERE s.run_id=r.run_id)
                           AND r.started_at_utc >= e.started_at_utc
                     )
                     """,

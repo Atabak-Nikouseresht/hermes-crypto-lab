@@ -2050,6 +2050,82 @@ def test_forward_outcome_classification_covers_operational_terminal_states(
     assert classify_outcome(SimpleNamespace(), result, diagnostics) == expected
 
 
+@pytest.mark.parametrize(
+    ("scenario", "execution_outcome", "expected"),
+    [
+        ("rejected", "EXECUTION_REJECTED", "EXECUTION_REJECTED"),
+        ("partial", "PARTIAL_EXECUTION", "PARTIAL_EXECUTION"),
+        ("liquidation", "FULL_EXECUTION", "PAPER_TRADE_COMPLETED"),
+        ("no_rebalance", "NO_REBALANCE_REQUIRED", "NO_REBALANCE"),
+    ],
+)
+def test_forward_classification_uses_persisted_execution(
+    tmp_path, monkeypatch, scenario, execution_outcome, expected
+):
+    from src.paper_forward import classify_outcome, finalize_forward_run
+
+    now = pd.Timestamp("2024-08-05T09:10:00Z")
+    system = PaperTradingSystem(tmp_path / "paper.duckdb", _config())
+    snapshot = _snapshot(now.to_pydatetime())
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES "
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+        )
+    if scenario == "liquidation":
+        assert system.run(snapshot, now=now.to_pydatetime(), dry_run=False).status == "EXECUTED"
+        now += pd.Timedelta(days=7)
+        snapshot = _snapshot(now.to_pydatetime())
+        snapshot.closes.index += pd.Timedelta(days=7)
+
+    def proposals(_snapshot):
+        system._last_rejections = []
+        orders = []
+        if scenario in {"rejected", "partial"}:
+            system._last_rejections = [{
+                "symbol": "ETH/USDT", "side": "BUY", "reason": "below_min_notional",
+                "notional": 0.5, "requested_quantity": 0.001,
+                "target_weight": 0.1, "idempotency_key": "rejected",
+            }]
+        if scenario == "partial":
+            orders = [{
+                "symbol": "BTC/USDT", "side": "BUY", "requested_quantity": 1.0,
+                "target_weight": 0.1, "idempotency_key": "accepted",
+            }]
+        if scenario == "liquidation":
+            orders = [{
+                "symbol": symbol, "side": "SELL", "requested_quantity": position["quantity"],
+                "target_weight": 0.0, "idempotency_key": f"liquidate-{symbol}",
+            } for symbol, position in system.store.positions().items() if position["quantity"] > 0]
+        return snapshot.closes.index[-1], orders
+
+    monkeypatch.setattr(system, "_proposals", proposals)
+    diagnostics = {
+        "selected_assets": [] if scenario == "liquidation" else ["BTC/USDT"],
+        "proposed_orders": proposals(snapshot)[1],
+    }
+    result = system.run(
+        snapshot, now=now.to_pydatetime(), dry_run=False, forward_diagnostics=diagnostics
+    )
+    assert result.status == "EXECUTED"
+    assert result.outcome == execution_outcome
+    # Recovery reconstructs a result without an outcome; the database is authoritative.
+    recovered = replace(result, outcome=None)
+    assert classify_outcome(system, recovered, diagnostics) == expected
+    finalized = finalize_forward_run(system, recovered, snapshot, now=now, diagnostics=diagnostics)
+    assert finalized.outcome == expected
+    with system.store.connect(read_only=True) as connection:
+        assert connection.execute(
+            "SELECT outcome FROM paper_run_diagnostics WHERE run_id=?", [result.run_id]
+        ).fetchone()[0] == expected
+        fills = connection.execute(
+            "SELECT COUNT(*) FROM paper_fills WHERE run_id=?", [result.run_id]
+        ).fetchone()[0]
+    assert bool(fills) == (scenario in {"partial", "liquidation"})
+    if scenario == "liquidation":
+        assert all(position["quantity"] == 0 for position in system.store.positions().values())
+
+
 def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkeypatch):
     from src.paper_forward import build_forward_diagnostics, recover_committed_forward_evidence
 
@@ -2200,7 +2276,8 @@ def test_recovers_terminal_run_missing_post_commit_evidence(tmp_path):
             "SELECT COUNT(*) FROM forward_baselines WHERE run_id=?",
             [result.run_id],
         ).fetchone()[0]
-    assert outcome == "CASH_ONLY"
+    assert result.outcome == "FULL_EXECUTION"
+    assert outcome == "PAPER_TRADE_COMPLETED"
     assert window_run == result.run_id
     assert baseline_count == 0
     recovery_kwargs = {

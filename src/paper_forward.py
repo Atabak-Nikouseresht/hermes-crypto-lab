@@ -363,19 +363,28 @@ def classify_outcome(
         return "NO_REBALANCE"
     if result.status == "EXECUTED":
         with system.store.connect(read_only=True) as connection:
+            execution = connection.execute(
+                "SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id=?",
+                [result.run_id],
+            ).fetchone()
             fill_count = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM paper_fills WHERE run_id=?", [result.run_id]
                 ).fetchone()[0]
             )
+        if execution is not None:
+            if execution[0] in {"EXECUTION_REJECTED", "PARTIAL_EXECUTION"}:
+                return execution[0]
+            if execution[0] == "FULL_EXECUTION":
+                return "PAPER_TRADE_COMPLETED"
+        if fill_count:
+            return "PAPER_TRADE_COMPLETED"
         if not diagnostics.get("selected_assets"):
             return (
                 "NO_ELIGIBLE_ASSET"
                 if diagnostics.get("proposed_orders")
                 else "CASH_ONLY"
             )
-        if fill_count:
-            return "PAPER_TRADE_COMPLETED"
         return "NO_REBALANCE"
     return "EXECUTION_ERROR"
 

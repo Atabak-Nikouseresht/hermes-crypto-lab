@@ -856,6 +856,7 @@ class PaperStore:
                         rule_reasons = {
                             "below_min_quantity", "above_max_quantity",
                             "below_market_min_quantity", "above_market_max_quantity",
+                            "lot_step_mismatch", "market_lot_step_mismatch",
                             "below_min_notional", "below_market_notional",
                             "above_market_notional", "market_notional_reference_unverifiable",
                         }
@@ -909,6 +910,14 @@ class PaperStore:
                                             expected_reason = "below_market_min_quantity"
                                         elif row[10] is not None and Decimal(row[10]) > 0 and normalized > Decimal(row[10]):
                                             expected_reason = "above_market_max_quantity"
+                                        elif market_step is not None and market_step > 0 and (normalized / market_step).to_integral_value(rounding=ROUND_FLOOR) * market_step != normalized:
+                                            expected_reason = "market_lot_step_mismatch"
+                                        elif row[6] is not None and Decimal(row[6]) > 0 and normalized < Decimal(row[6]):
+                                            expected_reason = "below_min_quantity"
+                                        elif row[7] is not None and Decimal(row[7]) > 0 and normalized > Decimal(row[7]):
+                                            expected_reason = "above_max_quantity"
+                                        elif lot_step is not None and lot_step > 0 and (normalized / lot_step).to_integral_value(rounding=ROUND_FLOOR) * lot_step != normalized:
+                                            expected_reason = "lot_step_mismatch"
                                         else:
                                             reference = Decimal(price)
                                             if min_notional_applies and row[12] is not None and Decimal(row[12]) > 0 and self._exact_rule_notional(normalized, reference) < Decimal(row[12]):

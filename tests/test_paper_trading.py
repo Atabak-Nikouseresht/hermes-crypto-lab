@@ -1763,6 +1763,86 @@ def test_scheduled_dry_run_does_not_consume_real_paper_window(tmp_path):
         assert connection.execute("SELECT COUNT(*) FROM paper_fills").fetchone()[0] > 0
 
 
+@pytest.mark.parametrize(
+    "finalized_at",
+    [
+        datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc),
+        datetime(2024, 8, 5, 0, 21, tzinfo=timezone.utc),
+    ],
+)
+def test_finalization_uses_persisted_schedule_identity(tmp_path, finalized_at):
+    from src.paper_forward import finalize_forward_run
+
+    started_at = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(
+        tmp_path / "paper.duckdb", replace(_config(), schedule_hour=0, schedule_window_minutes=15)
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES "
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+        )
+    snapshot = _snapshot(started_at)
+    result = system.run(snapshot, now=started_at, dry_run=False)
+
+    finalized = finalize_forward_run(system, result, snapshot, now=finalized_at, diagnostics={})
+
+    assert finalized.run_id == result.run_id
+    with system.store.connect(read_only=True) as connection:
+        schedule_key, scheduled_for, run_id = connection.execute(
+            "SELECT schedule_key, scheduled_for_utc, run_id FROM forward_schedule_windows"
+        ).fetchone()
+    assert schedule_key == "2024-08-05T00:05Z"
+    assert scheduled_for == datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    assert run_id == result.run_id
+
+
+def test_finalization_never_fabricates_schedule_for_unscheduled_run(tmp_path):
+    from src.paper_forward import finalize_forward_run
+
+    now = datetime(2024, 8, 5, 0, 21, tzinfo=timezone.utc)
+    system = PaperTradingSystem(
+        tmp_path / "paper.duckdb", replace(_config(), schedule_hour=0, schedule_window_minutes=15)
+    )
+    with system.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES "
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+        )
+    snapshot = _snapshot(now)
+    result = system.run(snapshot, now=now, dry_run=False)
+
+    finalize_forward_run(system, result, snapshot, now=now, diagnostics={})
+
+    with system.store.connect(read_only=True) as connection:
+        persisted_key = connection.execute(
+            "SELECT schedule_key FROM paper_runs WHERE run_id=?", [result.run_id]
+        ).fetchone()[0]
+        assert connection.execute("SELECT COUNT(*) FROM forward_schedule_windows").fetchone()[0] == 0
+    assert persisted_key is None
+
+
+def test_finalization_rejects_missing_official_schedule_identity(tmp_path):
+    from src.paper_forward import finalize_forward_run
+
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(
+        tmp_path / "paper.duckdb", replace(_config(), schedule_hour=0, schedule_window_minutes=15)
+    )
+    snapshot = _snapshot(now)
+    result = system.run(snapshot, now=now, dry_run=False)
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_runs SET official_scheduled=TRUE, schedule_key=NULL WHERE run_id=?",
+            [result.run_id],
+        )
+
+    with pytest.raises(RuntimeError, match="missing its persisted schedule identity"):
+        finalize_forward_run(system, result, snapshot, now=now, diagnostics={})
+    with system.store.connect(read_only=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM forward_schedule_windows").fetchone()[0] == 0
+
+
 def test_stale_market_data_causes_retryable_data_halt(tmp_path):
     now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
     system = PaperTradingSystem(tmp_path / "paper.duckdb", _config())
@@ -2195,8 +2275,9 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
     monkeypatch.setattr(system.store, "finish_run", original_finish)
 
     restarted = PaperTradingSystem(database, _config())
-    recovered = recover_committed_forward_evidence(restarted, now=now)
-    recovered_again = recover_committed_forward_evidence(restarted, now=now)
+    recovery_now = now.replace(minute=36)
+    recovered = recover_committed_forward_evidence(restarted, now=recovery_now)
+    recovered_again = recover_committed_forward_evidence(restarted, now=recovery_now)
 
     with duckdb.connect(str(database), read_only=True) as connection:
         status = connection.execute(
@@ -2216,7 +2297,7 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
             [run_id],
         ).fetchone()[0]
         window = connection.execute(
-            "SELECT run_id, outcome FROM forward_schedule_windows"
+            "SELECT schedule_key, scheduled_for_utc, run_id, outcome FROM forward_schedule_windows"
         ).fetchone()
         observations = connection.execute(
             "SELECT COUNT(*) FROM forward_market_observations WHERE run_id=?", [run_id]
@@ -2233,7 +2314,9 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
     assert equity_count_before == equity_count_after == 1
     assert outcome == "PAPER_TRADE_COMPLETED"
     assert execution_outcome == "FULL_EXECUTION"
-    assert window == (run_id, "PAPER_TRADE_COMPLETED")
+    assert window == (
+        "2024-08-05T09:05Z", now, run_id, "PAPER_TRADE_COMPLETED"
+    )
     assert observations == len(system.config.assets)
     assert incomplete_incidents == 0
 

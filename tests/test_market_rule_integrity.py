@@ -264,6 +264,81 @@ def test_non_step_proposal_persists_normalized_fill_as_requested_quantity(tmp_pa
     assert system.store.reconcile().valid
 
 
+@pytest.mark.parametrize(
+    ("rules", "quantity", "expected"),
+    [
+        (
+            replace(
+                _rules(minimum="0.25"), raw_step_size=Decimal("0.05"),
+                raw_market_step_size=Decimal("0.1"),
+            ),
+            Decimal("0.29"), (None, "below_min_quantity"),
+        ),
+        (
+            replace(
+                _rules(minimum="0.06"), raw_step_size=Decimal("0.06"),
+                raw_market_step_size=Decimal("0.1"),
+            ),
+            Decimal("0.19"), (None, "lot_step_mismatch"),
+        ),
+        (
+            replace(_rules(market_minimum="0.25"), raw_market_step_size=Decimal("0.1")),
+            Decimal("0.29"), (None, "below_market_min_quantity"),
+        ),
+        (
+            replace(_rules(), raw_market_max_quantity=Decimal("0.15")),
+            Decimal("0.29"), (None, "above_market_max_quantity"),
+        ),
+        (
+            replace(
+                _rules(), raw_min_quantity=Decimal("0.3"), raw_max_quantity=Decimal("0.2"),
+            ),
+            Decimal("0.3"), (None, "invalid_exchange_rules"),
+        ),
+        (
+            replace(
+                _rules(), raw_step_size=Decimal("0.05"),
+                raw_market_step_size=Decimal("0.1"),
+            ),
+            Decimal("0.29"), (0.2, None),
+        ),
+        (
+            replace(_rules(), raw_step_size=Decimal("0.1"), raw_market_step_size=Decimal("0.1")),
+            Decimal("0.1"), (0.1, None),
+        ),
+        (
+            replace(_rules(), raw_step_size=Decimal("0.1"), raw_market_step_size=Decimal("0.1")),
+            Decimal("0.30000000000000000000000000001"), (0.3, None),
+        ),
+        (
+            replace(_rules(), raw_step_size=Decimal("0.1"), raw_market_step_size=Decimal("0.1")),
+            Decimal("0.29999999999999999999999999999"), (0.2, None),
+        ),
+    ],
+)
+def test_final_quantity_satisfies_all_lot_grids(tmp_path, rules, quantity, expected):
+    system, snapshot, _timestamp = _system(tmp_path, rules=rules)
+
+    assert system._normalize_exchange_quantity(
+        symbol="BTC/USDT", quantity=quantity, rule_reference_price=Decimal("100"), snapshot=snapshot
+    ) == expected
+
+
+def test_final_lot_step_rejection_reconciles_from_persisted_rules(tmp_path):
+    rules = replace(
+        _rules(minimum="0.06"), raw_step_size=Decimal("0.06"),
+        raw_market_step_size=Decimal("0.1"),
+    )
+
+    system = _current_run(tmp_path, rules=rules, quantity=0.19)
+
+    with system.store.connect(read_only=True) as connection:
+        assert connection.execute("SELECT reason FROM paper_order_rejections").fetchone() == (
+            "lot_step_mismatch",
+        )
+    assert system.store.reconcile().valid
+
+
 # These cases deliberately refresh the digest: success cannot be explained by
 # a checksum mismatch instead of offline reconstruction of the exact rule.
 SEMANTIC_TAMPERS = [

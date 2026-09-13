@@ -2126,6 +2126,36 @@ def test_forward_classification_uses_persisted_execution(
         assert all(position["quantity"] == 0 for position in system.store.positions().values())
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_forward_signal_windows_survive_persistence_and_legacy_read(tmp_path, legacy):
+    from src.paper_forward import build_forward_diagnostics
+    from src.strategy import generate_signal
+
+    now = datetime(2024, 8, 5, 9, 10, tzinfo=timezone.utc)
+    system = PaperTradingSystem(tmp_path / "paper.duckdb", _config())
+    snapshot = _snapshot(now)
+    diagnostics = build_forward_diagnostics(system, snapshot)
+    assert diagnostics["strategy_windows"] == {
+        "momentum_short_days": 30, "momentum_long_days": 120,
+        "momentum_skip_days": 0, "volatility_days": 30,
+        "btc_moving_average_days": 150,
+    }
+    signal = generate_signal(
+        snapshot.closes, as_of=snapshot.closes.index[-1], config=system.config.strategy_config
+    )
+    assert diagnostics["momentum"] == signal.momentum_long_ex_skip
+    assert diagnostics["trend_window"] == 150
+    if legacy:
+        # Existing JSON has generic momentum/trend keys and no window bundle.
+        diagnostics.pop("strategy_windows")
+    result = system.run(snapshot, now=now, dry_run=False, forward_diagnostics=diagnostics)
+    assert result.status == "EXECUTED"
+    restarted = PaperTradingSystem(system.store.path, _config())
+    persisted, _, _ = restarted.store.committed_forward_evidence(result.run_id)
+    assert {key: persisted[key] for key in diagnostics} == diagnostics
+    assert ("strategy_windows" not in persisted) is legacy
+
+
 def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkeypatch):
     from src.paper_forward import build_forward_diagnostics, recover_committed_forward_evidence
 

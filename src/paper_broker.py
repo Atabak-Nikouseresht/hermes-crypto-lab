@@ -227,15 +227,7 @@ class PaperConfig:
             )
         if self.max_quote_timestamp_skew_seconds <= 0:
             raise ValueError("max_quote_timestamp_skew_seconds must be positive")
-        minimum_lookback = (
-            max(
-                self.strategy_config.momentum_long_days
-                + self.strategy_config.momentum_skip_days,
-                self.strategy_config.btc_moving_average_days,
-                self.strategy_config.volatility_days,
-            )
-            + 1
-        )
+        minimum_lookback = self.strategy_config.required_observations
         if self.lookback_days < minimum_lookback:
             raise ValueError(
                 f"lookback_days must be at least {minimum_lookback} for the strategy"
@@ -310,11 +302,7 @@ class PaperTradingSystem:
             return "Invalid data: close timestamps are not strictly increasing"
         if list(closes.columns) != list(self.config.assets):
             return "Missing data: asset columns do not match configured universe"
-        required = max(
-            self.config.strategy_config.momentum_long_days,
-            self.config.strategy_config.btc_moving_average_days - 1,
-            self.config.strategy_config.volatility_days,
-        ) + 1
+        required = self.config.strategy_config.required_observations
         if len(closes) < required:
             return f"Missing data: requires at least {required} daily bars"
         if closes.isna().any().any() or (closes <= 0).any().any():

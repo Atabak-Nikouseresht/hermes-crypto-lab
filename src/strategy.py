@@ -34,16 +34,27 @@ class StrategyConfig:
     )
     max_altcoin_weight: float = 0.60
 
+    @property
+    def required_observations(self) -> int:
+        """History for each indexed endpoint, MA levels and volatility returns."""
+        return max(
+            self.momentum_short_days,
+            self.momentum_long_days,
+            self.momentum_skip_days,
+            self.btc_moving_average_days - 1,
+            self.volatility_days,
+        ) + 1
+
 
 @dataclass(frozen=True)
 class Signal:
     timestamp: pd.Timestamp
     ranked_assets: tuple[str, ...]
     target_weights: dict[str, float]
-    momentum_30: dict[str, float]
-    momentum_90_ex_7: dict[str, float]
-    realized_volatility_30: dict[str, float]
-    btc_above_ma200: bool
+    momentum_short: dict[str, float]
+    momentum_long_ex_skip: dict[str, float]
+    realized_volatility: dict[str, float]
+    btc_above_trend_ma: bool
 
 
 def generate_signal(
@@ -52,17 +63,20 @@ def generate_signal(
     as_of: pd.Timestamp,
     config: StrategyConfig,
 ) -> Signal:
-    """Generate a signal using rows at or before ``as_of`` only."""
+    """Generate a signal using rows at or before ``as_of`` only.
+
+    With t the last available row, long momentum excluding skip is exactly
+    P[t - skip] / P[t - long] - 1, NOT P[t - skip] / P[t - long - skip] - 1.
+    Windows count observations (daily bars), not elapsed calendar time.
+    In zero-based iloc from the end, P[t - k] is history.iloc[-(k + 1)].
+    Thus skip=0 uses the current close and long requires long+1 observations.
+    """
     timestamp = pd.Timestamp(as_of)
     if timestamp.tzinfo is None:
         raise ValueError("as_of must be timezone-aware UTC")
     timestamp = timestamp.tz_convert("UTC")
     history = close_prices.sort_index().loc[:timestamp].copy()
-    required = max(
-        config.momentum_long_days,
-        config.btc_moving_average_days - 1,
-        config.volatility_days,
-    ) + 1
+    required = config.required_observations
     if len(history) < required:
         raise ValueError(f"At least {required} observations are required")
     if "BTC/USDT" not in history:
@@ -72,8 +86,8 @@ def generate_signal(
     short_base = history.iloc[-(config.momentum_short_days + 1)]
     long_base = history.iloc[-(config.momentum_long_days + 1)]
     skipped_endpoint = history.iloc[-(config.momentum_skip_days + 1)]
-    momentum_30_series = current / short_base - 1.0
-    momentum_90_ex_7_series = skipped_endpoint / long_base - 1.0
+    momentum_short_series = current / short_base - 1.0
+    momentum_long_ex_skip_series = skipped_endpoint / long_base - 1.0
     log_returns = np.log(history / history.shift(1))
     volatility = (
         log_returns.iloc[-config.volatility_days :].std(ddof=1)
@@ -86,9 +100,9 @@ def generate_signal(
         and pd.notna(btc_ma)
         and current["BTC/USDT"] > btc_ma
     )
-    momentum_30 = {asset: float(value) for asset, value in momentum_30_series.items()}
-    momentum_90_ex_7 = {
-        asset: float(value) for asset, value in momentum_90_ex_7_series.items()
+    momentum_short = {asset: float(value) for asset, value in momentum_short_series.items()}
+    momentum_long_ex_skip = {
+        asset: float(value) for asset, value in momentum_long_ex_skip_series.items()
     }
     realized_volatility = {asset: float(value) for asset, value in volatility.items()}
 
@@ -96,14 +110,14 @@ def generate_signal(
         eligible = [
             asset
             for asset in history.columns
-            if math.isfinite(momentum_30.get(asset, math.nan))
-            and math.isfinite(momentum_90_ex_7.get(asset, math.nan))
-            and momentum_30[asset] > 0
-            and momentum_90_ex_7[asset] > 0
+            if math.isfinite(momentum_short.get(asset, math.nan))
+            and math.isfinite(momentum_long_ex_skip.get(asset, math.nan))
+            and momentum_short[asset] > 0
+            and momentum_long_ex_skip[asset] > 0
             and math.isfinite(realized_volatility.get(asset, math.nan))
             and realized_volatility[asset] > 0
         ]
-        eligible.sort(key=lambda asset: (-momentum_90_ex_7[asset], asset))
+        eligible.sort(key=lambda asset: (-momentum_long_ex_skip[asset], asset))
         ranked = tuple(eligible[: config.max_assets])
     else:
         ranked = ()
@@ -120,8 +134,8 @@ def generate_signal(
         timestamp=timestamp,
         ranked_assets=ranked,
         target_weights=target_weights,
-        momentum_30=momentum_30,
-        momentum_90_ex_7=momentum_90_ex_7,
-        realized_volatility_30=realized_volatility,
-        btc_above_ma200=btc_above_ma,
+        momentum_short=momentum_short,
+        momentum_long_ex_skip=momentum_long_ex_skip,
+        realized_volatility=realized_volatility,
+        btc_above_trend_ma=btc_above_ma,
     )

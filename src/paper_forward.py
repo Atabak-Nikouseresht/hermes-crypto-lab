@@ -307,10 +307,10 @@ def build_forward_diagnostics(
     eligibility = {}
     for asset in config.assets:
         eligibility[asset] = bool(
-            signal.btc_above_ma200
-            and signal.momentum_30.get(asset, math.nan) > 0
-            and signal.momentum_90_ex_7.get(asset, math.nan) > 0
-            and signal.realized_volatility_30.get(asset, math.nan) > 0
+            signal.btc_above_trend_ma
+            and signal.momentum_short.get(asset, math.nan) > 0
+            and signal.momentum_long_ex_skip.get(asset, math.nan) > 0
+            and signal.realized_volatility.get(asset, math.nan) > 0
         )
     estimated_notional = sum(
         float(order["requested_quantity"]) * mids[order["symbol"]]
@@ -318,11 +318,20 @@ def build_forward_diagnostics(
     )
     return {
         "signal_timestamp_utc": signal_timestamp.isoformat(),
-        "regime": "RISK_ON" if signal.btc_above_ma200 else "RISK_OFF",
+        "regime": "RISK_ON" if signal.btc_above_trend_ma else "RISK_OFF",
         "btc_vs_trend": btc_vs_trend,
         "trend_window": trend_window,
+        # Retained in the transaction's paper_forward_execution_evidence JSON.
+        # Keep generic momentum/trend keys readable for historical evidence.
+        "strategy_windows": {
+            "momentum_short_days": config.strategy_config.momentum_short_days,
+            "momentum_long_days": config.strategy_config.momentum_long_days,
+            "momentum_skip_days": config.strategy_config.momentum_skip_days,
+            "volatility_days": config.strategy_config.volatility_days,
+            "btc_moving_average_days": trend_window,
+        },
         "momentum": {
-            asset: float(signal.momentum_90_ex_7[asset]) for asset in config.assets
+            asset: float(signal.momentum_long_ex_skip[asset]) for asset in config.assets
         },
         "eligibility": eligibility,
         "selected_assets": list(signal.ranked_assets),

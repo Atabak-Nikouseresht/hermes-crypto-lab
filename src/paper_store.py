@@ -1135,7 +1135,13 @@ class PaperStore:
                     return ReconciliationResult(
                         False, f"Unknown quote coherence contract for run={run_id}"
                     )
-                if max_skew is None or int(max_skew) <= 0 or earliest > latest:
+                if (
+                    max_skew is None
+                    or int(max_skew) <= 0
+                    or earliest is None
+                    or latest is None
+                    or earliest > latest
+                ):
                     return ReconciliationResult(
                         False, f"Quote coherence skew contract mismatch for run={run_id}"
                     )
@@ -1147,25 +1153,23 @@ class PaperStore:
                         False, f"Quote coherence max skew mismatch for run={run_id}"
                     )
                 quote_times = context_quote_times.get(str(run_id), [])
-                if not quote_times:
-                    # A valid no-trade execution records no per-symbol execution context;
-                    # its quote timestamps are intentionally not reconstructable from the DB.
-                    continue
-                observed_earliest = min(quote_times)
-                observed_latest = max(quote_times)
-                if earliest != observed_earliest:
-                    return ReconciliationResult(
-                        False, f"Quote coherence earliest timestamp mismatch for run={run_id}"
-                    )
-                if latest != observed_latest:
-                    return ReconciliationResult(
-                        False, f"Quote coherence latest timestamp mismatch for run={run_id}"
-                    )
-                observed_skew = (observed_latest - observed_earliest).total_seconds()
-                if observed_skew > int(max_skew):
+                stored_skew = (latest - earliest).total_seconds()
+                if stored_skew > int(max_skew):
                     return ReconciliationResult(
                         False, f"Quote coherence skew exceeds contract for run={run_id}"
                     )
+                if any(quote_time < earliest or quote_time > latest for quote_time in quote_times):
+                    return ReconciliationResult(
+                        False,
+                        "Quote coherence execution timestamp outside stored interval "
+                        f"for run={run_id}",
+                    )
+                if quote_times:
+                    subset_skew = (max(quote_times) - min(quote_times)).total_seconds()
+                    if subset_skew > int(max_skew):
+                        return ReconciliationResult(
+                            False, f"Quote coherence subset skew exceeds contract for run={run_id}"
+                        )
             missing_fill = connection.execute(
                 """
                 SELECT COUNT(*) FROM paper_orders o

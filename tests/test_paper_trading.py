@@ -647,8 +647,8 @@ def test_reconciliation_rejects_coordinated_bogus_protocol_provenance(tmp_path):
         ("UPDATE paper_execution_context SET execution_delay_seconds=execution_delay_seconds+1.0", [], "execution delay"),
         ("UPDATE paper_execution_context SET data_age_seconds=data_age_seconds+1.0", [], "data age"),
         ("UPDATE paper_execution_context SET midpoint=?", [float("nan")], "non-finite"),
-        ("UPDATE paper_quote_coherence_context SET earliest_quote_timestamp_utc=earliest_quote_timestamp_utc-INTERVAL 1 SECOND", [], "earliest"),
-        ("UPDATE paper_quote_coherence_context SET latest_quote_timestamp_utc=latest_quote_timestamp_utc+INTERVAL 1 SECOND", [], "latest"),
+        ("UPDATE paper_quote_coherence_context SET earliest_quote_timestamp_utc=earliest_quote_timestamp_utc+INTERVAL 1 SECOND", [], "skew contract"),
+        ("UPDATE paper_quote_coherence_context SET latest_quote_timestamp_utc=latest_quote_timestamp_utc-INTERVAL 1 SECOND", [], "skew contract"),
         ("UPDATE paper_quote_coherence_context SET max_timestamp_skew_seconds=-1", [], "skew"),
         ("UPDATE paper_quote_coherence_context SET contract_version='unknown-contract'", [], "contract"),
     ],
@@ -891,6 +891,155 @@ def test_reconciliation_requires_persisted_quote_skew_to_match_current_config(tm
 
     assert not reconciliation.valid
     assert "max skew" in reconciliation.message.lower()
+
+
+def _quote_coherence_reconciliation_system(
+    tmp_path, *, timestamp_offsets: dict[str, int], proposal_symbols: tuple[str, ...]
+) -> tuple[PaperTradingSystem, str, pd.Timestamp]:
+    """Build current evidence where execution contexts are a snapshot subset."""
+    base = pd.Timestamp("2024-08-05T00:10:00Z")
+    now = (base + pd.Timedelta(seconds=10)).to_pydatetime()
+    system = PaperTradingSystem(
+        tmp_path / "quote-coherence-reconciliation.duckdb",
+        PaperConfig(
+            assets=tuple(ASSETS), initial_cash=2_000.0, fee_rate=0.0,
+            minimum_spread_rate=0.0, slippage_rate=0.0,
+        ),
+    )
+    run_id = "quote-coherence-run"
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_schema_versions SET applied_at_utc=? WHERE version=13",
+            [base - pd.Timedelta(days=1)],
+        )
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
+            ["forward", base - pd.Timedelta(days=1), "locked", "strategy", "governance", "{}"],
+        )
+    system.store.insert_run(
+        run_id=run_id,
+        started_at=now,
+        mode="PAPER",
+        schedule_key="2024-08-05T00:05Z",
+        signal_timestamp=(base - pd.Timedelta(days=1)).to_pydatetime(),
+        data_timestamp=(base - pd.Timedelta(days=1)).to_pydatetime(),
+        official_scheduled=True,
+        release_provenance=_release_provenance(now),
+    )
+    snapshot = MarketSnapshot(
+        closes=pd.DataFrame(),
+        quotes={
+            symbol: Quote(100.0, 100.0, 100.0, base + pd.Timedelta(seconds=offset))
+            for symbol, offset in timestamp_offsets.items()
+        },
+        fetched_at=pd.Timestamp(now),
+    )
+    system._execute(
+        run_id=run_id,
+        signal_timestamp=base - pd.Timedelta(days=1),
+        proposals=[
+            {
+                "idempotency_key": f"quote-coherence-{symbol}",
+                "symbol": symbol,
+                "side": "BUY",
+                "requested_quantity": 1.0,
+                "target_weight": 0.2,
+            }
+            for symbol in proposal_symbols
+        ],
+        snapshot=snapshot,
+        now=pd.Timestamp(now),
+    )
+    system.store.finish_run(
+        run_id=run_id,
+        status="EXECUTED",
+        completed_at=now,
+        message="quote coherence reconciliation fixture",
+        reconciliation=ReconciliationResult(True, "fixture"),
+    )
+    return system, run_id, base
+
+
+@pytest.mark.parametrize(
+    ("timestamp_offsets", "proposal_symbols"),
+    [
+        ({"BTC/USDT": 2, "ETH/USDT": 1, "BNB/USDT": 3, "XRP/USDT": 5, "TRX/USDT": 4}, ("ETH/USDT", "BNB/USDT", "XRP/USDT")),
+        ({"BTC/USDT": 1, "ETH/USDT": 2, "BNB/USDT": 3, "XRP/USDT": 5, "TRX/USDT": 4}, ("ETH/USDT", "BNB/USDT", "XRP/USDT")),
+        ({"BTC/USDT": 2, "ETH/USDT": 1, "BNB/USDT": 3, "XRP/USDT": 4, "TRX/USDT": 5}, ("ETH/USDT", "BNB/USDT", "XRP/USDT")),
+        ({"BTC/USDT": 1, "ETH/USDT": 2, "BNB/USDT": 3, "XRP/USDT": 4, "TRX/USDT": 5}, ("ETH/USDT", "BNB/USDT", "XRP/USDT")),
+        ({"BTC/USDT": 1, "ETH/USDT": 2, "BNB/USDT": 3, "XRP/USDT": 4, "TRX/USDT": 5}, ("BNB/USDT",)),
+        ({"BTC/USDT": 1, "ETH/USDT": 2, "BNB/USDT": 3, "XRP/USDT": 4, "TRX/USDT": 5}, ()),
+    ],
+    ids=["QC-1", "QC-2", "QC-3", "QC-4", "QC-5", "QC-6"],
+)
+def test_reconciliation_accepts_coherent_global_snapshot_with_subset_execution_context(
+    tmp_path, timestamp_offsets, proposal_symbols
+):
+    system, _run_id, _base = _quote_coherence_reconciliation_system(
+        tmp_path,
+        timestamp_offsets=timestamp_offsets,
+        proposal_symbols=proposal_symbols,
+    )
+
+    assert system.store.reconcile().valid
+
+
+def test_reconciliation_accepts_real_quote_coherence_failure_shape(tmp_path):
+    system, run_id, base = _quote_coherence_reconciliation_system(
+        tmp_path,
+        timestamp_offsets={
+            "BTC/USDT": 1,
+            "ETH/USDT": 3,
+            "BNB/USDT": 4,
+            "XRP/USDT": 5,
+            "TRX/USDT": 6,
+        },
+        proposal_symbols=("ETH/USDT", "BNB/USDT", "XRP/USDT"),
+    )
+    with system.store.connect(read_only=True) as connection:
+        global_interval = connection.execute(
+            "SELECT earliest_quote_timestamp_utc, latest_quote_timestamp_utc "
+            "FROM paper_quote_coherence_context WHERE run_id=?",
+            [run_id],
+        ).fetchone()
+        execution_symbols = connection.execute(
+            "SELECT symbol FROM paper_execution_context WHERE run_id=? ORDER BY symbol",
+            [run_id],
+        ).fetchall()
+
+    assert global_interval == (base + pd.Timedelta(seconds=1), base + pd.Timedelta(seconds=6))
+    assert execution_symbols == [("BNB/USDT",), ("ETH/USDT",), ("XRP/USDT",)]
+    assert system.store.reconcile().valid
+
+
+@pytest.mark.parametrize(
+    ("case", "timestamp_offsets", "proposal_symbols", "statement", "expected"),
+    [
+        ("QC-7", {"BTC/USDT": 1, "ETH/USDT": 2, "BNB/USDT": 3, "XRP/USDT": 4, "TRX/USDT": 5}, (), "UPDATE paper_quote_coherence_context SET earliest_quote_timestamp_utc=latest_quote_timestamp_utc+INTERVAL 1 SECOND WHERE run_id=?", "skew contract"),
+        ("QC-8", {"BTC/USDT": 0, "ETH/USDT": 1, "BNB/USDT": 2, "XRP/USDT": 3, "TRX/USDT": 31}, (), "SELECT 1", "skew exceeds"),
+        ("QC-9", {"BTC/USDT": 0, "ETH/USDT": 1, "BNB/USDT": 2, "XRP/USDT": 3, "TRX/USDT": 4}, ("ETH/USDT",), "UPDATE paper_quote_coherence_context SET earliest_quote_timestamp_utc=earliest_quote_timestamp_utc+INTERVAL 2 SECOND WHERE run_id=?", "outside stored interval"),
+        ("QC-10", {"BTC/USDT": 0, "ETH/USDT": 1, "BNB/USDT": 2, "XRP/USDT": 3, "TRX/USDT": 4}, ("XRP/USDT",), "UPDATE paper_quote_coherence_context SET latest_quote_timestamp_utc=latest_quote_timestamp_utc-INTERVAL 2 SECOND WHERE run_id=?", "outside stored interval"),
+        ("QC-11", {"BTC/USDT": 0, "ETH/USDT": 1, "BNB/USDT": 2, "XRP/USDT": 3, "TRX/USDT": 4}, ("ETH/USDT",), "UPDATE paper_quote_coherence_context SET max_timestamp_skew_seconds=29 WHERE run_id=?", "max skew"),
+        ("QC-12", {"BTC/USDT": 0, "ETH/USDT": 1, "BNB/USDT": 2, "XRP/USDT": 3, "TRX/USDT": 4}, ("ETH/USDT",), "UPDATE paper_quote_coherence_context SET contract_version='unknown-contract' WHERE run_id=?", "unknown quote coherence contract"),
+        ("QC-13", {"BTC/USDT": 0, "ETH/USDT": 1, "BNB/USDT": 2, "XRP/USDT": 3, "TRX/USDT": 4}, ("XRP/USDT",), "UPDATE paper_quote_coherence_context SET latest_quote_timestamp_utc=latest_quote_timestamp_utc-INTERVAL 2 SECOND WHERE run_id=?", "outside stored interval"),
+    ],
+)
+def test_reconciliation_rejects_invalid_quote_coherence_evidence(
+    tmp_path, case, timestamp_offsets, proposal_symbols, statement, expected
+):
+    system, run_id, _base = _quote_coherence_reconciliation_system(
+        tmp_path,
+        timestamp_offsets=timestamp_offsets,
+        proposal_symbols=proposal_symbols,
+    )
+    with system.store.connect() as connection:
+        if statement != "SELECT 1":
+            connection.execute(statement, [run_id])
+
+    reconciliation = system.store.reconcile()
+
+    assert not reconciliation.valid, case
+    assert expected in reconciliation.message.lower(), case
 
 
 def test_market_order_rule_enforcement_uses_market_lot_and_notional_flags(tmp_path):

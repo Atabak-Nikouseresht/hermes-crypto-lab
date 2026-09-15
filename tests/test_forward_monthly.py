@@ -67,6 +67,8 @@ def test_monthly_report_uses_forward_only_data_and_identical_benchmark_timestamp
     assert result["completed_windows"] == 2
     assert result["weeks_in_cash"] == 1
     assert result["net_return"] == 0.02
+    assert "gross_return" not in result
+    assert result["frictionless_counterfactual_status"] == "unavailable"
     assert result["sharpe"] == "insufficient sample"
     assert result["strategy_timestamps"] == result["btc_benchmark_timestamps"]
     assert result["strategy_timestamps"] == result["equal_weight_benchmark_timestamps"]

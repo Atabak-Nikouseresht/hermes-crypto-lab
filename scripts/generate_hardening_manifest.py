@@ -60,6 +60,8 @@ STATIC_CRITICAL_FILES = (
     "forward_experiment/governance_amendment_v4_quote_coherence.json",
     "forward_experiment/governance_amendment_v5_transient_failure_semantics.json",
     "forward_experiment/governance_amendment_v6_reference_price_evidence.json",
+    "forward_experiment/governance_amendment_v7_execution_rules_price_range.json",
+    "forward_experiment/execution_rules_price_range_contract_v1.json",
     "forward_experiment/paper_schema.sql",
     "forward_experiment/quote_coherence_contract_v1.json",
     "forward_experiment/reference_price_evidence_contract_v1.json",

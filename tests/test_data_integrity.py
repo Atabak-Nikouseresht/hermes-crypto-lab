@@ -3,7 +3,11 @@ import json
 import pandas as pd
 import pytest
 
-from src.data_integrity import build_data_integrity_manifest, verify_data_integrity_manifest
+from src.data_integrity import (
+    build_data_integrity_manifest,
+    verify_data_integrity_manifest,
+    volume_transition_anomalies,
+)
 
 
 def test_data_hash_manifest_detects_corrupted_raw_and_parquet(tmp_path):
@@ -51,3 +55,26 @@ def test_parquet_semantic_corruption_is_rejected(tmp_path):
         build_data_integrity_manifest(
             files=[parquet], output_path=tmp_path / "manifest.json", metadata={}
         )
+
+
+@pytest.mark.parametrize(
+    "volumes,expected",
+    [
+        ([0.0, 0.0], [False, False]),
+        ([0.0, 0.01], [False, True]),
+        ([0.0, 1_000_000.0], [False, True]),
+        ([1.0, 0.0], [False, True]),
+        ([100.0, 150.0], [False, False]),
+        ([1.0, 102.0], [False, True]),
+    ],
+)
+def test_volume_transition_anomalies_handle_zero_transitions_without_division_by_zero(
+    volumes, expected
+):
+    assert volume_transition_anomalies(pd.Series(volumes), max_volume_ratio=100.0).tolist() == expected
+
+
+@pytest.mark.parametrize("volumes", [[1.0, float("nan")], [1.0, float("inf")], [1.0, -1.0]])
+def test_volume_transition_anomalies_fail_closed_for_invalid_volume(volumes):
+    with pytest.raises(ValueError, match="volume"):
+        volume_transition_anomalies(pd.Series(volumes), max_volume_ratio=100.0)

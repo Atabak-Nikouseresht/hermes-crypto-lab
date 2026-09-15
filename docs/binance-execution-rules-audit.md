@@ -8,7 +8,7 @@
 
 These are current official documentation observations, not a claim to have queried live symbol configurations or sent orders.
 
-## Material MARKET execution-fidelity gap: future Batch H
+## Batch H — prospective PRICE_RANGE execution-rule evidence
 
 `GET /api/v3/executionRules` returns `symbolRules`, native symbol identifiers, and `PRICE_RANGE` rules with `bidLimitMultUp`, `bidLimitMultDown`, `askLimitMultUp`, and `askLimitMultDown`. Its data source is Memory. A single-symbol query has weight 2; multiple-symbol queries cost 2 per symbol capped at 40. The query parameters cannot be combined.
 
@@ -16,10 +16,13 @@ The FAQ says trades must execute **within or equal to** the reference-derived ra
 
 The matching engine recalculates the reference when an order enters its taker phase, setting limits for its entire taker phase. An attempt outside the range expires the taker order with `EXECUTION_RULE_PRICE_RANGE_EXCEEDED`. This is material to MARKET orders; notional and quantity checks alone do not reconstruct it. A REST quote is not proof of the engine's exact taker-phase reference or of actual fillability.
 
-Hermes currently persists and reconstructs MARKET quantity/notional/reference-price evidence, but does not persist each symbol's executionRules response or reconstruct its range decision offline. This remains **Batch H: Binance executionRules fidelity**, a separate prospective contract, not part of Batch E closure. Batch H must establish raw decimal multipliers and absence semantics, side/direction applicability, source and receipt timestamps, execution-context evidence, an authoritative run-level applicability marker, persistence/reconciliation/backup parity, and a semantic tamper/deletion matrix. It must cover exact range boundaries, absent individual multipliers, null/no reference, and expiry behavior without claiming REST evidence reproduces an exchange fill. No historical order, fill, observation, economic strategy, asset universe, or governance artifact is reinterpreted by this audit.
+Batch H is implemented prospectively under `binance-execution-rules-price-range-v1`. For each governed Binance symbol, Hermes captures the public `executionRules` outcome, native symbol, exact raw Decimal multipliers, any supplied source timestamp, and receipt timestamp. It separately persists local PRICE_RANGE decisions with the simulated paper execution price, reference linkage, bounds, side, and rejection reason. Offline reconciliation and backup/restore verification use only persisted evidence; they never query Binance or use the wall clock.
 
-Hermes does **not** claim full current Binance execution fidelity until Batch H
-closes. Batch E introduces no partial `executionRules` implementation.
+`PRICE_RANGE_PRESENT`, `PRICE_RANGE_ABSENT`, `RULE_NOT_APPLICABLE`, `TRANSPORT_FAILURE`, and `MALFORMED_RESPONSE` remain distinct. A missing individual multiplier removes only that bound. A missing rule or null/absent reference produces documented non-enforcement; malformed or transport evidence halts a governed run before fills. BUY uses bid multipliers and SELL uses ask multipliers. Boundaries are inclusive. A local outside-range result is recorded as `EXECUTION_RULE_PRICE_RANGE_EXCEEDED` and is not a statement that a REST observation proves matching-engine taker-phase fillability.
+
+The contract is additive and future-only. No historical order, fill, observation, market-rule evidence, or execution interpretation is backfilled or reinterpreted.
+
+Hermes remains a research paper-trading reconstruction. Public REST evidence cannot prove exact matching-engine fillability or replace Binance's taker-phase reference calculation.
 
 ## Batch E receipt clock and HTTP contract
 

@@ -22,6 +22,33 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def volume_transition_anomalies(
+    volume: pd.Series, *, max_volume_ratio: float
+) -> pd.Series:
+    """Flag explicit zero discontinuities and large positive-to-positive moves."""
+    try:
+        values = pd.to_numeric(volume, errors="raise").astype(float)
+    except (TypeError, ValueError) as error:
+        raise ValueError("invalid volume") from error
+    if values.isna().any() or not all(math.isfinite(value) for value in values):
+        raise ValueError("invalid volume")
+    if (values < 0).any():
+        raise ValueError("invalid volume")
+    if (
+        isinstance(max_volume_ratio, bool)
+        or not isinstance(max_volume_ratio, (int, float))
+        or not math.isfinite(max_volume_ratio)
+        or max_volume_ratio <= 0
+    ):
+        raise ValueError("invalid max_volume_ratio")
+    previous = values.shift()
+    zero_transition = ((previous == 0) & (values > 0)) | ((previous > 0) & (values == 0))
+    positive_ratio = (previous > 0) & (values > 0) & (
+        (values / previous - 1.0).abs() > max_volume_ratio
+    )
+    return (zero_transition | positive_ratio).fillna(False).astype(bool)
+
+
 def _validate_frame(frame: pd.DataFrame, source: Path) -> dict[str, Any]:
     required = ["timestamp", "open", "high", "low", "close", "volume"]
     if list(frame.columns) != required:
@@ -39,7 +66,9 @@ def _validate_frame(frame: pd.DataFrame, source: Path) -> dict[str, Any]:
     if not validation.is_valid or (frame["volume"] < 0).any():
         raise ValueError(f"invalid processed dataset OHLCV: {source}")
     returns = frame["close"].pct_change().abs()
-    volume_ratio = frame["volume"].replace(0, float("nan")).pct_change().abs()
+    volume_anomalies = volume_transition_anomalies(
+        frame["volume"], max_volume_ratio=100.0
+    )
     return {
         "rows": len(frame),
         "first_candle_open_utc": frame["timestamp"].iloc[0].isoformat(),
@@ -47,7 +76,7 @@ def _validate_frame(frame: pd.DataFrame, source: Path) -> dict[str, Any]:
         "last_candle_open_utc": frame["timestamp"].iloc[-1].isoformat(),
         "last_candle_close_utc": (frame["timestamp"].iloc[-1] + pd.Timedelta(days=1)).isoformat(),
         "extreme_price_change_count": int((returns > 0.75).sum()),
-        "extreme_volume_change_count": int((volume_ratio > 100).sum()),
+        "extreme_volume_change_count": int(volume_anomalies.sum()),
     }
 
 

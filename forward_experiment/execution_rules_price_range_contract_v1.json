@@ -1,0 +1,26 @@
+{
+  "classification": "additive prospective public executionRules PRICE_RANGE evidence contract; a paper-trading reconstruction, not a claim of matching-engine fillability",
+  "economic_spec_changed": false,
+  "effective_for_new_runs_only": true,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "historical_evidence_fabricated": false,
+  "historical_executions_reinterpreted": false,
+  "prior_market_rule_evidence_v2_contract_sha256": "2d55dfbc2962e165507da4a2f76a57704160a2334050761b298e3fb4b7e53f51",
+  "rule": {
+    "endpoint": "GET /api/v3/executionRules",
+    "evidence_required_for_governed_binance_symbols": true,
+    "future_timestamp_permitted": false,
+    "max_age_seconds_when_source_timestamp_supplied": 300,
+    "missing_individual_multiplier_disables_only_that_bound": true,
+    "no_price_range_rule_enforced": false,
+    "null_or_absent_reference_price_enforced": false,
+    "price_range_boundaries_inclusive": true,
+    "side_mapping": {
+      "BUY": "bidLimitMultDown/bidLimitMultUp",
+      "SELL": "askLimitMultDown/askLimitMultUp"
+    },
+    "transport_or_malformed_evidence_allows_execution": false
+  },
+  "status": "future-only executionRules PRICE_RANGE evidence, local decision, offline reconciliation, and tamper detection contract",
+  "version": "binance-execution-rules-price-range-v1"
+}

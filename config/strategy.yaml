@@ -63,6 +63,7 @@ paper_trading:
   slippage_rate: 0.0005
   execution_protocol_version: paper-exec-v3-ask-bid-minspread-utc0010
   require_exchange_rules: true
+  require_execution_rule_evidence: true
   schedule_weekday: 0       # Monday, UTC
   schedule_hour: 0
   schedule_minute: 5

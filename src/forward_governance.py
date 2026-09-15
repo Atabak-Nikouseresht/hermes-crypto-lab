@@ -49,6 +49,12 @@ REFERENCE_PRICE_EVIDENCE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
 MARKET_RULE_EVIDENCE_V2_CONTRACT_HASH_SHA256 = (
     "2d55dfbc2962e165507da4a2f76a57704160a2334050761b298e3fb4b7e53f51"
 )
+EXECUTION_RULES_PRICE_RANGE_CONTRACT_HASH_SHA256 = (
+    "702186ebdce4bb8dbf8e31c50e3d2aca62b1d882ce4c6a2d023ddf5658b2daf1"
+)
+EXECUTION_RULES_PRICE_RANGE_GOVERNANCE_AMENDMENT_HASH_SHA256 = (
+    "db59f569afca46983cacdd0ce38b0ab50ef6becdddd5703210758ce437b5df86"
+)
 
 
 def locked_strategy_spec(config: PaperConfig) -> dict[str, Any]:
@@ -260,6 +266,41 @@ def verify_market_rule_evidence_v2_runtime_contract(
         raise ValueError("Market-rule evidence v2 freshness policy mismatch")
 
 
+def verify_execution_rules_price_range_runtime_contract(
+    payload: dict[str, Any], config: PaperConfig
+) -> None:
+    """Bind prospective public executionRules PRICE_RANGE evidence to governance."""
+    expected_rule = {
+        "endpoint": "GET /api/v3/executionRules",
+        "evidence_required_for_governed_binance_symbols": True,
+        "future_timestamp_permitted": False,
+        "max_age_seconds_when_source_timestamp_supplied": REFERENCE_PRICE_MAX_AGE_SECONDS,
+        "missing_individual_multiplier_disables_only_that_bound": True,
+        "no_price_range_rule_enforced": False,
+        "null_or_absent_reference_price_enforced": False,
+        "price_range_boundaries_inclusive": True,
+        "side_mapping": {
+            "BUY": "bidLimitMultDown/bidLimitMultUp",
+            "SELL": "askLimitMultDown/askLimitMultUp",
+        },
+        "transport_or_malformed_evidence_allows_execution": False,
+    }
+    if (
+        type(payload) is not dict
+        or payload.get("version") != "binance-execution-rules-price-range-v1"
+        or payload.get("execution_protocol_version") != EXECUTION_PROTOCOL_VERSION
+        or payload.get("prior_market_rule_evidence_v2_contract_sha256")
+        != MARKET_RULE_EVIDENCE_V2_CONTRACT_HASH_SHA256
+        or payload.get("effective_for_new_runs_only") is not True
+        or any(payload.get(field) is not False for field in (
+            "economic_spec_changed", "historical_evidence_fabricated",
+            "historical_executions_reinterpreted",
+        ))
+        or payload.get("rule") != expected_rule
+    ):
+        raise ValueError("ExecutionRules PRICE_RANGE governance mismatch")
+
+
 def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, str]:
     """Verify files against code-anchored release digests, not mutable sidecars alone."""
     project_root = Path(project_root)
@@ -286,6 +327,12 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     reference_price_contract = (
         project_root / "forward_experiment" / "reference_price_evidence_contract_v1.json"
     )
+    execution_rules_contract = (
+        project_root / "forward_experiment" / "execution_rules_price_range_contract_v1.json"
+    )
+    execution_rules_amendment = (
+        project_root / "forward_experiment" / "governance_amendment_v7_execution_rules_price_range.json"
+    )
     actual_checkpoint = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     actual_governance = hashlib.sha256(governance.read_bytes()).hexdigest()
     actual_locked = locked_strategy_hash(config)
@@ -307,6 +354,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     actual_reference_price_contract = hashlib.sha256(reference_price_contract.read_bytes()).hexdigest()
     market_v2_contract = project_root / "forward_experiment" / "market_rule_evidence_contract_v2.json"
     actual_market_v2_contract = hashlib.sha256(market_v2_contract.read_bytes()).hexdigest()
+    actual_execution_rules_contract = hashlib.sha256(execution_rules_contract.read_bytes()).hexdigest()
+    actual_execution_rules_amendment = hashlib.sha256(execution_rules_amendment.read_bytes()).hexdigest()
     expected = {
         "checkpoint": CHECKPOINT_MANIFEST_HASH_SHA256,
         "governance": GOVERNANCE_HASH_SHA256,
@@ -320,6 +369,8 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "reference_price_evidence_governance_amendment": REFERENCE_PRICE_EVIDENCE_GOVERNANCE_AMENDMENT_HASH_SHA256,
         "reference_price_evidence_contract": REFERENCE_PRICE_EVIDENCE_CONTRACT_HASH_SHA256,
         "market_rule_evidence_v2_contract": MARKET_RULE_EVIDENCE_V2_CONTRACT_HASH_SHA256,
+        "execution_rules_price_range_contract": EXECUTION_RULES_PRICE_RANGE_CONTRACT_HASH_SHA256,
+        "execution_rules_price_range_governance_amendment": EXECUTION_RULES_PRICE_RANGE_GOVERNANCE_AMENDMENT_HASH_SHA256,
     }
     actual = {
         "checkpoint": actual_checkpoint,
@@ -334,12 +385,20 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
         "reference_price_evidence_governance_amendment": actual_reference_price_amendment,
         "reference_price_evidence_contract": actual_reference_price_contract,
         "market_rule_evidence_v2_contract": actual_market_v2_contract,
+        "execution_rules_price_range_contract": actual_execution_rules_contract,
+        "execution_rules_price_range_governance_amendment": actual_execution_rules_amendment,
     }
     if actual != expected:
         raise ValueError(f"Forward trust-anchor mismatch: expected={expected}, actual={actual}")
     verify_immutable_manifest(market_v2_contract, Path(str(market_v2_contract) + ".sha256"))
     verify_market_rule_evidence_v2_runtime_contract(
         json.loads(market_v2_contract.read_text(encoding="utf-8")), config
+    )
+    verify_immutable_manifest(
+        execution_rules_contract, Path(str(execution_rules_contract) + ".sha256")
+    )
+    verify_immutable_manifest(
+        execution_rules_amendment, Path(str(execution_rules_amendment) + ".sha256")
     )
     verify_immutable_manifest(
         checkpoint, project_root / "forward_experiment" / "checkpoint_manifest.sha256"
@@ -472,6 +531,25 @@ def verify_trust_anchors(project_root: Path, config: PaperConfig) -> dict[str, s
     ):
         raise ValueError("Reference-price amendment declares a prohibited change")
     verify_reference_price_evidence_runtime_contract(reference_contract_payload, config)
+    execution_rules_payload = json.loads(execution_rules_amendment.read_text(encoding="utf-8"))
+    execution_rules_contract_payload = json.loads(execution_rules_contract.read_text(encoding="utf-8"))
+    if (
+        execution_rules_payload["prior_reference_price_evidence_governance_amendment_sha256"]
+        != actual_reference_price_amendment
+        or execution_rules_payload["execution_rules_price_range_contract_sha256"]
+        != actual_execution_rules_contract
+    ):
+        raise ValueError("ExecutionRules amendment does not anchor prior governance and contract")
+    if any(
+        execution_rules_payload[field]
+        for field in (
+            "strategy_reselection", "parameter_retuning", "research_results_changed",
+            "historical_governance_records_rewritten", "historical_protocol_records_rewritten",
+            "economic_spec_changed",
+        )
+    ):
+        raise ValueError("ExecutionRules amendment declares a prohibited change")
+    verify_execution_rules_price_range_runtime_contract(execution_rules_contract_payload, config)
     declared_schedule = amendment_payload["operational_schedule"]
     actual_schedule = {
         "schedule_weekday": config.schedule_weekday,

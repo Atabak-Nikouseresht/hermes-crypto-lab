@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import json
+import math
 from functools import partial
 from io import BytesIO
 from urllib.error import HTTPError, URLError
@@ -8,7 +10,7 @@ import pandas as pd
 import pytest
 
 from src.download_data import call_with_retry
-from src.paper_broker import PaperConfig
+from src.paper_broker import PaperConfig, RuleReferencePrice, validate_reference_price_evidence
 from src.paper_market import PublicMarketClient, TransientPublicMarketError, fetch_public_market_snapshot
 from tests.test_paper_market import FakePublicExchange
 
@@ -238,3 +240,40 @@ def test_documented_absence_single_call_and_no_retry(monkeypatch, absence):
     assert snapshot.rule_reference_prices["BTC/USDT"].source == "LAST_FALLBACK"
     assert len(calls) == 1
     assert delays == []
+
+
+@pytest.mark.parametrize(
+    "age_minutes,source_age,acquisition_age,valid",
+    [
+        (1, 60, 60, True),
+        (1, 60.001, 60, False),
+        (5, 300, 300, True),
+        (5, 300.001, 300, False),
+    ],
+)
+def test_reference_price_validator_honors_custom_age_and_exact_boundary(
+    age_minutes, source_age, acquisition_age, valid
+):
+    receipt = pd.Timestamp(START)
+    reference = RuleReferencePrice(
+        price=Decimal("100"),
+        source="REFERENCE_PRICE",
+        timestamp=receipt - pd.Timedelta(seconds=source_age),
+        acquired_at=receipt - pd.Timedelta(seconds=acquisition_age),
+    )
+    error = validate_reference_price_evidence(
+        reference, now=receipt, max_age_minutes=age_minutes
+    )
+    assert (error is None) is valid
+
+
+@pytest.mark.parametrize("age", [0, -1, math.nan, math.inf, -math.inf, True])
+def test_reference_price_validator_rejects_invalid_age_budget(age):
+    receipt = pd.Timestamp(START)
+    reference = RuleReferencePrice(
+        price=Decimal("100"),
+        source="REFERENCE_PRICE",
+        timestamp=receipt,
+        acquired_at=receipt,
+    )
+    assert validate_reference_price_evidence(reference, now=receipt, max_age_minutes=age) is not None

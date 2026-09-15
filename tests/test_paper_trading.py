@@ -1275,9 +1275,15 @@ def test_schema_v8_adds_rejected_order_diagnostics_without_rewriting_runs(tmp_pa
     system = PaperTradingSystem(path, _config())
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_runs VALUES "
-            "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}',1)"
+            """INSERT INTO paper_runs (
+            run_id, started_at_utc, completed_at_utc, status, mode,
+            official_scheduled, market_rule_evidence_required, schedule_key,
+            attempted_schedule_key, signal_timestamp_utc, data_timestamp_utc,
+            message, reconciliation, market_rule_evidence_version
+            ) VALUES (
+            'historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',
+            'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}',1
+            )"""
         )
         connection.execute("ALTER TABLE paper_run_diagnostics DROP COLUMN rejected_orders")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=8")
@@ -1307,9 +1313,15 @@ def test_schema_v9_adds_persistent_rejection_audit_without_rewriting_runs(tmp_pa
     system = PaperTradingSystem(path, _config())
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_runs VALUES "
-            "('historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',"
-            "'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}',1)"
+            """INSERT INTO paper_runs (
+            run_id, started_at_utc, completed_at_utc, status, mode,
+            official_scheduled, market_rule_evidence_required, schedule_key,
+            attempted_schedule_key, signal_timestamp_utc, data_timestamp_utc,
+            message, reconciliation, market_rule_evidence_version
+            ) VALUES (
+            'historical-run','2024-08-01T00:00:00Z','2024-08-01T00:01:00Z',
+            'EXECUTED','PAPER',FALSE,FALSE,NULL,NULL,NULL,NULL,'historical','{}',1
+            )"""
         )
         connection.execute("DROP TABLE paper_order_rejections")
         connection.execute("DELETE FROM paper_schema_versions WHERE version=9")

@@ -20,7 +20,12 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
             [now, specification],
         )
         connection.execute(
-            "INSERT INTO paper_runs VALUES (?, ?, ?, 'DRY_RUN', 'DRY_RUN', FALSE, FALSE, NULL, NULL, NULL, NULL, '', '{}', 1)",
+            """INSERT INTO paper_runs (
+            run_id, started_at_utc, completed_at_utc, status, mode,
+            official_scheduled, market_rule_evidence_required, schedule_key,
+            attempted_schedule_key, signal_timestamp_utc, data_timestamp_utc,
+            message, reconciliation, market_rule_evidence_version
+            ) VALUES (?, ?, ?, 'DRY_RUN', 'DRY_RUN', FALSE, FALSE, NULL, NULL, NULL, NULL, '', '{}', 1)""",
             ["dry", now, now],
         )
         connection.execute(
@@ -40,7 +45,12 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
 
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_runs VALUES (?, ?, ?, 'RECOVERED_ABORTED', 'PAPER', TRUE, FALSE, NULL, NULL, NULL, NULL, '', '{}', 1)",
+            """INSERT INTO paper_runs (
+            run_id, started_at_utc, completed_at_utc, status, mode,
+            official_scheduled, market_rule_evidence_required, schedule_key,
+            attempted_schedule_key, signal_timestamp_utc, data_timestamp_utc,
+            message, reconciliation, market_rule_evidence_version
+            ) VALUES (?, ?, ?, 'RECOVERED_ABORTED', 'PAPER', TRUE, FALSE, NULL, NULL, NULL, NULL, '', '{}', 1)""",
             ["recovered", now, now],
         )
         connection.execute(
@@ -52,7 +62,12 @@ def test_dry_run_is_ineligible_for_forward_baseline(tmp_path):
 
     with system.store.connect() as connection:
         connection.execute(
-            "INSERT INTO paper_runs VALUES (?, ?, ?, 'EXECUTED', 'PAPER', TRUE, FALSE, ?, NULL, NULL, NULL, '', '{\"valid\":true}', 1)",
+            """INSERT INTO paper_runs (
+            run_id, started_at_utc, completed_at_utc, status, mode,
+            official_scheduled, market_rule_evidence_required, schedule_key,
+            attempted_schedule_key, signal_timestamp_utc, data_timestamp_utc,
+            message, reconciliation, market_rule_evidence_version
+            ) VALUES (?, ?, ?, 'EXECUTED', 'PAPER', TRUE, FALSE, ?, NULL, NULL, NULL, '', '{\"valid\":true}', 1)""",
             ["official", now, now, "2026-01-05T00:05Z"],
         )
         connection.execute(

@@ -15,12 +15,17 @@ from typing import Any
 
 import duckdb
 
-from src.execution_protocol import EXECUTION_PROTOCOL_VERSION, QUOTE_COHERENCE_CONTRACT_VERSION, REFERENCE_PRICE_MAX_AGE_SECONDS
+from src.execution_protocol import (
+    EXECUTION_PROTOCOL_VERSION,
+    QUOTE_COHERENCE_CONTRACT_VERSION,
+    REFERENCE_PRICE_MAX_AGE_SECONDS,
+)
 
 
 FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
 BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v2"
 _LEGACY_BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v1"
+BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION = "binance-execution-rules-evidence-v1-price-range"
 
 
 @dataclass(frozen=True)
@@ -42,11 +47,27 @@ class PaperStore:
         return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
+    def execution_rules_evidence_digest(rows: list[tuple[Any, ...]]) -> str:
+        """Stable independent seal for prospective Binance executionRules evidence."""
+        payload = [[None if value is None else str(value) for value in row] for row in rows]
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
     def _exact_rule_notional(quantity: Decimal, reference: Decimal) -> Decimal:
         """Do not round a raw exchange reference to Decimal's default precision."""
         with localcontext() as context:
             context.prec = max(28, len(quantity.as_tuple().digits) + len(reference.as_tuple().digits))
             return quantity * reference
+
+    @staticmethod
+    def _exact_price_range_bound(reference: Decimal, multiplier: Decimal) -> Decimal:
+        """Preserve all raw Binance multiplier digits during offline reconstruction."""
+        with localcontext() as context:
+            context.prec = max(
+                28, len(reference.as_tuple().digits) + len(multiplier.as_tuple().digits)
+            )
+            return reference * multiplier
 
     def __init__(
         self,
@@ -370,6 +391,37 @@ class PaperStore:
                     captured_at_utc TIMESTAMPTZ NOT NULL,
                     PRIMARY KEY (run_id, symbol)
                 );
+                CREATE TABLE IF NOT EXISTS paper_execution_rules_evidence (
+                    run_id VARCHAR NOT NULL,
+                    symbol VARCHAR NOT NULL,
+                    contract_version VARCHAR NOT NULL,
+                    native_symbol VARCHAR,
+                    acquisition_status VARCHAR NOT NULL,
+                    price_range_present BOOLEAN,
+                    bid_limit_mult_up VARCHAR,
+                    bid_limit_mult_down VARCHAR,
+                    ask_limit_mult_up VARCHAR,
+                    ask_limit_mult_down VARCHAR,
+                    source_timestamp_utc TIMESTAMPTZ,
+                    acquired_at_utc TIMESTAMPTZ,
+                    PRIMARY KEY (run_id, symbol)
+                );
+                CREATE TABLE IF NOT EXISTS paper_price_range_decisions (
+                    run_id VARCHAR NOT NULL,
+                    decision_index INTEGER NOT NULL,
+                    symbol VARCHAR NOT NULL,
+                    side VARCHAR NOT NULL,
+                    idempotency_key VARCHAR NOT NULL,
+                    simulated_execution_price VARCHAR NOT NULL,
+                    reference_price_decimal VARCHAR,
+                    lower_bound_decimal VARCHAR,
+                    upper_bound_decimal VARCHAR,
+                    outcome VARCHAR NOT NULL,
+                    reason VARCHAR,
+                    decided_at_utc TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (run_id, decision_index),
+                    UNIQUE (run_id, idempotency_key)
+                );
                 """
             )
             connection.execute(
@@ -489,6 +541,19 @@ class PaperStore:
             connection.execute("ALTER TABLE paper_runs ALTER COLUMN market_rule_evidence_version SET NOT NULL")
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES (17, ?, 'prospective market-rule acquisition and admission evidence v2')", [now]
+            )
+            connection.execute(
+                "ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS execution_rules_evidence_required BOOLEAN DEFAULT FALSE"
+            )
+            connection.execute(
+                "ALTER TABLE paper_runs ALTER COLUMN execution_rules_evidence_required SET DEFAULT FALSE"
+            )
+            connection.execute(
+                "ALTER TABLE paper_runs ALTER COLUMN execution_rules_evidence_required SET NOT NULL"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES (18, ?, 'prospective Binance executionRules PRICE_RANGE evidence')",
+                [now],
             )
             schema_v6 = connection.execute(
                 "SELECT 1 FROM paper_schema_versions WHERE version=6"
@@ -932,6 +997,166 @@ class PaperStore:
                                 return ReconciliationResult(False, "Invalid market-rule rejection decision")
                             if reason != expected_reason:
                                 return ReconciliationResult(False, "Inconsistent market-rule rejection reason")
+            execution_rule_runs = connection.execute(
+                """SELECT run_id FROM paper_runs WHERE execution_rules_evidence_required=TRUE
+                AND mode='PAPER' AND official_scheduled AND status='EXECUTED'"""
+            ).fetchall()
+            for (run_id,) in execution_rule_runs:
+                scope_row = connection.execute(
+                    "SELECT diagnostics FROM paper_forward_execution_evidence WHERE run_id=?", [run_id]
+                ).fetchone()
+                evidence_rows = connection.execute(
+                    "SELECT * FROM paper_execution_rules_evidence WHERE run_id=? ORDER BY symbol", [run_id]
+                ).fetchall()
+                if scope_row is None or not evidence_rows:
+                    return ReconciliationResult(False, "Missing executionRules evidence")
+                try:
+                    diagnostics = json.loads(scope_row[0]) if isinstance(scope_row[0], str) else dict(scope_row[0])
+                    expected_symbols = set(diagnostics["evaluated_symbols"])
+                    expected_digest = diagnostics["execution_rules_evidence_sha256"]
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    return ReconciliationResult(False, "Invalid executionRules authoritative scope")
+                if (
+                    not expected_symbols
+                    or {str(row[1]) for row in evidence_rows} != expected_symbols
+                    or expected_digest != self.execution_rules_evidence_digest(evidence_rows)
+                ):
+                    return ReconciliationResult(False, "ExecutionRules evidence integrity or scope mismatch")
+                evidence_by_symbol = {str(row[1]): row for row in evidence_rows}
+                captured_at = connection.execute(
+                    "SELECT captured_at_utc FROM paper_forward_execution_evidence WHERE run_id=?", [run_id]
+                ).fetchone()[0]
+                for evidence in evidence_rows:
+                    _run, symbol, contract, native, status, present, *rest = evidence
+                    multipliers = rest[:4]
+                    source_timestamp, acquired_at = rest[4:6]
+                    if contract != BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION:
+                        return ReconciliationResult(False, "ExecutionRules evidence contract mismatch")
+                    if status not in {
+                        "PRICE_RANGE_PRESENT", "PRICE_RANGE_ABSENT", "RULE_NOT_APPLICABLE",
+                        "TRANSPORT_FAILURE", "MALFORMED_RESPONSE",
+                    }:
+                        return ReconciliationResult(False, "ExecutionRules evidence status is invalid")
+                    if status == "PRICE_RANGE_PRESENT":
+                        if (
+                            not isinstance(native, str)
+                            or native != str(symbol).replace("/", "")
+                            or present is not True
+                        ):
+                            return ReconciliationResult(False, "PRICE_RANGE evidence applicability is invalid")
+                    elif status == "PRICE_RANGE_ABSENT":
+                        if (
+                            not isinstance(native, str)
+                            or native != str(symbol).replace("/", "")
+                            or present is not False
+                            or any(
+                            value is not None for value in multipliers
+                            )
+                        ):
+                            return ReconciliationResult(False, "PRICE_RANGE absence evidence is invalid")
+                    elif present is not None or any(value is not None for value in multipliers):
+                        return ReconciliationResult(False, "ExecutionRules inapplicable evidence is invalid")
+                    if status == "RULE_NOT_APPLICABLE":
+                        if source_timestamp is not None or acquired_at is not None:
+                            return ReconciliationResult(False, "Inapplicable executionRules has timing evidence")
+                    elif acquired_at is None or acquired_at > captured_at:
+                        return ReconciliationResult(False, "ExecutionRules acquisition timestamp is invalid")
+                    if source_timestamp is not None and (
+                        acquired_at is None
+                        or source_timestamp > acquired_at
+                        or source_timestamp > captured_at
+                        or captured_at - source_timestamp > timedelta(seconds=REFERENCE_PRICE_MAX_AGE_SECONDS)
+                    ):
+                        return ReconciliationResult(False, "ExecutionRules source timestamp is invalid")
+                reference_by_symbol = {
+                    str(row[1]): row for row in connection.execute(
+                        "SELECT * FROM paper_market_rule_evidence WHERE run_id=?", [run_id]
+                    ).fetchall()
+                }
+                decisions = connection.execute(
+                    """SELECT symbol, side, idempotency_key, simulated_execution_price,
+                    reference_price_decimal, lower_bound_decimal, upper_bound_decimal, outcome, reason
+                    FROM paper_price_range_decisions WHERE run_id=? ORDER BY decision_index""",
+                    [run_id],
+                ).fetchall()
+                decision_keys = {str(row[2]) for row in decisions}
+                proposal_keys = {
+                    str(key) for (key,) in connection.execute(
+                        "SELECT idempotency_key FROM paper_orders WHERE run_id=? UNION "
+                        "SELECT idempotency_key FROM paper_order_rejections "
+                        "WHERE run_id=? AND stage IN ('FINAL', 'FINAL_CASH')", [run_id, run_id]
+                    ).fetchall() if key is not None
+                }
+                if decision_keys != proposal_keys:
+                    return ReconciliationResult(False, "Missing or orphan PRICE_RANGE decision")
+                for symbol, side, key, execution_text, reference_text, lower_text, upper_text, outcome, reason in decisions:
+                    evidence = evidence_by_symbol.get(str(symbol))
+                    context = connection.execute(
+                        "SELECT bid, ask, midpoint FROM paper_execution_context WHERE run_id=? AND symbol=?",
+                        [run_id, symbol],
+                    ).fetchone()
+                    if evidence is None or context is None or side not in {"BUY", "SELL"}:
+                        return ReconciliationResult(False, "Invalid PRICE_RANGE decision linkage")
+                    try:
+                        execution = Decimal(execution_text)
+                        if not execution.is_finite() or execution <= 0:
+                            raise InvalidOperation
+                        bid, ask, midpoint = map(float, context)
+                        expected_execution = Decimal(str(
+                            max(ask, midpoint * (1.0 + self.minimum_spread_rate)) * (1.0 + self.slippage_rate)
+                            if side == "BUY" else
+                            min(bid, midpoint * (1.0 - self.minimum_spread_rate)) * (1.0 - self.slippage_rate)
+                        ))
+                        if execution != expected_execution:
+                            raise InvalidOperation
+                        status, present = evidence[4], evidence[5]
+                        multipliers = [
+                            None if value is None else Decimal(value) for value in evidence[6:10]
+                        ]
+                        if any(value is not None and (not value.is_finite() or value <= 0) for value in multipliers):
+                            raise InvalidOperation
+                        if status in {"TRANSPORT_FAILURE", "MALFORMED_RESPONSE"}:
+                            expected = ("EVIDENCE_UNAVAILABLE", "EXECUTION_RULE_EVIDENCE_UNAVAILABLE", None, None, None)
+                        elif status in {"PRICE_RANGE_ABSENT", "RULE_NOT_APPLICABLE"}:
+                            expected = ("NOT_ENFORCED", "PRICE_RANGE_RULE_ABSENT", None, None, None)
+                        elif status == "PRICE_RANGE_PRESENT" and present is True:
+                            reference = reference_by_symbol.get(str(symbol))
+                            raw_reference = reference[3] if reference is not None and reference[4] == "REFERENCE_PRICE" else None
+                            if raw_reference is None:
+                                expected = ("NOT_ENFORCED", "PRICE_RANGE_REFERENCE_UNAVAILABLE", None, None, None)
+                            else:
+                                reference_decimal = Decimal(raw_reference)
+                                lower_multiplier, upper_multiplier = (
+                                    (multipliers[1], multipliers[0]) if side == "BUY"
+                                    else (multipliers[3], multipliers[2])
+                                )
+                                lower = self._exact_price_range_bound(reference_decimal, lower_multiplier) if lower_multiplier is not None else None
+                                upper = self._exact_price_range_bound(reference_decimal, upper_multiplier) if upper_multiplier is not None else None
+                                if lower is not None and upper is not None and lower > upper:
+                                    raise InvalidOperation
+                                if (lower is not None and execution < lower) or (upper is not None and execution > upper):
+                                    expected = ("REJECTED", "EXECUTION_RULE_PRICE_RANGE_EXCEEDED", reference_decimal, lower, upper)
+                                else:
+                                    expected = ("ACCEPTED", None, reference_decimal, lower, upper)
+                        else:
+                            raise InvalidOperation
+                        expected_outcome, expected_reason, expected_reference, expected_lower, expected_upper = expected
+                        if (
+                            outcome != expected_outcome or reason != expected_reason
+                            or (None if reference_text is None else Decimal(reference_text)) != expected_reference
+                            or (None if lower_text is None else Decimal(lower_text)) != expected_lower
+                            or (None if upper_text is None else Decimal(upper_text)) != expected_upper
+                        ):
+                            return ReconciliationResult(False, "Inconsistent PRICE_RANGE decision")
+                        if expected_outcome in {"REJECTED", "EVIDENCE_UNAVAILABLE"}:
+                            matched = connection.execute(
+                                "SELECT COUNT(*) FROM paper_order_rejections WHERE run_id=? AND idempotency_key=? AND reason=?",
+                                [run_id, key, expected_reason],
+                            ).fetchone()[0]
+                            if not matched:
+                                return ReconciliationResult(False, "PRICE_RANGE rejection was not persisted")
+                    except (InvalidOperation, ValueError, TypeError):
+                        return ReconciliationResult(False, "Invalid persisted PRICE_RANGE evidence")
             account = connection.execute(
                 "SELECT cash FROM paper_accounts WHERE account_id=?", [self.account_id]
             ).fetchone()

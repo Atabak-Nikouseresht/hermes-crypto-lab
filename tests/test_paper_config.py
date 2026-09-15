@@ -45,3 +45,38 @@ def test_paper_config_rejects_operationally_invalid_values(overrides, message):
 
 def test_current_paper_config_defaults_remain_valid():
     PaperConfig(assets=ASSETS)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("max_abs_daily_return", math.nan),
+        ("max_abs_daily_return", math.inf),
+        ("max_abs_daily_return", -math.inf),
+        ("max_abs_daily_return", 0.0),
+        ("max_abs_daily_return", -0.01),
+        ("max_abs_daily_return", True),
+        ("max_abs_daily_return", "0.75"),
+        ("max_abs_daily_return", 1.000001),
+        ("max_volume_ratio", math.nan),
+        ("max_volume_ratio", math.inf),
+        ("max_volume_ratio", -math.inf),
+        ("max_volume_ratio", 0.0),
+        ("max_volume_ratio", -0.01),
+        ("max_volume_ratio", True),
+        ("max_volume_ratio", "100"),
+    ],
+)
+def test_paper_config_fails_closed_for_invalid_market_integrity_thresholds(field, value):
+    with pytest.raises(ValueError, match=field):
+        PaperConfig(assets=ASSETS, **{field: value})
+
+
+@pytest.mark.parametrize("value", [1e-12, 0.75, 1.0])
+def test_paper_config_accepts_finite_bounded_daily_return_threshold(value):
+    assert PaperConfig(assets=ASSETS, max_abs_daily_return=value).max_abs_daily_return == value
+
+
+@pytest.mark.parametrize("value", [1e-12, 100.0, 1_000_000.0])
+def test_paper_config_accepts_any_positive_finite_volume_ratio(value):
+    assert PaperConfig(assets=ASSETS, max_volume_ratio=value).max_volume_ratio == value

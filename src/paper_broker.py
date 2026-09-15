@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from fractions import Fraction
+from numbers import Real
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,9 +20,10 @@ import pandas as pd
 from src.execution_protocol import (
     EXECUTION_PROTOCOL_VERSION,
     QUOTE_COHERENCE_CONTRACT_VERSION,
-    REFERENCE_PRICE_MAX_AGE_SECONDS,
 )
+from src.data_integrity import volume_transition_anomalies
 from src.paper_store import (
+    BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION,
     BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION,
     FINAL_EXECUTABLE_LEDGER_SEMANTICS,
     PaperStore,
@@ -55,10 +57,157 @@ class RuleReferencePrice:
     acquired_at: pd.Timestamp | None = None
 
 
+@dataclass(frozen=True)
+class PriceRangeRuleEvidence:
+    """Public Binance PRICE_RANGE evidence, distinct from simulated fills."""
+
+    symbol: str
+    native_symbol: str | None
+    status: str
+    price_range_present: bool | None
+    bid_limit_mult_up: Decimal | None = None
+    bid_limit_mult_down: Decimal | None = None
+    ask_limit_mult_up: Decimal | None = None
+    ask_limit_mult_down: Decimal | None = None
+    source_timestamp: pd.Timestamp | None = None
+    acquired_at: pd.Timestamp | None = None
+
+
+@dataclass(frozen=True)
+class PriceRangeDecision:
+    outcome: str
+    reason: str | None
+    lower_bound: Decimal | None
+    upper_bound: Decimal | None
+
+
+def _exact_decimal_product(left: Decimal, right: Decimal) -> Decimal:
+    with localcontext() as context:
+        context.prec = max(28, len(left.as_tuple().digits) + len(right.as_tuple().digits))
+        return left * right
+
+
+def evaluate_price_range_rule(
+    rule: PriceRangeRuleEvidence,
+    *,
+    reference: RuleReferencePrice | None,
+    side: str,
+    simulated_execution_price: Decimal,
+) -> PriceRangeDecision:
+    """Reconstruct Binance's documented PRICE_RANGE bounds from persisted evidence.
+
+    This is a paper-trading reconstruction only: a public REST observation does
+    not establish the matching engine's taker-phase reference or fillability.
+    """
+    if side not in {"BUY", "SELL"}:
+        raise ValueError("PRICE_RANGE side must be BUY or SELL")
+    if not simulated_execution_price.is_finite() or simulated_execution_price <= 0:
+        raise ValueError("PRICE_RANGE simulated execution price is invalid")
+    if rule.status in {"TRANSPORT_FAILURE", "MALFORMED_RESPONSE"}:
+        return PriceRangeDecision(
+            "EVIDENCE_UNAVAILABLE", "EXECUTION_RULE_EVIDENCE_UNAVAILABLE", None, None
+        )
+    if rule.status in {"PRICE_RANGE_ABSENT", "RULE_NOT_APPLICABLE"}:
+        return PriceRangeDecision("NOT_ENFORCED", "PRICE_RANGE_RULE_ABSENT", None, None)
+    if rule.status != "PRICE_RANGE_PRESENT" or rule.price_range_present is not True:
+        raise ValueError("PRICE_RANGE evidence status is invalid")
+    if reference is None or reference.source != "REFERENCE_PRICE" or reference.price is None:
+        return PriceRangeDecision(
+            "NOT_ENFORCED", "PRICE_RANGE_REFERENCE_UNAVAILABLE", None, None
+        )
+    if not reference.price.is_finite() or reference.price <= 0:
+        raise ValueError("PRICE_RANGE reference price is invalid")
+    if side == "BUY":
+        lower_multiplier, upper_multiplier = rule.bid_limit_mult_down, rule.bid_limit_mult_up
+    else:
+        lower_multiplier, upper_multiplier = rule.ask_limit_mult_down, rule.ask_limit_mult_up
+    for multiplier in (lower_multiplier, upper_multiplier):
+        if multiplier is not None and (not multiplier.is_finite() or multiplier <= 0):
+            raise ValueError("PRICE_RANGE multiplier is invalid")
+    lower = (
+        _exact_decimal_product(reference.price, lower_multiplier)
+        if lower_multiplier is not None
+        else None
+    )
+    upper = (
+        _exact_decimal_product(reference.price, upper_multiplier)
+        if upper_multiplier is not None
+        else None
+    )
+    if lower is not None and upper is not None and lower > upper:
+        raise ValueError("PRICE_RANGE bounds are inverted")
+    if (lower is not None and simulated_execution_price < lower) or (
+        upper is not None and simulated_execution_price > upper
+    ):
+        return PriceRangeDecision(
+            "REJECTED", "EXECUTION_RULE_PRICE_RANGE_EXCEEDED", lower, upper
+        )
+    return PriceRangeDecision("ACCEPTED", None, lower, upper)
+
+
+def validate_price_range_evidence(
+    rule: PriceRangeRuleEvidence, *, now: pd.Timestamp, max_age_minutes: Real
+) -> str | None:
+    """Validate public executionRules evidence without treating absence as malformed."""
+    if (
+        isinstance(max_age_minutes, bool)
+        or not isinstance(max_age_minutes, Real)
+        or not math.isfinite(max_age_minutes)
+        or max_age_minutes <= 0
+    ):
+        return "Invalid data: executionRules maximum age"
+    allowed = {
+        "PRICE_RANGE_PRESENT", "PRICE_RANGE_ABSENT", "RULE_NOT_APPLICABLE",
+        "TRANSPORT_FAILURE", "MALFORMED_RESPONSE",
+    }
+    if rule.status not in allowed:
+        return "Invalid data: executionRules acquisition status"
+    multipliers = (
+        rule.bid_limit_mult_up, rule.bid_limit_mult_down,
+        rule.ask_limit_mult_up, rule.ask_limit_mult_down,
+    )
+    if rule.status == "PRICE_RANGE_PRESENT":
+        if rule.price_range_present is not True or not isinstance(rule.native_symbol, str) or not rule.native_symbol:
+            return "Invalid data: PRICE_RANGE evidence"
+        if any(value is not None and (not value.is_finite() or value <= 0) for value in multipliers):
+            return "Invalid data: PRICE_RANGE multiplier"
+    elif rule.status == "PRICE_RANGE_ABSENT":
+        if rule.price_range_present is not False or any(value is not None for value in multipliers):
+            return "Invalid data: PRICE_RANGE absence evidence"
+    elif rule.status in {"TRANSPORT_FAILURE", "MALFORMED_RESPONSE", "RULE_NOT_APPLICABLE"}:
+        if rule.price_range_present is not None or any(value is not None for value in multipliers):
+            return "Invalid data: incompatible executionRules evidence"
+    if rule.status == "RULE_NOT_APPLICABLE":
+        if rule.source_timestamp is not None or rule.acquired_at is not None:
+            return "Invalid data: inapplicable executionRules timing"
+        return None
+    if rule.acquired_at is None:
+        return "Invalid data: executionRules acquisition timestamp missing"
+    acquired = pd.Timestamp(rule.acquired_at)
+    if pd.isna(acquired) or acquired.tzinfo is None or acquired > now:
+        return "Invalid data: executionRules acquisition timestamp"
+    if rule.source_timestamp is None:
+        return None
+    source = pd.Timestamp(rule.source_timestamp)
+    if pd.isna(source) or source.tzinfo is None or source > acquired or source > now:
+        return "Invalid data: executionRules source timestamp"
+    if now - source > pd.Timedelta(minutes=float(max_age_minutes)):
+        return "Stale data: executionRules source timestamp"
+    return None
+
+
 def validate_reference_price_evidence(
-    reference: RuleReferencePrice, *, now: pd.Timestamp, max_age_minutes: int
+    reference: RuleReferencePrice, *, now: pd.Timestamp, max_age_minutes: Real
 ) -> str | None:
     """Validate one public Binance referencePrice under the future-only contract."""
+    if (
+        isinstance(max_age_minutes, bool)
+        or not isinstance(max_age_minutes, Real)
+        or not math.isfinite(max_age_minutes)
+        or max_age_minutes <= 0
+    ):
+        return "Invalid data: reference price maximum age"
+    max_age = pd.Timedelta(minutes=float(max_age_minutes))
     if reference.source != "REFERENCE_PRICE":
         if reference.timestamp is not None or reference.acquired_at is not None:
             return "Invalid data: incompatible reference price timing"
@@ -80,8 +229,7 @@ def validate_reference_price_evidence(
     timestamp = timestamp.tz_convert("UTC")
     if timestamp > now or timestamp > acquired:
         return "Invalid data: future reference price timestamp"
-    if (now - timestamp > pd.Timedelta(seconds=REFERENCE_PRICE_MAX_AGE_SECONDS)
-            or acquired - timestamp > pd.Timedelta(seconds=REFERENCE_PRICE_MAX_AGE_SECONDS)):
+    if now - timestamp > max_age or acquired - timestamp > max_age:
         return "Stale data: reference price timestamp"
     return None
 
@@ -127,6 +275,8 @@ class MarketSnapshot:
     # Binance's public MARKET-filter price; intentionally distinct from last
     # and from Hermes's simulated fill price.
     rule_reference_prices: dict[str, RuleReferencePrice] = field(default_factory=dict)
+    # Per-symbol public executionRules evidence for the prospective PRICE_RANGE contract.
+    price_range_rules: dict[str, PriceRangeRuleEvidence] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -152,6 +302,7 @@ class PaperConfig:
     rebalance_days: int = 7
     locked_candidate_id: str = "mw120_sw00_ma150_n2_r07_v30"
     require_exchange_rules: bool = False
+    require_execution_rule_evidence: bool = False
     max_abs_daily_return: float = 0.75
     max_volume_ratio: float = 100.0
     strategy_config: StrategyConfig = field(
@@ -201,6 +352,12 @@ class PaperConfig:
             raise ValueError("initial_cash must be positive")
         if not self.assets:
             raise ValueError("assets cannot be empty")
+        if type(self.require_exchange_rules) is not bool:
+            raise ValueError("require_exchange_rules must be a boolean")
+        if type(self.require_execution_rule_evidence) is not bool:
+            raise ValueError("require_execution_rule_evidence must be a boolean")
+        if self.require_execution_rule_evidence and not self.require_exchange_rules:
+            raise ValueError("executionRules evidence requires exchange-rule validation")
         for rate in (self.fee_rate, self.minimum_spread_rate, self.slippage_rate):
             if not math.isfinite(rate) or not 0 <= rate < 1:
                 raise ValueError("cost rates must be in [0, 1)")
@@ -217,9 +374,19 @@ class PaperConfig:
         window_end_minute = self.schedule_minute + self.schedule_window_minutes
         if not self.schedule_minute <= self.execution_target_minute <= window_end_minute:
             raise ValueError("execution_target_minute must fall within the schedule window")
-        if self.max_data_staleness_minutes <= 0:
+        if (
+            isinstance(self.max_data_staleness_minutes, bool)
+            or not isinstance(self.max_data_staleness_minutes, Real)
+            or not math.isfinite(self.max_data_staleness_minutes)
+            or self.max_data_staleness_minutes <= 0
+        ):
             raise ValueError("max_data_staleness_minutes must be positive")
-        if self.max_quote_staleness_minutes <= 0:
+        if (
+            isinstance(self.max_quote_staleness_minutes, bool)
+            or not isinstance(self.max_quote_staleness_minutes, Real)
+            or not math.isfinite(self.max_quote_staleness_minutes)
+            or self.max_quote_staleness_minutes <= 0
+        ):
             raise ValueError("max_quote_staleness_minutes must be positive")
         if self.max_quote_staleness_minutes > self.max_data_staleness_minutes:
             raise ValueError(
@@ -236,6 +403,19 @@ class PaperConfig:
             raise ValueError("quantity_tolerance must be finite and in (0, 1)")
         if self.rebalance_days <= 0:
             raise ValueError("rebalance_days must be positive")
+        for field_name, value, upper_bound in (
+            ("max_abs_daily_return", self.max_abs_daily_return, 1.0),
+            ("max_volume_ratio", self.max_volume_ratio, None),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(value)
+                or value <= 0
+                or (upper_bound is not None and value > upper_bound)
+            ):
+                suffix = " and at most 1" if upper_bound is not None else ""
+                raise ValueError(f"{field_name} must be finite, positive{suffix}")
 
 
 @dataclass(frozen=True)
@@ -263,6 +443,7 @@ class PaperTradingSystem:
     def __init__(self, database_path: Path, config: PaperConfig):
         self.config = config
         self._last_rejections: list[dict[str, Any]] = []
+        self._last_price_range_decisions: list[dict[str, Any]] = []
         self.store = PaperStore(
             database_path,
             account_id=config.account_id,
@@ -302,6 +483,22 @@ class PaperTradingSystem:
             return "Invalid data: close timestamps are not strictly increasing"
         if list(closes.columns) != list(self.config.assets):
             return "Missing data: asset columns do not match configured universe"
+        if self.config.require_execution_rule_evidence:
+            if set(snapshot.price_range_rules) != set(self.config.assets):
+                return "Missing data: executionRules evidence does not cover governed symbols"
+            if set(snapshot.rule_reference_prices) != set(self.config.assets):
+                return "Missing data: reference-price evidence does not cover governed symbols"
+            for asset in self.config.assets:
+                evidence_error = validate_price_range_evidence(
+                    snapshot.price_range_rules[asset], now=now,
+                    max_age_minutes=self.config.max_quote_staleness_minutes,
+                )
+                if evidence_error is not None:
+                    return f"{evidence_error} for {asset}"
+                if snapshot.price_range_rules[asset].status in {
+                    "TRANSPORT_FAILURE", "MALFORMED_RESPONSE"
+                }:
+                    return f"Invalid data: executionRules evidence unavailable for {asset}"
         required = self.config.strategy_config.required_observations
         if len(closes) < required:
             return f"Missing data: requires at least {required} daily bars"
@@ -343,8 +540,9 @@ class PaperTradingSystem:
                     math.isfinite(float(value)) for value in frame["volume"]
                 ):
                     return f"Invalid volume for {asset}"
-                volume_ratio = frame["volume"].replace(0, float("nan")).pct_change().abs()
-                if (volume_ratio > self.config.max_volume_ratio).any():
+                if volume_transition_anomalies(
+                    frame["volume"], max_volume_ratio=self.config.max_volume_ratio
+                ).any():
                     return f"Extreme volume change requires manual review for {asset}"
             quote = snapshot.quotes.get(asset)
             if quote is None:
@@ -682,6 +880,68 @@ class PaperTradingSystem:
                 ],
             )
 
+    def _persist_execution_rules_evidence(
+        self, connection, *, run_id: str, snapshot: MarketSnapshot
+    ) -> None:
+        """Persist public executionRules outcomes before local price-range decisions."""
+        def exact(value: Decimal | None) -> str | None:
+            return None if value is None else format(value, "f")
+
+        for symbol in sorted(snapshot.quotes):
+            evidence = snapshot.price_range_rules.get(symbol)
+            if evidence is None:
+                evidence = PriceRangeRuleEvidence(
+                    symbol=symbol,
+                    native_symbol=None,
+                    status="TRANSPORT_FAILURE",
+                    price_range_present=None,
+                )
+            connection.execute(
+                """INSERT OR IGNORE INTO paper_execution_rules_evidence VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    run_id, symbol, BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION,
+                    evidence.native_symbol, evidence.status, evidence.price_range_present,
+                    exact(evidence.bid_limit_mult_up), exact(evidence.bid_limit_mult_down),
+                    exact(evidence.ask_limit_mult_up), exact(evidence.ask_limit_mult_down),
+                    evidence.source_timestamp, evidence.acquired_at,
+                ],
+            )
+
+    def _record_price_range_decision(
+        self,
+        *,
+        proposal: dict[str, Any],
+        terms: dict[str, float],
+        snapshot: MarketSnapshot,
+    ) -> PriceRangeDecision:
+        evidence = snapshot.price_range_rules.get(proposal["symbol"])
+        if evidence is None:
+            evidence = PriceRangeRuleEvidence(
+                symbol=proposal["symbol"], native_symbol=None,
+                status="TRANSPORT_FAILURE", price_range_present=None,
+            )
+        execution_price = Decimal(str(terms["execution_price"]))
+        reference = snapshot.rule_reference_prices.get(proposal["symbol"])
+        decision = evaluate_price_range_rule(
+            evidence, reference=reference, side=proposal["side"],
+            simulated_execution_price=execution_price,
+        )
+        self._last_price_range_decisions.append(
+            {
+                "symbol": proposal["symbol"], "side": proposal["side"],
+                "idempotency_key": proposal["idempotency_key"],
+                "simulated_execution_price": execution_price,
+                "reference_price": (
+                    reference.price if reference is not None and reference.source == "REFERENCE_PRICE"
+                    else None
+                ),
+                "lower_bound": decision.lower_bound, "upper_bound": decision.upper_bound,
+                "outcome": decision.outcome, "reason": decision.reason,
+            }
+        )
+        return decision
+
     def _persist_equity(
         self, connection, *, run_id: str, snapshot: MarketSnapshot, now: pd.Timestamp
     ) -> float:
@@ -714,8 +974,25 @@ class PaperTradingSystem:
         now: pd.Timestamp,
         forward_diagnostics: dict[str, Any] | None = None,
     ) -> float:
+        self._last_price_range_decisions = []
+        if self.config.require_execution_rule_evidence and set(snapshot.price_range_rules) != set(self.config.assets):
+            raise ValueError("Missing executionRules evidence for governed symbols")
+        if self.config.require_execution_rule_evidence:
+            if set(snapshot.rule_reference_prices) != set(self.config.assets):
+                raise ValueError("Missing reference-price evidence for governed symbols")
+            for symbol in self.config.assets:
+                evidence_error = validate_price_range_evidence(
+                    snapshot.price_range_rules[symbol], now=now,
+                    max_age_minutes=self.config.max_quote_staleness_minutes,
+                )
+                if evidence_error is not None or snapshot.price_range_rules[symbol].status in {
+                    "TRANSPORT_FAILURE", "MALFORMED_RESPONSE"
+                }:
+                    raise ValueError(evidence_error or "Invalid data: executionRules evidence unavailable")
         for reference in snapshot.rule_reference_prices.values():
-            error = validate_reference_price_evidence(reference, now=now, max_age_minutes=5)
+            error = validate_reference_price_evidence(
+                reference, now=now, max_age_minutes=self.config.max_quote_staleness_minutes
+            )
             if error is not None:
                 raise ValueError(error)
         with self.store.connect() as connection:
@@ -727,6 +1004,14 @@ class PaperTradingSystem:
             self._persist_market_rule_evidence(
                 connection, run_id=run_id, snapshot=snapshot, now=now
             )
+            if self.config.require_execution_rule_evidence:
+                connection.execute(
+                    "UPDATE paper_runs SET execution_rules_evidence_required=TRUE WHERE run_id=?",
+                    [run_id],
+                )
+                self._persist_execution_rules_evidence(
+                    connection, run_id=run_id, snapshot=snapshot
+                )
             # This is the prospective run-level applicability contract.  It is
             # captured before rule evaluation and is intentionally separate
             # from market-rule rows, contexts, orders, fills, and rejections.
@@ -738,6 +1023,14 @@ class PaperTradingSystem:
             committed_diagnostics["market_rule_evidence_sha256"] = (
                 self.store.market_rule_evidence_digest(evidence_rows)
             )
+            if self.config.require_execution_rule_evidence:
+                execution_rule_rows = connection.execute(
+                    "SELECT * FROM paper_execution_rules_evidence WHERE run_id=? ORDER BY symbol",
+                    [run_id],
+                ).fetchall()
+                committed_diagnostics["execution_rules_evidence_sha256"] = (
+                    self.store.execution_rules_evidence_digest(execution_rule_rows)
+                )
             self.store.record_committed_forward_evidence(
                 connection,
                 run_id=run_id,
@@ -807,6 +1100,16 @@ class PaperTradingSystem:
                 terms = self._execution_terms(
                     snapshot.quotes[proposal["symbol"]], "SELL"
                 )
+                if self.config.require_execution_rule_evidence:
+                    range_decision = self._record_price_range_decision(
+                        proposal=proposal, terms=terms, snapshot=snapshot
+                    )
+                    if range_decision.outcome in {"REJECTED", "EVIDENCE_UNAVAILABLE"}:
+                        self._reject_quantity(
+                            proposal=proposal, reason=range_decision.reason or "EXECUTION_RULE_EVIDENCE_UNAVAILABLE",
+                            notional=proposal["requested_quantity"] * terms["execution_price"], stage="FINAL",
+                        )
+                        continue
                 requested = min(proposal["requested_quantity"], held)
                 quantity, invalid_reason = self._normalize_exchange_quantity(
                     symbol=proposal["symbol"],
@@ -828,6 +1131,16 @@ class PaperTradingSystem:
             buy_terms = {}
             for proposal in buys:
                 terms = self._execution_terms(snapshot.quotes[proposal["symbol"]], "BUY")
+                if self.config.require_execution_rule_evidence:
+                    range_decision = self._record_price_range_decision(
+                        proposal=proposal, terms=terms, snapshot=snapshot
+                    )
+                    if range_decision.outcome in {"REJECTED", "EVIDENCE_UNAVAILABLE"}:
+                        self._reject_quantity(
+                            proposal=proposal, reason=range_decision.reason or "EXECUTION_RULE_EVIDENCE_UNAVAILABLE",
+                            notional=proposal["requested_quantity"] * terms["execution_price"], stage="FINAL",
+                        )
+                        continue
                 buy_terms[proposal["idempotency_key"]] = terms
                 buy_required += (
                     proposal["requested_quantity"]
@@ -940,7 +1253,9 @@ class PaperTradingSystem:
             if buy_required > 0:
                 scale = min(1.0, cash / buy_required)
                 for proposal in buys:
-                    terms = buy_terms[proposal["idempotency_key"]]
+                    terms = buy_terms.get(proposal["idempotency_key"])
+                    if terms is None:
+                        continue
                     scaled = proposal["requested_quantity"] * scale
                     quantity, invalid_reason = self._normalize_exchange_quantity(
                         symbol=proposal["symbol"],
@@ -1011,6 +1326,19 @@ class PaperTradingSystem:
                 "UPDATE paper_forward_execution_evidence SET diagnostics=? WHERE run_id=?",
                 [json.dumps(committed_diagnostics, sort_keys=True), run_id],
             )
+            for index, decision in enumerate(self._last_price_range_decisions):
+                connection.execute(
+                    """INSERT INTO paper_price_range_decisions VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        run_id, index, decision["symbol"], decision["side"],
+                        decision["idempotency_key"], format(decision["simulated_execution_price"], "f"),
+                        None if decision["reference_price"] is None else format(decision["reference_price"], "f"),
+                        None if decision["lower_bound"] is None else format(decision["lower_bound"], "f"),
+                        None if decision["upper_bound"] is None else format(decision["upper_bound"], "f"),
+                        decision["outcome"], decision["reason"], now,
+                    ],
+                )
             for index, rejection in enumerate(self._last_rejections):
                 connection.execute(
                     """
@@ -1154,6 +1482,21 @@ class PaperTradingSystem:
                 official_scheduled=official_scheduled,
                 release_provenance=release_provenance,
             )
+            if (
+                not dry_run
+                and self.config.require_execution_rule_evidence
+                and set(snapshot.price_range_rules) == set(self.config.assets)
+            ):
+                with self.store.connect() as connection:
+                    connection.execute("BEGIN TRANSACTION")
+                    connection.execute(
+                        "UPDATE paper_runs SET execution_rules_evidence_required=TRUE WHERE run_id=?",
+                        [run_id],
+                    )
+                    self._persist_execution_rules_evidence(
+                        connection, run_id=run_id, snapshot=snapshot
+                    )
+                    connection.execute("COMMIT")
             self.store.finish_run(
                 run_id=run_id,
                 status="DATA_HALT",

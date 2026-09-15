@@ -18,6 +18,7 @@ from src.download_data import RETRYABLE_ERRORS, call_with_retry, create_exchange
 from src.paper_broker import (
     MarketSnapshot,
     PaperConfig,
+    PriceRangeRuleEvidence,
     Quote,
     RuleReferencePrice,
     SymbolRules,
@@ -36,6 +37,8 @@ class PublicMarketCapability(Protocol):
     def fetch_ticker(self, symbol: str) -> Any: ...
 
     def fetch_reference_price(self, symbol: str) -> Any: ...
+
+    def fetch_execution_rules(self, symbol: str) -> Any: ...
 
     def market(self, symbol: str) -> Any: ...
 
@@ -103,6 +106,30 @@ class PublicMarketClient:
             raise ValueError(f"Malformed Binance reference price for {symbol}")
         return payload
 
+    def fetch_execution_rules(self, symbol: str) -> Any:
+        """Narrow unauthenticated adapter for Binance's public executionRules endpoint."""
+        market = self._client.market(symbol)
+        market_id = market.get("id") if isinstance(market, dict) else None
+        if not isinstance(market_id, str) or not market_id:
+            raise ValueError(f"Binance market id missing for {symbol}")
+        url = "https://api.binance.com/api/v3/executionRules?" + urlencode({"symbol": market_id})
+        try:
+            with urlopen(url, timeout=self._client.timeout / 1000) as response:  # noqa: S310
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            if error.code in {418, 429}:
+                raise TransientPublicMarketError(
+                    f"Binance execution-rules HTTP {error.code}", http_status=error.code
+                ) from error
+            if 500 <= error.code <= 599:
+                raise _RetryableReferenceTransportError(str(error)) from error
+            raise ValueError(f"Terminal Binance execution-rules HTTP {error.code} for {symbol}") from error
+        except (URLError, TimeoutError, OSError) as error:
+            raise _RetryableReferenceTransportError(str(error)) from error
+        if not isinstance(payload, dict):
+            raise ValueError(f"Malformed Binance execution rules for {symbol}")
+        return payload
+
     def market(self, symbol: str) -> Any:
         return self._client.market(symbol)
 
@@ -161,6 +188,57 @@ def _filter_bool(filter_data: dict[str, Any], field: str) -> bool | None:
     if type(value) is not bool:
         raise ValueError(f"Invalid Binance rule boolean {field}: expected boolean")
     return value
+
+
+def parse_binance_price_range_execution_rule(
+    *, symbol: str, native_symbol: str, payload: dict[str, Any], acquired_at: pd.Timestamp
+) -> PriceRangeRuleEvidence:
+    """Parse one native-symbol executionRules payload without float conversion."""
+    symbol_rules = payload.get("symbolRules")
+    if not isinstance(symbol_rules, list) or len(symbol_rules) != 1:
+        raise ValueError(f"Malformed Binance execution rules for {symbol}")
+    symbol_rule = symbol_rules[0]
+    if not isinstance(symbol_rule, dict) or symbol_rule.get("symbol") != native_symbol:
+        raise ValueError(f"Mismatched Binance execution-rules symbol for {symbol}")
+    rules = symbol_rule.get("rules")
+    if not isinstance(rules, list):
+        raise ValueError(f"Malformed Binance execution rules for {symbol}")
+    if any(not isinstance(rule, dict) or not isinstance(rule.get("ruleType"), str) for rule in rules):
+        raise ValueError(f"Malformed Binance execution rules for {symbol}")
+    price_rules = [rule for rule in rules if rule["ruleType"] == "PRICE_RANGE"]
+    if len(price_rules) > 1:
+        raise ValueError(f"Duplicate Binance PRICE_RANGE rule for {symbol}")
+    raw_timestamp = payload.get("timestamp", payload.get("serverTime"))
+    if raw_timestamp is not None and (type(raw_timestamp) is not int or raw_timestamp < 0):
+        raise ValueError(f"Malformed Binance execution-rules timestamp for {symbol}")
+    source_timestamp = (
+        pd.to_datetime(raw_timestamp, unit="ms", utc=True)
+        if raw_timestamp is not None
+        else None
+    )
+    if not price_rules:
+        return PriceRangeRuleEvidence(
+            symbol=symbol, native_symbol=native_symbol, status="PRICE_RANGE_ABSENT",
+            price_range_present=False, source_timestamp=source_timestamp, acquired_at=acquired_at,
+        )
+    price_rule = price_rules[0]
+    multipliers = {
+        field: _raw_decimal(price_rule, field)
+        for field in (
+            "bidLimitMultUp", "bidLimitMultDown", "askLimitMultUp", "askLimitMultDown"
+        )
+    }
+    if any(value is not None and value <= 0 for value in multipliers.values()):
+        raise ValueError(f"Invalid Binance PRICE_RANGE multiplier for {symbol}")
+    return PriceRangeRuleEvidence(
+        symbol=symbol, native_symbol=native_symbol, status="PRICE_RANGE_PRESENT",
+        price_range_present=True,
+        bid_limit_mult_up=multipliers["bidLimitMultUp"],
+        bid_limit_mult_down=multipliers["bidLimitMultDown"],
+        ask_limit_mult_up=multipliers["askLimitMultUp"],
+        ask_limit_mult_down=multipliers["askLimitMultDown"],
+        source_timestamp=source_timestamp, acquired_at=acquired_at,
+    )
 
 
 def parse_binance_spot_symbol_rules(market_info: dict[str, Any]) -> SymbolRules:
@@ -301,6 +379,7 @@ def fetch_public_market_snapshot(
     close_series = []
     quotes: dict[str, Quote] = {}
     rule_reference_prices: dict[str, RuleReferencePrice] = {}
+    price_range_rules: dict[str, PriceRangeRuleEvidence] = {}
     rules: dict[str, SymbolRules] = {}
     ohlcv: dict[str, pd.DataFrame] = {}
     try:
@@ -409,6 +488,50 @@ def fetch_public_market_snapshot(
             else:
                 raise ValueError(f"Malformed Binance reference price for {symbol}")
             rules[symbol] = parse_binance_spot_symbol_rules(market_info)
+            expected_symbol = market_info.get("id") if isinstance(market_info, dict) else None
+            execution_rules_method = getattr(market, "fetch_execution_rules", None)
+            if not config.require_execution_rule_evidence or config.exchange_id != "binance":
+                price_range_rules[symbol] = PriceRangeRuleEvidence(
+                    symbol=symbol, native_symbol=None, status="RULE_NOT_APPLICABLE",
+                    price_range_present=None,
+                )
+            elif not callable(execution_rules_method) or not isinstance(expected_symbol, str):
+                price_range_rules[symbol] = PriceRangeRuleEvidence(
+                    symbol=symbol, native_symbol=expected_symbol if isinstance(expected_symbol, str) else None,
+                    status="TRANSPORT_FAILURE", price_range_present=None,
+                    acquired_at=pd.Timestamp(
+                        acquisition_clock() if acquisition_clock is not None else datetime.now(timezone.utc)
+                    ).tz_convert("UTC"),
+                )
+            else:
+                try:
+                    execution_payload = call_with_retry(
+                        lambda method=execution_rules_method, symbol=symbol: method(symbol),
+                        max_retries=max_retries, backoff_base_seconds=backoff_base_seconds,
+                    )
+                    execution_acquired_at = pd.Timestamp(
+                        acquisition_clock() if acquisition_clock is not None else datetime.now(timezone.utc)
+                    ).tz_convert("UTC")
+                    price_range_rules[symbol] = parse_binance_price_range_execution_rule(
+                        symbol=symbol, native_symbol=expected_symbol, payload=execution_payload,
+                        acquired_at=execution_acquired_at,
+                    )
+                except TransientPublicMarketError:
+                    price_range_rules[symbol] = PriceRangeRuleEvidence(
+                        symbol=symbol, native_symbol=expected_symbol,
+                        status="TRANSPORT_FAILURE", price_range_present=None,
+                        acquired_at=pd.Timestamp(
+                            acquisition_clock() if acquisition_clock is not None else datetime.now(timezone.utc)
+                        ).tz_convert("UTC"),
+                    )
+                except (TypeError, ValueError, InvalidOperation):
+                    price_range_rules[symbol] = PriceRangeRuleEvidence(
+                        symbol=symbol, native_symbol=expected_symbol,
+                        status="MALFORMED_RESPONSE", price_range_present=None,
+                        acquired_at=pd.Timestamp(
+                            acquisition_clock() if acquisition_clock is not None else datetime.now(timezone.utc)
+                        ).tz_convert("UTC"),
+                    )
     except RETRYABLE_ERRORS as error:
         raise TransientPublicMarketError(str(error)) from error
     finally:
@@ -425,4 +548,5 @@ def fetch_public_market_snapshot(
         symbol_rules=rules,
         ohlcv=ohlcv,
         rule_reference_prices=rule_reference_prices,
+        price_range_rules=price_range_rules,
     )

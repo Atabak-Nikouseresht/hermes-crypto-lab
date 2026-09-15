@@ -81,6 +81,7 @@ def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
         max_data_staleness_minutes=int(values["max_data_staleness_minutes"]),
         max_quote_staleness_minutes=int(values["max_quote_staleness_minutes"]),
         require_exchange_rules=bool(values["require_exchange_rules"]),
+        require_execution_rule_evidence=bool(values["require_execution_rule_evidence"]),
     )
     return config, values
 

@@ -53,6 +53,8 @@ Forward contract:
 - Cross-sectional quote timestamps must also remain within the deterministic
   maximum skew; otherwise the entire snapshot fails closed.
 - Public exchange activity, amount, notional, step-size, and precision rules are required.
+- For prospective governed Binance runs, public `/api/v3/executionRules` PRICE_RANGE evidence is required. BUY uses bid multipliers and SELL uses ask multipliers against the persisted public reference price. Range boundaries are inclusive; missing individual multipliers disable only their respective bound. No RANGE rule or no reference price is recorded as non-enforcement, while malformed or transport evidence halts before fills.
+- PRICE_RANGE rejection is recorded as `EXECUTION_RULE_PRICE_RANGE_EXCEEDED`. This local reconstruction does not claim that a REST observation reproduces Binance's matching-engine taker-phase reference or fillability.
 - After proportional cash scaling, final buy quantities are quantized down to the public step size and min/max quantity plus minimum-notional rules are rechecked before any order or fill is persisted.
 - New order/fill rows record protocol, strategy hash, quote time, spread, slippage, fee, and execution time.
 - Execution outcomes distinguish `NO_REBALANCE_REQUIRED`, `FULL_EXECUTION`,
@@ -64,6 +66,12 @@ Forward contract:
   provenance; any mismatch preserves fail-closed kill-switch behavior.
 
 The forward quote is approximately 23 hours 50 minutes earlier than availability of the sealed model's Monday close. Forward sizing also uses execution-time quote midpoints rather than carrying fixed Sunday-close quantities.
+
+## Forward monthly no-cost counterfactual
+
+New monthly reports preserve factual `net_return` and never label an arithmetic cost add-back as gross return. When complete persisted order intent, fills, positions, and midpoint observations can reproduce the factual path from the same factual anchor, the report additionally emits `no_fee_return` and `frictionless_counterfactual_return`.
+
+The conditional replay uses the original decision timestamps and persisted filled-order intent only. It never generates a signal or an absent order. It dynamically re-targets those persisted intents through time, so removing fees or all modeled friction changes later cash, quantities, and compounding. `no_fee_return` retains the observed simulated execution price and removes fees; `frictionless_counterfactual_return` uses persisted midpoints and removes fees, spread, and slippage. If the factual path cannot be reconstructed exactly from persisted evidence, the counterfactual is unavailable rather than estimated. Historical committed reports and database evidence are unchanged.
 
 ## Signal field semantics
 

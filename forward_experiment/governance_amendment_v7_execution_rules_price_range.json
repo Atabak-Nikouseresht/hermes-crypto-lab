@@ -1,0 +1,14 @@
+{
+  "batch": "H",
+  "classification": "prospective execution-fidelity hardening for public Binance Spot PRICE_RANGE evidence; no live trading and no matching-engine fillability claim",
+  "economic_spec_changed": false,
+  "execution_rules_price_range_contract_sha256": "702186ebdce4bb8dbf8e31c50e3d2aca62b1d882ce4c6a2d023ddf5658b2daf1",
+  "historical_governance_records_rewritten": false,
+  "historical_protocol_records_rewritten": false,
+  "prior_reference_price_evidence_governance_amendment_sha256": "5426acb5824d7776e1cced3eb3b99cb83d2482e927aa56e1f11f519ccd423e58",
+  "research_results_changed": false,
+  "strategy_reselection": false,
+  "parameter_retuning": false,
+  "status": "additive future-only Binance executionRules PRICE_RANGE public-evidence contract",
+  "version": "governance-amendment-v7-execution-rules-price-range"
+}

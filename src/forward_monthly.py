@@ -14,6 +14,7 @@ import uuid
 
 import pandas as pd
 
+from src.forward_counterfactual import replay_no_cost_counterfactual
 from src.paper_store import PaperStore
 
 
@@ -280,6 +281,19 @@ def generate_monthly_forward_report(
             """,
             [experiment_id, effective_start, month_end],
         ).fetchall()
+        counterfactual_fills = connection.execute(
+            """
+            SELECT f.run_id, o.symbol, o.side, o.target_weight, f.filled_quantity,
+                   f.mid_price, f.execution_price, f.fee
+            FROM paper_fills f
+            JOIN paper_orders o ON o.order_id=f.order_id
+            JOIN forward_schedule_windows w ON w.run_id=f.run_id
+            JOIN forward_experiment_windows x ON x.schedule_key=w.schedule_key
+            WHERE x.experiment_id=? AND w.scheduled_for_utc >= ? AND w.scheduled_for_utc < ?
+            ORDER BY f.filled_at_utc, f.fill_id
+            """,
+            [experiment_id, effective_start, month_end],
+        ).fetchall()
         observations = connection.execute(
             """
             SELECT o.run_id, o.observed_at_utc, o.symbol, o.price
@@ -302,6 +316,17 @@ def generate_monthly_forward_report(
             observed_run_ids = {row[0] for row in observations}
             if anchor[0] not in observed_run_ids:
                 observations = anchor_observations + observations
+            anchor_positions = connection.execute(
+                """
+                SELECT symbol, COALESCE(SUM(quantity_delta), 0)
+                FROM position_ledger
+                WHERE account_id=? AND created_at_utc <= ?
+                GROUP BY symbol
+                """,
+                [store.account_id, anchor[1]],
+            ).fetchall()
+        else:
+            anchor_positions = []
         forward_incidents = connection.execute(
             """
             SELECT i.incident_type, COUNT(*) FROM forward_incidents i
@@ -418,10 +443,7 @@ def generate_monthly_forward_report(
     total_fees = sum(float(row[5]) for row in fills)
     spread_cost = sum(float(row[6]) for row in fills)
     slippage_cost = sum(float(row[7]) for row in fills)
-    total_cost = total_fees + spread_cost + slippage_cost
     starting_equity = float(equity_values.iloc[0]) if not equity_values.empty else store.account()["initial_cash"]
-    ending_equity = float(equity_values.iloc[-1]) if not equity_values.empty else starting_equity
-    gross_return = (ending_equity + total_cost) / starting_equity - 1.0 if starting_equity else 0.0
     traded_notional = sum(abs(float(row[2]) * float(row[3])) for row in fills)
     mean_equity = float(equity_values.mean()) if not equity_values.empty else starting_equity
     turnover = traded_notional / mean_equity if mean_equity else 0.0
@@ -449,6 +471,68 @@ def generate_monthly_forward_report(
         pivot = pivot.loc[:, list(assets)].dropna()
     else:
         pivot = pd.DataFrame(columns=list(assets), dtype=float)
+    counterfactual_status = "unavailable"
+    counterfactual_reason: str | None = "missing_complete_persisted_replay_evidence"
+    no_fee_return: float | None = None
+    frictionless_return: float | None = None
+    frictionless_timestamps: list[str] = []
+    if anchor is not None and not missing_or_irregular_window:
+        fills_by_run: dict[str, list[dict[str, Any]]] = {}
+        for run_id, symbol, side, target_weight, quantity, mid, execution, fee in counterfactual_fills:
+            fills_by_run.setdefault(str(run_id), []).append(
+                {
+                    "symbol": str(symbol), "side": str(side),
+                    "target_weight": float(target_weight), "quantity": float(quantity),
+                    "mid_price": float(mid), "execution_price": float(execution), "fee": float(fee),
+                }
+            )
+        observed_by_run: dict[str, dict[str, float]] = {}
+        for run_id, _timestamp, symbol, price in observations:
+            observed_by_run.setdefault(str(run_id), {})[str(symbol)] = float(price)
+        anchor_holdings = {str(symbol): float(quantity) for symbol, quantity in anchor_positions}
+        try:
+            anchor_prices = observed_by_run[str(anchor[0])]
+            if set(assets) - set(anchor_prices):
+                raise ValueError("anchor midpoint evidence is incomplete")
+            reconstructed_anchor = float(anchor[2]) + sum(
+                quantity * anchor_prices[symbol] for symbol, quantity in anchor_holdings.items()
+            )
+            if not math.isclose(reconstructed_anchor, float(anchor[4]), rel_tol=1e-9, abs_tol=1e-7):
+                raise ValueError("anchor holdings do not reconcile to factual equity")
+            steps = []
+            step_run_ids: list[str] = []
+            for _schedule_key, scheduled_for, run_id, outcome in windows:
+                if outcome == "MISSED_SCHEDULE" or run_id is None or str(run_id) == str(anchor[0]):
+                    continue
+                prices = observed_by_run[str(run_id)]
+                if set(assets) - set(prices):
+                    raise ValueError("window midpoint evidence is incomplete")
+                steps.append(
+                    {
+                        "timestamp": _iso(scheduled_for), "prices": prices,
+                        "orders": fills_by_run.get(str(run_id), []),
+                    }
+                )
+                step_run_ids.append(str(run_id))
+            replay = replay_no_cost_counterfactual(
+                starting_cash=float(anchor[2]), starting_positions=anchor_holdings, steps=steps
+            )
+            if steps:
+                factual_equity = {str(row[0]): float(row[4]) for row in equities}
+                if any(
+                    not math.isclose(replayed, factual_equity[run_id], rel_tol=1e-7, abs_tol=1e-7)
+                    for run_id, replayed in zip(
+                        step_run_ids, replay["net_replay"]["equity"], strict=True
+                    )
+                ):
+                    raise ValueError("persisted replay does not reproduce factual path")
+                no_fee_return = replay["no_fee"]["equity"][-1] / starting_equity - 1.0
+                frictionless_return = replay["frictionless"]["equity"][-1] / starting_equity - 1.0
+                frictionless_timestamps = list(replay["frictionless"]["timestamps"])
+                counterfactual_status = "available"
+                counterfactual_reason = None
+        except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
+            counterfactual_reason = f"persisted_replay_unavailable:{error}"
     strategy_timestamps = [_iso(value) for value in equity_values.index]
     benchmark_pivot = pivot.reindex(equity_values.index).dropna()
     benchmark_timestamps = [_iso(value) for value in benchmark_pivot.index]
@@ -481,8 +565,14 @@ def generate_monthly_forward_report(
         "paper_trades": len({row[0] for row in fills}),
         "fills": len(fills),
         "weeks_in_cash": weeks_in_cash,
-        "gross_return": round(float(gross_return), 12),
         "net_return": round(float(net_return), 12),
+        "frictionless_counterfactual_status": counterfactual_status,
+        "frictionless_counterfactual_unavailable_reason": counterfactual_reason,
+        "no_fee_return": None if no_fee_return is None else round(no_fee_return, 12),
+        "frictionless_counterfactual_return": (
+            None if frictionless_return is None else round(frictionless_return, 12)
+        ),
+        "frictionless_counterfactual_timestamps": frictionless_timestamps,
         "fees": total_fees,
         "spread_cost": spread_cost,
         "slippage_cost": slippage_cost,
@@ -510,8 +600,13 @@ def generate_monthly_forward_report(
         "- Scope: **forward observations only; historical backtest rows used: 0**",
         f"- Scheduled/completed/missed windows: **{scheduled_windows}/{completed_windows}/{missed_windows}**",
         f"- Trades/fills/weeks in cash: **{result['paper_trades']}/{len(fills)}/{weeks_in_cash}**",
-        f"- Gross return: **{gross_return:.2%}**",
         f"- Net return: **{net_return:.2%}**",
+        (
+            f"- No-fee return: **{no_fee_return:.2%}**; frictionless counterfactual return: "
+            f"**{frictionless_return:.2%}**"
+            if counterfactual_status == "available"
+            else "- Frictionless counterfactual: **unavailable** (complete persisted replay evidence is required)"
+        ),
         f"- Fees/spread/slippage: **{total_fees:.4f}/{spread_cost:.4f}/{slippage_cost:.4f} USDT**",
         f"- Turnover: **{turnover:.3f}**",
         f"- Weekly performance sampling: **{performance_sampling_status}** "

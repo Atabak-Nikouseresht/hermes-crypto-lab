@@ -9,7 +9,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR, localcontext
+from decimal import Decimal, DecimalException, InvalidOperation, ROUND_FLOOR, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ from src.execution_protocol import (
     QUOTE_COHERENCE_CONTRACT_VERSION,
     REFERENCE_PRICE_MAX_AGE_SECONDS,
 )
+from src.execution_rule_decimal import is_bounded_execution_rule_decimal
 
 
 FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
@@ -836,7 +837,7 @@ class PaperStore:
                                 raise InvalidOperation
                             if row[15] is not None and row[16] is not None and Decimal(row[15]) > 0 and Decimal(row[16]) > 0 and Decimal(row[15]) > Decimal(row[16]):
                                 raise InvalidOperation
-                        except (InvalidOperation, ValueError):
+                        except (DecimalException, ValueError):
                             return ReconciliationResult(False, "Invalid market-rule decimal evidence")
                         min_notional_applies, min_avg = row[13], row[14]
                         notional_min_applies, notional_max_applies, notional_avg = row[17], row[18], row[19]
@@ -856,6 +857,13 @@ class PaperStore:
                         if required_v2 and contract != BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION:
                             return ReconciliationResult(False, "Market-rule evidence v2 downgrade")
                         if contract == BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION:
+                            if (
+                                source == "REFERENCE_PRICE"
+                                and not is_bounded_execution_rule_decimal(Decimal(price))
+                            ):
+                                return ReconciliationResult(
+                                    False, "Reference-price evidence exceeds the bounded Decimal envelope"
+                                )
                             admission = connection.execute(
                                 "SELECT captured_at_utc FROM paper_forward_execution_evidence WHERE run_id=?", [run_id]
                             ).fetchone()[0]
@@ -1113,7 +1121,10 @@ class PaperStore:
                         multipliers = [
                             None if value is None else Decimal(value) for value in evidence[6:10]
                         ]
-                        if any(value is not None and (not value.is_finite() or value <= 0) for value in multipliers):
+                        if any(
+                            value is not None and not is_bounded_execution_rule_decimal(value)
+                            for value in multipliers
+                        ):
                             raise InvalidOperation
                         if status in {"TRANSPORT_FAILURE", "MALFORMED_RESPONSE"}:
                             expected = ("EVIDENCE_UNAVAILABLE", "EXECUTION_RULE_EVIDENCE_UNAVAILABLE", None, None, None)
@@ -1126,6 +1137,8 @@ class PaperStore:
                                 expected = ("NOT_ENFORCED", "PRICE_RANGE_REFERENCE_UNAVAILABLE", None, None, None)
                             else:
                                 reference_decimal = Decimal(raw_reference)
+                                if not is_bounded_execution_rule_decimal(reference_decimal):
+                                    raise InvalidOperation
                                 lower_multiplier, upper_multiplier = (
                                     (multipliers[1], multipliers[0]) if side == "BUY"
                                     else (multipliers[3], multipliers[2])
@@ -1155,7 +1168,7 @@ class PaperStore:
                             ).fetchone()[0]
                             if not matched:
                                 return ReconciliationResult(False, "PRICE_RANGE rejection was not persisted")
-                    except (InvalidOperation, ValueError, TypeError):
+                    except (DecimalException, ValueError, TypeError):
                         return ReconciliationResult(False, "Invalid persisted PRICE_RANGE evidence")
             account = connection.execute(
                 "SELECT cash FROM paper_accounts WHERE account_id=?", [self.account_id]

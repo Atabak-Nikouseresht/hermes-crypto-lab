@@ -15,6 +15,7 @@ import ccxt
 import pandas as pd
 
 from src.download_data import RETRYABLE_ERRORS, call_with_retry, create_exchange
+from src.execution_rule_decimal import is_bounded_execution_rule_decimal
 from src.paper_broker import (
     MarketSnapshot,
     PaperConfig,
@@ -86,13 +87,7 @@ class PublicMarketClient:
             ):
                 return None
             if error.code in {418, 429}:
-                raw_retry_after = error.headers.get("Retry-After") if error.headers else None
-                retry_after = (
-                    int(raw_retry_after)
-                    if isinstance(raw_retry_after, str) and len(raw_retry_after) <= 10
-                    and raw_retry_after.isascii() and raw_retry_after.isdecimal()
-                    else None
-                )
+                retry_after = _safe_retry_after_seconds(error)
                 raise TransientPublicMarketError(
                     f"Binance reference-price HTTP {error.code}; Retry-After seconds: {retry_after}",
                     http_status=error.code, retry_after_seconds=retry_after,
@@ -118,8 +113,10 @@ class PublicMarketClient:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             if error.code in {418, 429}:
+                retry_after = _safe_retry_after_seconds(error)
                 raise TransientPublicMarketError(
-                    f"Binance execution-rules HTTP {error.code}", http_status=error.code
+                    f"Binance execution-rules HTTP {error.code}; Retry-After seconds: {retry_after}",
+                    http_status=error.code, retry_after_seconds=retry_after,
                 ) from error
             if 500 <= error.code <= 599:
                 raise _RetryableReferenceTransportError(str(error)) from error
@@ -146,6 +143,19 @@ class TransientPublicMarketError(RuntimeError):
         super().__init__(message)
         self.http_status = http_status
         self.retry_after_seconds = retry_after_seconds
+
+
+def _safe_retry_after_seconds(error: HTTPError) -> int | None:
+    """Return only the bounded integer form safe for public rate-limit metadata."""
+    raw = error.headers.get("Retry-After") if error.headers else None
+    if not (
+        isinstance(raw, str)
+        and len(raw) <= 10
+        and raw.isascii()
+        and raw.isdecimal()
+    ):
+        return None
+    return int(raw)
 
 
 class _RetryableReferenceTransportError(TransientPublicMarketError, ccxt.NetworkError):
@@ -228,7 +238,10 @@ def parse_binance_price_range_execution_rule(
             "bidLimitMultUp", "bidLimitMultDown", "askLimitMultUp", "askLimitMultDown"
         )
     }
-    if any(value is not None and value <= 0 for value in multipliers.values()):
+    if any(
+        value is not None and not is_bounded_execution_rule_decimal(value)
+        for value in multipliers.values()
+    ):
         raise ValueError(f"Invalid Binance PRICE_RANGE multiplier for {symbol}")
     return PriceRangeRuleEvidence(
         symbol=symbol, native_symbol=native_symbol, status="PRICE_RANGE_PRESENT",
@@ -460,7 +473,7 @@ def fetch_public_market_snapshot(
                         reference = Decimal(raw_reference)
                     except InvalidOperation as error:
                         raise ValueError(f"Malformed Binance reference price for {symbol}") from error
-                    if not reference.is_finite() or reference <= 0:
+                    if not is_bounded_execution_rule_decimal(reference):
                         raise ValueError(f"Invalid Binance reference price for {symbol}")
                     raw_timestamp = reference_payload.get("timestamp")
                     if type(raw_timestamp) is not int or raw_timestamp < 0:
@@ -516,7 +529,9 @@ def fetch_public_market_snapshot(
                         symbol=symbol, native_symbol=expected_symbol, payload=execution_payload,
                         acquired_at=execution_acquired_at,
                     )
-                except TransientPublicMarketError:
+                except TransientPublicMarketError as error:
+                    if error.http_status in {418, 429}:
+                        raise
                     price_range_rules[symbol] = PriceRangeRuleEvidence(
                         symbol=symbol, native_symbol=expected_symbol,
                         status="TRANSPORT_FAILURE", price_range_present=None,

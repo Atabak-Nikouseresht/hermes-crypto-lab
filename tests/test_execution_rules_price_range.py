@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 
 import pandas as pd
 import pytest
@@ -10,6 +11,7 @@ from src.paper_broker import (
     validate_price_range_evidence,
 )
 from src.paper_store import ReconciliationResult
+from src.paper_market import parse_binance_price_range_execution_rule
 from src.release_provenance import ReleaseProvenance
 from tests.test_market_rule_integrity import NOW as RUN_NOW, SYMBOLS, _rules
 from src.paper_broker import MarketSnapshot, PaperConfig, PaperTradingSystem, Quote
@@ -109,6 +111,34 @@ def test_price_range_rejects_invalid_side_and_nonfinite_simulated_price():
     with pytest.raises(ValueError):
         evaluate_price_range_rule(
             _rule(), reference=REFERENCE, side="BUY", simulated_execution_price=Decimal("NaN")
+        )
+
+
+def test_price_range_rejects_unbounded_decimal_evidence_before_arithmetic():
+    payload = {
+        "timestamp": int(NOW.timestamp() * 1000),
+        "symbolRules": [{
+            "symbol": "BTCUSDT",
+            "rules": [{"ruleType": "PRICE_RANGE", "bidLimitMultUp": "1e999999"}],
+        }],
+    }
+    with pytest.raises(ValueError, match="PRICE_RANGE multiplier"):
+        parse_binance_price_range_execution_rule(
+            symbol="BTC/USDT", native_symbol="BTCUSDT", payload=payload, acquired_at=NOW
+        )
+    with pytest.raises(ValueError, match="PRICE_RANGE"):
+        evaluate_price_range_rule(
+            _rule(bid_limit_mult_up=Decimal("1e999999")),
+            reference=REFERENCE,
+            side="BUY",
+            simulated_execution_price=Decimal("100"),
+        )
+    with pytest.raises(ValueError, match="PRICE_RANGE"):
+        evaluate_price_range_rule(
+            _rule(),
+            reference=RuleReferencePrice(Decimal("1e999999"), "REFERENCE_PRICE", NOW, NOW),
+            side="BUY",
+            simulated_execution_price=Decimal("100"),
         )
 
 
@@ -270,6 +300,45 @@ def test_price_range_semantic_tampering_fails_after_digest_refresh(tmp_path, sta
     with system.store.connect() as connection:
         connection.execute(statement)
     _refresh_execution_rules_digest(system)
+    assert not system.store.reconcile().valid
+
+
+def test_price_range_unbounded_decimal_tampering_fails_closed_without_reconcile_crash(tmp_path):
+    system = _current_price_range_run(tmp_path)
+    with system.store.connect() as connection:
+        connection.execute(
+            "UPDATE paper_execution_rules_evidence SET bid_limit_mult_up='1E999999' "
+            "WHERE symbol='BTC/USDT'"
+        )
+    _refresh_execution_rules_digest(system)
+    assert not system.store.reconcile().valid
+
+
+def test_price_range_unbounded_reference_tampering_fails_closed_without_reconcile_crash(tmp_path):
+    system = _current_price_range_run(tmp_path)
+    with system.store.connect() as connection:
+        connection.execute("DELETE FROM paper_orders WHERE run_id='run'")
+        connection.execute("DELETE FROM paper_fills WHERE run_id='run'")
+        connection.execute("DELETE FROM paper_price_range_decisions WHERE run_id='run'")
+        connection.execute("DELETE FROM cash_ledger WHERE run_id='run'")
+        connection.execute("DELETE FROM position_ledger WHERE run_id='run'")
+        connection.execute("UPDATE paper_positions SET quantity=0, average_cost=0")
+        connection.execute("UPDATE paper_accounts SET cash=initial_cash")
+        connection.execute(
+            "UPDATE paper_market_rule_evidence SET reference_price_decimal='1E999999' "
+            "WHERE symbol='BTC/USDT'"
+        )
+        rows = connection.execute(
+            "SELECT * FROM paper_market_rule_evidence WHERE run_id='run' ORDER BY symbol"
+        ).fetchall()
+        diagnostics = json.loads(connection.execute(
+            "SELECT diagnostics FROM paper_forward_execution_evidence WHERE run_id='run'"
+        ).fetchone()[0])
+        diagnostics["market_rule_evidence_sha256"] = system.store.market_rule_evidence_digest(rows)
+        connection.execute(
+            "UPDATE paper_forward_execution_evidence SET diagnostics=? WHERE run_id='run'",
+            [json.dumps(diagnostics, sort_keys=True)],
+        )
     assert not system.store.reconcile().valid
 
 

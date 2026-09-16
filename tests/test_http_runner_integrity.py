@@ -1,5 +1,6 @@
 """Real HTTP adapter -> CLI D1 classification -> weekly retry policy."""
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -35,7 +36,8 @@ def _http_runner(monkeypatch, tmp_path, status, retry_after=None):
     monkeypatch.setattr("src.paper_market.call_with_retry", partial(call_with_retry, sleep=inner_sleeps.append))
     monkeypatch.setattr(run_paper, "fetch_configured_public_market_snapshot", lambda config, settings:
                         fetch_public_market_snapshot(config, exchange=PublicMarketClient(_exchange()),
-                                                     now=now, max_retries=2, backoff_base_seconds=3))
+                                                     now=now, acquisition_clock=lambda: now,
+                                                     max_retries=2, backoff_base_seconds=3))
 
     def process(command, **kwargs):
         stdout, stderr = StringIO(), StringIO()
@@ -52,7 +54,11 @@ def _http_runner(monkeypatch, tmp_path, status, retry_after=None):
 def _assert_unexecuted(system):
     assert system.store.account()["status"] == "ACTIVE"
     with system.store.connect(read_only=True) as connection:
-        for table in ("paper_orders", "paper_fills", "forward_market_observations", "paper_incidents", "equity_snapshots"):
+        for table in (
+            "paper_orders", "paper_fills", "forward_market_observations",
+            "paper_incidents", "equity_snapshots", "paper_execution_rules_evidence",
+            "paper_price_range_decisions",
+        ):
             assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
         assert connection.execute("SELECT DISTINCT schedule_key FROM paper_runs").fetchall() == [(None,)]
         assert connection.execute("SELECT DISTINCT attempted_schedule_key FROM paper_runs").fetchall() == [("2026-01-05T00:05Z",)]
@@ -78,6 +84,65 @@ def test_rate_limit_actual_cli_suppresses_entire_weekly_invocation(monkeypatch, 
                        python_resolver=lambda _: Path("test-python")) == 4
     assert len(requests) == len(processes) == 2
     assert inner_sleeps == outer_sleeps == []
+
+
+@pytest.mark.parametrize("status", [418, 429])
+@pytest.mark.parametrize(
+    "header,expected",
+    [
+        ("0", 0), ("1", 1), ("120", 120), (None, None), ("-1", None),
+        ("1.5", None), ("abc", None), ("12345678901", None), ("\u0661", None),
+        ("1" + chr(13) + chr(10) + "injected", None),
+    ],
+)
+def test_execution_rules_rate_limit_defers_without_snapshot_persistence(
+    monkeypatch, tmp_path, status, header, expected
+):
+    system, now, requests, inner_sleeps, processes = _http_runner(
+        monkeypatch, tmp_path, status, header
+    )
+    config, values = run_paper.load_paper_configuration(Path("."))
+    config = replace(
+        config,
+        assets=("BTC/USDT",),
+        require_exchange_rules=True,
+        require_execution_rule_evidence=True,
+    )
+    system.config = config
+    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
+
+    def request(url, *args, **kwargs):
+        requests.append(url)
+        if "/executionRules?" not in url:
+            return BytesIO(json.dumps({
+                "symbol": "ETHUSDT" if "ETHUSDT" in url else "BTCUSDT",
+                "referencePrice": "100",
+                "timestamp": int(pd.Timestamp(now).timestamp() * 1000),
+            }).encode())
+        raise HTTPError(
+            url, status, "error",
+            {} if header is None else {"Retry-After": header}, BytesIO(b"{}"),
+        )
+
+    monkeypatch.setattr("src.paper_market.urlopen", request)
+    outer_sleeps = []
+    assert weekly.main(
+        now, clock=lambda: now, sleeper=outer_sleeps.append,
+        python_resolver=lambda _: Path("test-python"),
+    ) == 4
+    execution_requests = [url for url in requests if "/executionRules?" in url]
+    assert len(execution_requests) == len(processes) == 1
+    assert inner_sleeps == outer_sleeps == []
+    marker = next(
+        json.loads(line) for line in processes[0].stdout.splitlines() if line.startswith('{"event":')
+    )
+    assert marker == {
+        "event": "PUBLIC_MARKET_RATE_LIMIT_DEFER",
+        "http_status": status,
+        "retry_after_seconds": expected,
+        "retry_policy": "suppress_remaining_weekly_attempts",
+    }
+    _assert_unexecuted(system)
 
 
 @pytest.mark.parametrize("status", [500, 502])

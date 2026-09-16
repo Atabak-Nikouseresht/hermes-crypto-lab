@@ -47,6 +47,12 @@ def test_current_paper_config_defaults_remain_valid():
     PaperConfig(assets=ASSETS)
 
 
+@pytest.mark.parametrize("value", [True, 1.5, math.inf, "30"])
+def test_paper_config_rejects_non_integral_quote_timestamp_skew(value):
+    with pytest.raises(ValueError, match="max_quote_timestamp_skew_seconds"):
+        PaperConfig(assets=ASSETS, max_quote_timestamp_skew_seconds=value)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

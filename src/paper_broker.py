@@ -21,6 +21,7 @@ from src.execution_protocol import (
     EXECUTION_PROTOCOL_VERSION,
     QUOTE_COHERENCE_CONTRACT_VERSION,
 )
+from src.execution_rule_decimal import is_bounded_execution_rule_decimal
 from src.data_integrity import volume_transition_anomalies
 from src.paper_store import (
     BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION,
@@ -115,14 +116,14 @@ def evaluate_price_range_rule(
         return PriceRangeDecision(
             "NOT_ENFORCED", "PRICE_RANGE_REFERENCE_UNAVAILABLE", None, None
         )
-    if not reference.price.is_finite() or reference.price <= 0:
+    if not is_bounded_execution_rule_decimal(reference.price):
         raise ValueError("PRICE_RANGE reference price is invalid")
     if side == "BUY":
         lower_multiplier, upper_multiplier = rule.bid_limit_mult_down, rule.bid_limit_mult_up
     else:
         lower_multiplier, upper_multiplier = rule.ask_limit_mult_down, rule.ask_limit_mult_up
     for multiplier in (lower_multiplier, upper_multiplier):
-        if multiplier is not None and (not multiplier.is_finite() or multiplier <= 0):
+        if multiplier is not None and not is_bounded_execution_rule_decimal(multiplier):
             raise ValueError("PRICE_RANGE multiplier is invalid")
     lower = (
         _exact_decimal_product(reference.price, lower_multiplier)
@@ -169,7 +170,10 @@ def validate_price_range_evidence(
     if rule.status == "PRICE_RANGE_PRESENT":
         if rule.price_range_present is not True or not isinstance(rule.native_symbol, str) or not rule.native_symbol:
             return "Invalid data: PRICE_RANGE evidence"
-        if any(value is not None and (not value.is_finite() or value <= 0) for value in multipliers):
+        if any(
+            value is not None and not is_bounded_execution_rule_decimal(value)
+            for value in multipliers
+        ):
             return "Invalid data: PRICE_RANGE multiplier"
     elif rule.status == "PRICE_RANGE_ABSENT":
         if rule.price_range_present is not False or any(value is not None for value in multipliers):
@@ -392,8 +396,11 @@ class PaperConfig:
             raise ValueError(
                 "max_quote_staleness_minutes cannot exceed max_data_staleness_minutes"
             )
-        if self.max_quote_timestamp_skew_seconds <= 0:
-            raise ValueError("max_quote_timestamp_skew_seconds must be positive")
+        if (
+            type(self.max_quote_timestamp_skew_seconds) is not int
+            or self.max_quote_timestamp_skew_seconds <= 0
+        ):
+            raise ValueError("max_quote_timestamp_skew_seconds must be a positive integer")
         minimum_lookback = self.strategy_config.required_observations
         if self.lookback_days < minimum_lookback:
             raise ValueError(

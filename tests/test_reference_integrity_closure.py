@@ -73,6 +73,19 @@ def test_reference_price_documented_no_reference_is_not_transient(monkeypatch):
     assert PublicMarketClient(_Client()).fetch_reference_price("BTC/USDT") is None
 
 
+def test_reference_price_rejects_unbounded_decimal_evidence():
+    exchange = _exchange()
+    exchange.fetch_reference_price = lambda _symbol: {
+        "symbol": "BTCUSDT", "referencePrice": "1e999999",
+        "timestamp": int(pd.Timestamp(START).timestamp() * 1000),
+    }
+    with pytest.raises(ValueError, match="Invalid Binance reference price"):
+        fetch_public_market_snapshot(
+            PaperConfig(assets=("BTC/USDT",)), exchange=exchange, now=START,
+            acquisition_clock=lambda: START,
+        )
+
+
 @pytest.mark.parametrize("age_ms,valid", [(299999, True), (300000, True), (300001, False), (-1, False)])
 def test_clock2_receipt_source_age_exact_boundary(age_ms, valid):
     receipt = START + timedelta(seconds=20)

@@ -50,7 +50,7 @@
     "run_data_pipeline.py": "871cdcce7e2730a5110b7241f64fe64b61d66694bf244370bf3cb3a4075ae4da",
     "run_experiments.py": "114966c7493509b9cdb072449752f3fadab9114bc139b423a9dca47fbf0e7a8c",
     "run_monthly_report.py": "940d8c56f885295c317b1a38f053c277a219675a2640f92140bf37d9b97d64fd",
-    "run_paper.py": "f98e18f45d92cf979b7aceaf652e39ab03fcaa2363f64852b19fb7aea0cea276",
+    "run_paper.py": "525a445093eaf809a66330168d6fd9949305805af75261c9e4354378c37788a6",
     "scripts/backup_forward.py": "d0b189950e00b8f663759fa59e7955ce97ab79f486af5d3fa95d1e480216318c",
     "scripts/check_markdown_links.py": "2ae389ad79e85596a005d3d2890b5334be791490133d26beb4fda5ab7713379a",
     "scripts/data_cross_check.py": "c2ce77ad9a887561585cf92028827a9721221f8845305f7fd2e50be44c0d5f06",
@@ -89,7 +89,7 @@
     "src/paper_market.py": "d280e0898b80cc6d94ce93a7d86b9861ac87933d1956b6b065251b47c2f786ed",
     "src/paper_notifications.py": "6556015571c29caa49216a260bc2f62fda61a8b2b2a72aaa7900400ac30be362",
     "src/paper_report.py": "dd89846992e5acd645959143e76a2903eabbfad4c7bf3e8e5931cff93e5c568b",
-    "src/paper_store.py": "7b5a49bc4ec22c3f5be7e7ae5c1d6837fa6c84ac4d319a60366bf732addef1f1",
+    "src/paper_store.py": "bc51e462a0a9da2e7e9387c8495085ed8c2de5a32e529902a4ed1a5810d1a16d",
     "src/portfolio.py": "89e393c466d7850eec5f2d82b2944d8bc6871c12952cf5779baa33d7a5985a02",
     "src/release_provenance.py": "f38341e42954100f5e9550616b34bc90edf8deb9fafc23ba471ae15fe496d242",
     "src/report.py": "59923840ff8f3842ac5a10209b7b4d1ef7213b4f41b7f544fa976607b1dbd3b9",
@@ -108,12 +108,12 @@
     "tests/test_paper_notifications.py": "3693c51135352c74dcca3eab2fc5b5097024bc519789c88f05372a5b2354ef65",
     "tests/test_paper_report.py": "970cfcd74a592f264b3e13131fc0105b61be474a38a3b4c72a2114d4633500e7",
     "tests/test_paper_trading.py": "fbaf2e0c13c74c19888b62ef30c588b805282e92b4269861316074a699711917",
-    "tests/test_runner_safety.py": "72b6b274e58b216b8d3548a953537bac0b1bc51e92b9aa827178b65e86f9f908",
+    "tests/test_runner_safety.py": "4ca042c5d5390dc5183af58dff259fef2cd069ebf86e4620ed4ff2e3516bf47c",
     "tests/test_scheduler_contract.py": "b5ea40e0b035b94982b42b83474d0aeb7823135cb7bc4a9660b8d4b90011f278",
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-16T09:44:37.003482+00:00",
+  "generated_at_utc": "2026-09-21T09:42:18.483450+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

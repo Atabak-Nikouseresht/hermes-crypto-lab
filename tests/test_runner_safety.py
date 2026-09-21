@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -387,14 +388,75 @@ def test_dry_run_reaches_local_execution_without_telegram_target(monkeypatch, tm
         run_paper.main()
 
 
-@pytest.mark.parametrize("mode", ["--status", "--reconcile", "--kill-switch-status"])
-def test_inspection_cli_modes_work_without_telegram_target(tmp_path, mode):
+def _persistent_file_state(*paths: Path) -> dict[str, str | None]:
+    return {
+        str(path): hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+        for path in paths
+    }
+
+
+def test_inspection_cli_modes_leave_persistent_state_unchanged(tmp_path):
     root = Path(__file__).resolve().parents[1]
+    database = tmp_path / "paper.duckdb"
+    config, _values = run_paper.load_paper_configuration(root)
+    system = PaperTradingSystem(database, config)
+    with system.store.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO paper_runs (run_id, started_at_utc, status, mode)
+            VALUES ('abandoned-diagnostic-run', now(), 'RUNNING', 'PAPER')
+            """
+        )
     environment = os.environ.copy()
     environment.pop("HCL_TELEGRAM_TARGET", None)
-    environment["HCL_PAPER_DATABASE"] = str(
-        tmp_path / f"{mode.removeprefix('--')}.duckdb"
+    environment["HCL_PAPER_DATABASE"] = str(database)
+    protected_paths = (
+        database,
+        root / "runtime" / "forward_writer.lock",
+        root / "runtime" / "forward_writer.lock.owner.json",
+        root / "logs" / "data_pipeline.log",
     )
+    before = _persistent_file_state(*protected_paths)
+
+    for mode, expected in (
+        ("--status", '"reconciliation"'),
+        ("--reconcile", '"valid": true'),
+        ("--kill-switch-status", '"automatic_reset": false'),
+    ):
+        completed = subprocess.run(
+            [sys.executable, str(root / "run_paper.py"), mode],
+            cwd=root,
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert expected in completed.stdout
+        assert "HCL_TELEGRAM_TARGET" not in completed.stderr
+        assert _persistent_file_state(*protected_paths) == before
+        with system.store.connect(read_only=True) as connection:
+            assert connection.execute(
+                "SELECT status FROM paper_runs WHERE run_id='abandoned-diagnostic-run'"
+            ).fetchone() == ("RUNNING",)
+
+
+@pytest.mark.parametrize("mode", ["--status", "--reconcile", "--kill-switch-status"])
+@pytest.mark.parametrize("kind", ["missing", "invalid"])
+def test_inspection_cli_modes_fail_cleanly_without_mutating_invalid_database(
+    tmp_path, mode, kind
+):
+    root = Path(__file__).resolve().parents[1]
+    database = tmp_path / "missing" / "paper.duckdb"
+    if kind == "invalid":
+        database.parent.mkdir()
+        database.write_bytes(b"not a DuckDB database")
+    environment = os.environ.copy()
+    environment.pop("HCL_TELEGRAM_TARGET", None)
+    environment["HCL_PAPER_DATABASE"] = str(database)
+    before = _persistent_file_state(database)
 
     completed = subprocess.run(
         [sys.executable, str(root / "run_paper.py"), mode],
@@ -406,8 +468,11 @@ def test_inspection_cli_modes_work_without_telegram_target(tmp_path, mode):
         check=False,
     )
 
-    assert completed.returncode == 0, completed.stderr
-    assert "HCL_TELEGRAM_TARGET" not in completed.stderr
+    assert completed.returncode == 2
+    assert "Unable to inspect paper database read-only" in completed.stderr
+    assert _persistent_file_state(database) == before
+    if kind == "missing":
+        assert not database.parent.exists()
 
 
 @pytest.mark.parametrize(
@@ -439,6 +504,8 @@ def test_operational_cli_modes_execute_in_process_for_coverage(
     monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
     monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
     monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
+    if mode in {"--status", "--reconcile", "--kill-switch-status"}:
+        PaperTradingSystem(Path(values["database_path"]), config)
     monkeypatch.setattr(sys, "argv", ["run_paper.py", mode])
 
     run_paper.main()

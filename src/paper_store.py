@@ -99,6 +99,32 @@ class PaperStore:
         return connection
 
     @classmethod
+    def open_existing_read_only(
+        cls,
+        path: Path,
+        *,
+        account_id: str,
+        quantity_tolerance: float,
+        fee_rate: float,
+        minimum_spread_rate: float,
+        slippage_rate: float,
+        max_quote_timestamp_skew_seconds: int,
+    ) -> PaperStore:
+        """Bind an existing database for inspection without initialization or recovery."""
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Paper database does not exist: {path}")
+        store = cls.__new__(cls)
+        store.path = path
+        store.account_id = account_id
+        store.quantity_tolerance = quantity_tolerance
+        store.fee_rate = fee_rate
+        store.minimum_spread_rate = minimum_spread_rate
+        store.slippage_rate = slippage_rate
+        store.max_quote_timestamp_skew_seconds = max_quote_timestamp_skew_seconds
+        return store
+
+    @classmethod
     def reconcile_database(
         cls,
         path: Path,
@@ -111,14 +137,15 @@ class PaperStore:
         max_quote_timestamp_skew_seconds: int,
     ) -> ReconciliationResult:
         """Run the authoritative reconciliation path without initializing a database."""
-        store = cls.__new__(cls)
-        store.path = Path(path)
-        store.account_id = account_id
-        store.quantity_tolerance = quantity_tolerance
-        store.fee_rate = fee_rate
-        store.minimum_spread_rate = minimum_spread_rate
-        store.slippage_rate = slippage_rate
-        store.max_quote_timestamp_skew_seconds = max_quote_timestamp_skew_seconds
+        store = cls.open_existing_read_only(
+            path,
+            account_id=account_id,
+            quantity_tolerance=quantity_tolerance,
+            fee_rate=fee_rate,
+            minimum_spread_rate=minimum_spread_rate,
+            slippage_rate=slippage_rate,
+            max_quote_timestamp_skew_seconds=max_quote_timestamp_skew_seconds,
+        )
         return store.reconcile()
 
     def _initialize(self, initial_cash: float) -> None:

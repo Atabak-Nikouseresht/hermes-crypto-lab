@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pandas as pd
 
 import run_paper
 from src.forward_operations import AlreadyRunningError, InterProcessLock
+from src.forward_governance import bootstrap_forward_experiment
 from src.config import load_settings
 from src.paper_broker import (
     MarketSnapshot,
@@ -21,6 +23,7 @@ from src.paper_broker import (
     PaperTradingSystem,
     Quote,
 )
+from src.paper_store import PaperStore
 from src.release_provenance import ReleaseProvenance
 
 
@@ -396,11 +399,8 @@ def _persistent_file_state(*paths: Path) -> dict[str, str | None]:
 
 
 def test_inspection_cli_modes_leave_persistent_state_unchanged(tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    database = tmp_path / "paper.duckdb"
-    config, _values = run_paper.load_paper_configuration(root)
-    system = PaperTradingSystem(database, config)
-    with system.store.connect() as connection:
+    root, database = _diagnostic_database(tmp_path)
+    with duckdb.connect(str(database)) as connection:
         connection.execute(
             """
             INSERT INTO paper_runs (run_id, started_at_utc, status, mode)
@@ -437,10 +437,218 @@ def test_inspection_cli_modes_leave_persistent_state_unchanged(tmp_path):
         assert expected in completed.stdout
         assert "HCL_TELEGRAM_TARGET" not in completed.stderr
         assert _persistent_file_state(*protected_paths) == before
-        with system.store.connect(read_only=True) as connection:
+        with duckdb.connect(str(database), read_only=True) as connection:
             assert connection.execute(
                 "SELECT status FROM paper_runs WHERE run_id='abandoned-diagnostic-run'"
             ).fetchone() == ("RUNNING",)
+
+
+def _diagnostic_database(tmp_path: Path) -> tuple[Path, Path]:
+    root = Path(__file__).resolve().parents[1]
+    database = tmp_path / "paper.duckdb"
+    config, _values = run_paper.load_paper_configuration(root)
+    system = PaperTradingSystem(database, config)
+    bootstrap_forward_experiment(system.store, root, config)
+    return root, database
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("--status", '"reconciliation"'),
+        ("--reconcile", '"valid": true'),
+        ("--kill-switch-status", '"automatic_reset": false'),
+    ],
+)
+def test_diagnostics_bypass_trading_configuration_and_governance(
+    monkeypatch, tmp_path, capsys, mode, expected
+):
+    root, database = _diagnostic_database(tmp_path)
+    settings = SimpleNamespace(project_root=root, logs_dir=tmp_path / "logs", log_level="INFO")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("diagnostic mode invoked a trading control-plane path")
+
+    monkeypatch.setenv("HCL_PAPER_DATABASE", str(database))
+    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_paper_configuration", forbidden)
+    monkeypatch.setattr(run_paper, "_verify_research_lock", forbidden)
+    monkeypatch.setattr(run_paper, "configure_logging", forbidden)
+    monkeypatch.setattr(run_paper, "open_locked_system", forbidden)
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", mode])
+
+    run_paper.main()
+
+    assert expected in capsys.readouterr().out
+
+
+def _write_corrupt_active_config(project_root: Path, kind: str, source_root: Path) -> None:
+    config_dir = project_root / "config"
+    shutil.rmtree(config_dir, ignore_errors=True)
+    config_dir.mkdir()
+    strategy = config_dir / "strategy.yaml"
+    assets = config_dir / "assets.yaml"
+    if kind == "missing_strategy":
+        return
+    shutil.copy2(source_root / "config" / "strategy.yaml", strategy)
+    shutil.copy2(source_root / "config" / "assets.yaml", assets)
+    if kind == "malformed_strategy":
+        strategy.write_text("paper_trading: [", encoding="utf-8")
+    elif kind == "missing_paper_trading":
+        strategy.write_text("live_trading_enabled: false\n", encoding="utf-8")
+    elif kind == "paper_disabled":
+        strategy.write_text("paper_trading:\n  enabled: false\n", encoding="utf-8")
+    elif kind == "live_trading_enabled":
+        strategy.write_text("live_trading_enabled: true\npaper_trading: {}\n", encoding="utf-8")
+    elif kind == "execution_protocol_mismatch":
+        strategy.write_text(
+            strategy.read_text(encoding="utf-8").replace(
+                "paper-exec-v3-ask-bid-minspread-utc0010", "wrong-protocol"
+            ),
+            encoding="utf-8",
+        )
+    elif kind == "missing_assets":
+        assets.unlink()
+    elif kind == "malformed_assets":
+        assets.write_text("assets: [", encoding="utf-8")
+    elif kind == "invalid_locked_candidate":
+        strategy.write_text(
+            strategy.read_text(encoding="utf-8").replace(
+                "mw120_sw00_ma150_n2_r07_v30", "invalid-candidate"
+            ),
+            encoding="utf-8",
+        )
+    else:  # pragma: no cover - guards the test fixture itself
+        raise ValueError(f"Unknown corruption case: {kind}")
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "missing_strategy",
+        "malformed_strategy",
+        "missing_paper_trading",
+        "paper_disabled",
+        "live_trading_enabled",
+        "execution_protocol_mismatch",
+        "missing_assets",
+        "malformed_assets",
+        "invalid_locked_candidate",
+    ],
+)
+def test_diagnostic_subprocesses_ignore_corrupt_active_trading_config(tmp_path, kind):
+    source_root, database = _diagnostic_database(tmp_path)
+    isolated_root = tmp_path / "isolated"
+    isolated_root.mkdir()
+    shutil.copy2(source_root / "run_paper.py", isolated_root / "run_paper.py")
+    shutil.copytree(source_root / "src", isolated_root / "src")
+    _write_corrupt_active_config(isolated_root, kind, source_root)
+    environment = os.environ.copy()
+    environment.pop("HCL_TELEGRAM_TARGET", None)
+    environment["HCL_PAPER_DATABASE"] = str(database)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    protected_paths = (
+        database,
+        isolated_root / "runtime" / "forward_writer.lock",
+        isolated_root / "runtime" / "forward_writer.lock.owner.json",
+        isolated_root / "logs" / "data_pipeline.log",
+    )
+    before = _persistent_file_state(*protected_paths)
+
+    for mode, expected in (
+        ("--status", '"reconciliation"'),
+        ("--reconcile", '"valid": true'),
+        ("--kill-switch-status", '"automatic_reset": false'),
+    ):
+        completed = subprocess.run(
+            [sys.executable, str(isolated_root / "run_paper.py"), mode],
+            cwd=isolated_root,
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert expected in completed.stdout
+        assert _persistent_file_state(*protected_paths) == before
+
+
+@pytest.mark.parametrize("mode", ["--status", "--reconcile", "--kill-switch-status"])
+def test_diagnostics_require_persisted_reconciliation_metadata(tmp_path, mode):
+    root = Path(__file__).resolve().parents[1]
+    database = tmp_path / "paper.duckdb"
+    config, _values = run_paper.load_paper_configuration(root)
+    PaperTradingSystem(database, config)
+    environment = os.environ.copy()
+    environment["HCL_PAPER_DATABASE"] = str(database)
+    before = _persistent_file_state(database)
+
+    completed = subprocess.run(
+        [sys.executable, str(root / "run_paper.py"), mode],
+        cwd=root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "persisted forward experiment" in completed.stderr
+    assert _persistent_file_state(database) == before
+
+
+def test_diagnostics_reject_ambiguous_persisted_account_identity(tmp_path):
+    root, database = _diagnostic_database(tmp_path)
+    with duckdb.connect(str(database)) as connection:
+        connection.execute(
+            """
+            INSERT INTO paper_accounts VALUES ('second-account', 1, 1, 'ACTIVE', now(), now())
+            """
+        )
+    environment = os.environ.copy()
+    environment["HCL_PAPER_DATABASE"] = str(database)
+    before = _persistent_file_state(database)
+
+    completed = subprocess.run(
+        [sys.executable, str(root / "run_paper.py"), "--status"],
+        cwd=root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "exactly one persisted paper account" in completed.stderr
+    assert _persistent_file_state(database) == before
+
+
+def test_diagnostic_context_reads_persisted_quote_coherence_setting(tmp_path):
+    _root, database = _diagnostic_database(tmp_path)
+    with duckdb.connect(str(database)) as connection:
+        connection.execute(
+            """
+            INSERT INTO paper_runs (
+                run_id, started_at_utc, status, mode, official_scheduled
+            ) VALUES ('quote-context-run', now(), 'EXECUTED', 'PAPER', TRUE)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO paper_quote_coherence_context VALUES (
+                'quote-context-run', 'quote-coherence-v1-cross-asset-utc', 30,
+                now(), now(), now()
+            )
+            """
+        )
+
+    store = PaperStore.open_diagnostic_read_only(database)
+
+    assert store.max_quote_timestamp_skew_seconds == 30
 
 
 @pytest.mark.parametrize("mode", ["--status", "--reconcile", "--kill-switch-status"])
@@ -505,7 +713,9 @@ def test_operational_cli_modes_execute_in_process_for_coverage(
     monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
     monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
     if mode in {"--status", "--reconcile", "--kill-switch-status"}:
-        PaperTradingSystem(Path(values["database_path"]), config)
+        diagnostic_system = PaperTradingSystem(Path(values["database_path"]), config)
+        bootstrap_forward_experiment(diagnostic_system.store, root, config)
+        monkeypatch.setenv("HCL_PAPER_DATABASE", values["database_path"])
     monkeypatch.setattr(sys, "argv", ["run_paper.py", mode])
 
     run_paper.main()
@@ -517,6 +727,9 @@ def test_project_paths_resolve_relative_runtime_locations_and_env_override(
     monkeypatch, tmp_path
 ):
     monkeypatch.delenv("HCL_PAPER_DATABASE", raising=False)
+    assert run_paper.diagnostic_paper_database_path(tmp_path) == (
+        tmp_path / "database" / "paper_trading.duckdb"
+    )
     database, reports = run_paper._project_paths(
         tmp_path,
         {"database_path": "database/paper.duckdb", "reports_dir": "reports"},
@@ -526,6 +739,7 @@ def test_project_paths_resolve_relative_runtime_locations_and_env_override(
 
     override = (tmp_path / "override.duckdb").resolve()
     monkeypatch.setenv("HCL_PAPER_DATABASE", str(override))
+    assert run_paper.diagnostic_paper_database_path(tmp_path) == override
     database, _ = run_paper._project_paths(
         tmp_path,
         {"database_path": "ignored.duckdb", "reports_dir": str(tmp_path / "absolute")},

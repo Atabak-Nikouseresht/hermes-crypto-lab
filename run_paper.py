@@ -40,6 +40,7 @@ from src.paper_report import write_operational_failure_report, write_weekly_pape
 from src.release_provenance import ReleaseProvenanceError, capture_release_provenance
 
 LOGGER = logging.getLogger(__name__)
+CANONICAL_PAPER_DATABASE_PATH = Path("database") / "paper_trading.duckdb"
 
 
 def _boolean(value: str) -> bool:
@@ -101,10 +102,22 @@ def fetch_configured_public_market_snapshot(
     )
 
 
-def _project_paths(project_root: Path, values: dict) -> tuple[Path, Path]:
-    database_value = Path(os.getenv("HCL_PAPER_DATABASE", values["database_path"]))
+def _resolve_paper_database_path(project_root: Path, configured_path: Path) -> Path:
+    database_value = Path(os.getenv("HCL_PAPER_DATABASE", str(configured_path)))
     database_path = (
         database_value if database_value.is_absolute() else project_root / database_value
+    )
+    return database_path
+
+
+def diagnostic_paper_database_path(project_root: Path) -> Path:
+    """Locate the canonical paper database without parsing trading configuration."""
+    return _resolve_paper_database_path(project_root, CANONICAL_PAPER_DATABASE_PATH)
+
+
+def _project_paths(project_root: Path, values: dict) -> tuple[Path, Path]:
+    database_path = _resolve_paper_database_path(
+        project_root, Path(values["database_path"])
     )
     reports_value = Path(values["reports_dir"])
     reports_dir = reports_value if reports_value.is_absolute() else project_root / reports_value
@@ -242,17 +255,9 @@ def _send_sample(target: str, reports_dir: Path, config: PaperConfig) -> Path:
     return path
 
 
-def open_read_only_paper_store(database_path: Path, config: PaperConfig) -> PaperStore:
+def open_read_only_paper_store(database_path: Path) -> PaperStore:
     """Open an existing paper database only for diagnostic inspection."""
-    return PaperStore.open_existing_read_only(
-        database_path,
-        account_id=config.account_id,
-        quantity_tolerance=config.quantity_tolerance,
-        fee_rate=config.fee_rate,
-        minimum_spread_rate=config.minimum_spread_rate,
-        slippage_rate=config.slippage_rate,
-        max_quote_timestamp_skew_seconds=config.max_quote_timestamp_skew_seconds,
-    )
+    return PaperStore.open_diagnostic_read_only(database_path)
 
 
 def _status(store: PaperStore) -> dict:
@@ -314,12 +319,12 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
-    config, values = load_paper_configuration(settings.project_root)
-    database_path, reports_dir = _project_paths(settings.project_root, values)
 
     if args.status or args.reconcile or args.kill_switch_status:
         try:
-            store = open_read_only_paper_store(database_path, config)
+            store = open_read_only_paper_store(
+                diagnostic_paper_database_path(settings.project_root)
+            )
             if args.status:
                 print(json.dumps(_status(store), indent=2, sort_keys=True))
                 return
@@ -360,6 +365,8 @@ def main() -> None:
         except Exception as error:
             parser.error(f"Unable to inspect paper database read-only: {error}")
 
+    config, values = load_paper_configuration(settings.project_root)
+    database_path, reports_dir = _project_paths(settings.project_root, values)
     configure_logging(settings.logs_dir, settings.log_level)
     _verify_research_lock(settings.project_root, config)
     writer_lock = settings.project_root / "runtime" / "forward_writer.lock"

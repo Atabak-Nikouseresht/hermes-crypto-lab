@@ -23,6 +23,7 @@ from src.forward_operations import (
 )
 from src.logging_config import configure_logging
 from src.paper_broker import MarketSnapshot, PaperConfig, PaperTradingSystem
+from src.paper_store import PaperStore
 from src.paper_forward import (
     build_forward_diagnostics,
     commit_operational_failure,
@@ -241,11 +242,24 @@ def _send_sample(target: str, reports_dir: Path, config: PaperConfig) -> Path:
     return path
 
 
-def _status(system: PaperTradingSystem) -> dict:
-    account = system.store.account()
-    positions = system.store.positions()
-    reconciliation = system.store.reconcile()
-    with system.store.connect(read_only=True) as connection:
+def open_read_only_paper_store(database_path: Path, config: PaperConfig) -> PaperStore:
+    """Open an existing paper database only for diagnostic inspection."""
+    return PaperStore.open_existing_read_only(
+        database_path,
+        account_id=config.account_id,
+        quantity_tolerance=config.quantity_tolerance,
+        fee_rate=config.fee_rate,
+        minimum_spread_rate=config.minimum_spread_rate,
+        slippage_rate=config.slippage_rate,
+        max_quote_timestamp_skew_seconds=config.max_quote_timestamp_skew_seconds,
+    )
+
+
+def _status(store: PaperStore) -> dict:
+    account = store.account()
+    positions = store.positions()
+    reconciliation = store.reconcile()
+    with store.connect(read_only=True) as connection:
         counts = connection.execute(
             "SELECT (SELECT COUNT(*) FROM paper_orders), (SELECT COUNT(*) FROM paper_fills), "
             "(SELECT COUNT(*) FROM forward_incidents WHERE resolved_at_utc IS NULL), "
@@ -300,44 +314,22 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
-    configure_logging(settings.logs_dir, settings.log_level)
     config, values = load_paper_configuration(settings.project_root)
     database_path, reports_dir = _project_paths(settings.project_root, values)
-    _verify_research_lock(settings.project_root, config)
-    writer_lock = settings.project_root / "runtime" / "forward_writer.lock"
 
-    if args.status:
-        with open_locked_system(
-            database_path=database_path,
-            config=config,
-            project_root=settings.project_root,
-            lock_path=writer_lock,
-            command_name="status",
-        ) as system:
-            print(json.dumps(_status(system), indent=2, sort_keys=True))
-        return
-    if args.reconcile:
-        with open_locked_system(
-            database_path=database_path,
-            config=config,
-            project_root=settings.project_root,
-            lock_path=writer_lock,
-            command_name="reconcile",
-        ) as system:
-            result = system.store.reconcile()
-            print(json.dumps({"valid": result.valid, "message": result.message}, indent=2))
-            if not result.valid:
-                raise SystemExit(2)
-        return
-    if args.kill_switch_status:
-        with open_locked_system(
-            database_path=database_path,
-            config=config,
-            project_root=settings.project_root,
-            lock_path=writer_lock,
-            command_name="kill-switch-status",
-        ) as system:
-            with system.store.connect(read_only=True) as connection:
+    if args.status or args.reconcile or args.kill_switch_status:
+        try:
+            store = open_read_only_paper_store(database_path, config)
+            if args.status:
+                print(json.dumps(_status(store), indent=2, sort_keys=True))
+                return
+            if args.reconcile:
+                result = store.reconcile()
+                print(json.dumps({"valid": result.valid, "message": result.message}, indent=2))
+                if not result.valid:
+                    raise SystemExit(2)
+                return
+            with store.connect(read_only=True) as connection:
                 incidents = connection.execute(
                     """
                     SELECT incident_id, reason, created_at_utc, cleared_at_utc
@@ -347,7 +339,7 @@ def main() -> None:
             print(
                 json.dumps(
                     {
-                        "account_status": system.store.account()["status"],
+                        "account_status": store.account()["status"],
                         "automatic_reset": False,
                         "incidents": [
                             {
@@ -362,7 +354,15 @@ def main() -> None:
                     indent=2,
                 )
             )
-        return
+            return
+        except SystemExit:
+            raise
+        except Exception as error:
+            parser.error(f"Unable to inspect paper database read-only: {error}")
+
+    configure_logging(settings.logs_dir, settings.log_level)
+    _verify_research_lock(settings.project_root, config)
+    writer_lock = settings.project_root / "runtime" / "forward_writer.lock"
     if args.reset_kill_switch:
         with open_locked_system(
             database_path=database_path,

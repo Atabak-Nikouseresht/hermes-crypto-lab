@@ -110,8 +110,14 @@ def _resolve_paper_database_path(project_root: Path, configured_path: Path) -> P
     return database_path
 
 
+def diagnostic_project_root() -> Path:
+    """Resolve the repository root without validating runtime settings."""
+    return Path(__file__).resolve().parent
+
+
 def diagnostic_paper_database_path(project_root: Path) -> Path:
     """Locate the canonical paper database without parsing trading configuration."""
+    load_dotenv(project_root / ".env", override=False)
     return _resolve_paper_database_path(project_root, CANONICAL_PAPER_DATABASE_PATH)
 
 
@@ -318,12 +324,10 @@ def main() -> None:
     parser.add_argument("--telegram-target", default=None)
     args = parser.parse_args()
 
-    settings = load_settings()
-
     if args.status or args.reconcile or args.kill_switch_status:
         try:
             store = open_read_only_paper_store(
-                diagnostic_paper_database_path(settings.project_root)
+                diagnostic_paper_database_path(diagnostic_project_root())
             )
             if args.status:
                 print(json.dumps(_status(store), indent=2, sort_keys=True))
@@ -365,6 +369,7 @@ def main() -> None:
         except Exception as error:
             parser.error(f"Unable to inspect paper database read-only: {error}")
 
+    settings = load_settings()
     config, values = load_paper_configuration(settings.project_root)
     database_path, reports_dir = _project_paths(settings.project_root, values)
     configure_logging(settings.logs_dir, settings.log_level)

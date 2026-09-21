@@ -50,7 +50,7 @@
     "run_data_pipeline.py": "871cdcce7e2730a5110b7241f64fe64b61d66694bf244370bf3cb3a4075ae4da",
     "run_experiments.py": "114966c7493509b9cdb072449752f3fadab9114bc139b423a9dca47fbf0e7a8c",
     "run_monthly_report.py": "940d8c56f885295c317b1a38f053c277a219675a2640f92140bf37d9b97d64fd",
-    "run_paper.py": "124336497591d046f473873b62f4d0e144d90530b59896ee7e52ec5eba8ebc34",
+    "run_paper.py": "58e9d6635d1e11f50060e353c2fb1a18fb1c09c0745d97ccf8803c2e60a94e4e",
     "scripts/backup_forward.py": "d0b189950e00b8f663759fa59e7955ce97ab79f486af5d3fa95d1e480216318c",
     "scripts/check_markdown_links.py": "2ae389ad79e85596a005d3d2890b5334be791490133d26beb4fda5ab7713379a",
     "scripts/data_cross_check.py": "c2ce77ad9a887561585cf92028827a9721221f8845305f7fd2e50be44c0d5f06",
@@ -108,12 +108,12 @@
     "tests/test_paper_notifications.py": "3693c51135352c74dcca3eab2fc5b5097024bc519789c88f05372a5b2354ef65",
     "tests/test_paper_report.py": "970cfcd74a592f264b3e13131fc0105b61be474a38a3b4c72a2114d4633500e7",
     "tests/test_paper_trading.py": "fbaf2e0c13c74c19888b62ef30c588b805282e92b4269861316074a699711917",
-    "tests/test_runner_safety.py": "92f2bfb170eba588549804385a625ba6e6c80a64a4f779b0f8bd23f41d02c014",
+    "tests/test_runner_safety.py": "bd37a5e5c4c0c6164f2df4bfbf3a6efca9054e337f16a0f3bbc0fc3d496b8287",
     "tests/test_scheduler_contract.py": "b5ea40e0b035b94982b42b83474d0aeb7823135cb7bc4a9660b8d4b90011f278",
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-21T11:43:03.936770+00:00",
+  "generated_at_utc": "2026-09-21T15:47:29.356700+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

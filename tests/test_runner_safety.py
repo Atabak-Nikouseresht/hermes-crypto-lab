@@ -465,13 +465,15 @@ def test_diagnostics_bypass_trading_configuration_and_governance(
     monkeypatch, tmp_path, capsys, mode, expected
 ):
     root, database = _diagnostic_database(tmp_path)
-    settings = SimpleNamespace(project_root=root, logs_dir=tmp_path / "logs", log_level="INFO")
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("diagnostic mode invoked a trading control-plane path")
 
+    def forbidden_settings(*_args, **_kwargs):
+        raise AssertionError("diagnostics must not call load_settings")
+
     monkeypatch.setenv("HCL_PAPER_DATABASE", str(database))
-    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_paper, "load_settings", forbidden_settings)
     monkeypatch.setattr(run_paper, "load_paper_configuration", forbidden)
     monkeypatch.setattr(run_paper, "_verify_research_lock", forbidden)
     monkeypatch.setattr(run_paper, "configure_logging", forbidden)
@@ -574,6 +576,79 @@ def test_diagnostic_subprocesses_ignore_corrupt_active_trading_config(tmp_path, 
         assert completed.returncode == 0, completed.stderr
         assert expected in completed.stdout
         assert _persistent_file_state(*protected_paths) == before
+
+
+@pytest.mark.parametrize(
+    "invalid_settings",
+    [
+        {
+            "HCL_FETCH_LIMIT": "abc",
+            "HCL_MAX_RETRIES": "abc",
+            "HCL_BACKOFF_BASE_SECONDS": "abc",
+            "HCL_REQUEST_TIMEOUT_MS": "abc",
+        },
+        {
+            "HCL_FETCH_LIMIT": "0",
+            "HCL_MAX_RETRIES": "-1",
+            "HCL_BACKOFF_BASE_SECONDS": "0",
+            "HCL_REQUEST_TIMEOUT_MS": "0",
+        },
+    ],
+)
+def test_diagnostic_subprocesses_ignore_invalid_unrelated_runtime_settings(
+    tmp_path, invalid_settings
+):
+    root, database = _diagnostic_database(tmp_path)
+    environment = os.environ.copy()
+    environment.pop("HCL_TELEGRAM_TARGET", None)
+    environment.update(invalid_settings)
+    environment.update(
+        {
+            "HCL_PAPER_DATABASE": str(database),
+            "HCL_DATABASE_PATH": "not-a-database-path",
+            "HCL_ASSETS_CONFIG": "not-an-assets-path",
+            "HCL_EXCHANGE": "not-an-exchange",
+            "HCL_TIMEFRAME": "not-a-timeframe",
+            "HCL_SINCE": "not-a-research-timestamp",
+        }
+    )
+    protected_paths = (
+        database,
+        root / "runtime" / "forward_writer.lock",
+        root / "runtime" / "forward_writer.lock.owner.json",
+        root / "logs" / "data_pipeline.log",
+    )
+    before = _persistent_file_state(*protected_paths)
+
+    for mode, expected in (
+        ("--status", '"reconciliation"'),
+        ("--reconcile", '"valid": true'),
+        ("--kill-switch-status", '"automatic_reset": false'),
+    ):
+        completed = subprocess.run(
+            [sys.executable, str(root / "run_paper.py"), mode],
+            cwd=root,
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert expected in completed.stdout
+        assert _persistent_file_state(*protected_paths) == before
+
+
+def test_non_diagnostic_modes_still_validate_runtime_settings(monkeypatch):
+    def malformed_settings(*_args, **_kwargs):
+        raise ValueError("HCL_FETCH_LIMIT must be a positive integer")
+
+    monkeypatch.setattr(run_paper, "load_settings", malformed_settings)
+    monkeypatch.setattr(sys, "argv", ["run_paper.py", "--dry-run"])
+
+    with pytest.raises(ValueError, match="HCL_FETCH_LIMIT"):
+        run_paper.main()
 
 
 @pytest.mark.parametrize("mode", ["--status", "--reconcile", "--kill-switch-status"])
@@ -760,6 +835,7 @@ def test_project_paths_resolve_relative_runtime_locations_and_env_override(
     monkeypatch, tmp_path
 ):
     monkeypatch.delenv("HCL_PAPER_DATABASE", raising=False)
+    assert run_paper.diagnostic_project_root() == Path(__file__).resolve().parents[1]
     assert run_paper.diagnostic_paper_database_path(tmp_path) == (
         tmp_path / "database" / "paper_trading.duckdb"
     )

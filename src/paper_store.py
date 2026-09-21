@@ -27,6 +27,7 @@ FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
 BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v2"
 _LEGACY_BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v1"
 BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION = "binance-execution-rules-evidence-v1-price-range"
+CURRENT_LEDGER_QUANTITY_TOLERANCE = 1e-12
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,89 @@ class PaperStore:
         store.slippage_rate = slippage_rate
         store.max_quote_timestamp_skew_seconds = max_quote_timestamp_skew_seconds
         return store
+
+    @classmethod
+    def open_diagnostic_read_only(cls, path: Path) -> PaperStore:
+        """Bind persisted diagnostic authority without loading active trading config."""
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Paper database does not exist: {path}")
+        with duckdb.connect(str(path), read_only=True) as connection:
+            connection.execute("SET TimeZone='UTC'")
+            accounts = connection.execute("SELECT account_id FROM paper_accounts").fetchall()
+            if len(accounts) != 1:
+                raise ValueError(
+                    "Expected exactly one persisted paper account for diagnostics, "
+                    f"found {len(accounts)}"
+                )
+            experiments = connection.execute(
+                "SELECT specification FROM forward_experiments WHERE status='ACTIVE'"
+            ).fetchall()
+            if len(experiments) != 1:
+                raise ValueError(
+                    "Expected exactly one persisted forward experiment for diagnostics, "
+                    f"found {len(experiments)}"
+                )
+            specification_raw = experiments[0][0]
+            try:
+                specification = (
+                    json.loads(specification_raw)
+                    if isinstance(specification_raw, str)
+                    else dict(specification_raw)
+                )
+                costs = specification["cost_assumptions"]
+                fee_rate = float(costs["fee_rate"])
+                minimum_spread_rate = float(costs["minimum_spread_rate"])
+                slippage_rate = float(costs["slippage_rate"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(
+                    "Persisted forward experiment lacks valid authoritative cost assumptions"
+                ) from error
+            if any(
+                not math.isfinite(rate) or not 0 <= rate < 1
+                for rate in (fee_rate, minimum_spread_rate, slippage_rate)
+            ):
+                raise ValueError(
+                    "Persisted forward experiment has invalid authoritative cost assumptions"
+                )
+            adoption = connection.execute(
+                "SELECT applied_at_utc FROM paper_schema_versions WHERE version=13"
+            ).fetchone()
+            if adoption is None:
+                raise ValueError(
+                    "Persisted schema lacks release-provenance adoption metadata required for diagnostics"
+                )
+            quote_skews = connection.execute(
+                """
+                SELECT DISTINCT q.max_timestamp_skew_seconds
+                FROM paper_quote_coherence_context q
+                JOIN paper_runs r ON r.run_id=q.run_id
+                WHERE r.mode='PAPER' AND r.official_scheduled AND r.status='EXECUTED'
+                  AND r.started_at_utc >= ?
+                """,
+                [adoption[0]],
+            ).fetchall()
+            if not quote_skews:
+                max_quote_timestamp_skew_seconds = None
+            elif (
+                len(quote_skews) != 1
+                or quote_skews[0][0] is None
+                or int(quote_skews[0][0]) <= 0
+            ):
+                raise ValueError(
+                    "Persisted quote-coherence evidence is ambiguous or invalid for diagnostics"
+                )
+            else:
+                max_quote_timestamp_skew_seconds = int(quote_skews[0][0])
+        return cls.open_existing_read_only(
+            path,
+            account_id=str(accounts[0][0]),
+            quantity_tolerance=CURRENT_LEDGER_QUANTITY_TOLERANCE,
+            fee_rate=fee_rate,
+            minimum_spread_rate=minimum_spread_rate,
+            slippage_rate=slippage_rate,
+            max_quote_timestamp_skew_seconds=max_quote_timestamp_skew_seconds,
+        )
 
     @classmethod
     def reconcile_database(

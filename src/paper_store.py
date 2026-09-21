@@ -155,9 +155,14 @@ class PaperStore:
                     else dict(specification_raw)
                 )
                 costs = specification["cost_assumptions"]
-                fee_rate = float(costs["fee_rate"])
-                minimum_spread_rate = float(costs["minimum_spread_rate"])
-                slippage_rate = float(costs["slippage_rate"])
+                raw_costs = (
+                    costs["fee_rate"],
+                    costs["minimum_spread_rate"],
+                    costs["slippage_rate"],
+                )
+                if any(type(rate) not in (int, float) for rate in raw_costs):
+                    raise TypeError
+                fee_rate, minimum_spread_rate, slippage_rate = map(float, raw_costs)
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError(
                     "Persisted forward experiment lacks valid authoritative cost assumptions"

@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -649,6 +650,38 @@ def test_diagnostic_context_reads_persisted_quote_coherence_setting(tmp_path):
     store = PaperStore.open_diagnostic_read_only(database)
 
     assert store.max_quote_timestamp_skew_seconds == 30
+
+
+@pytest.mark.parametrize("mode", ["--status", "--reconcile", "--kill-switch-status"])
+@pytest.mark.parametrize("value", [False, "0.001"])
+def test_diagnostics_reject_non_numeric_persisted_cost_metadata(tmp_path, mode, value):
+    root, database = _diagnostic_database(tmp_path)
+    with duckdb.connect(str(database)) as connection:
+        specification = json.loads(
+            connection.execute("SELECT specification FROM forward_experiments").fetchone()[0]
+        )
+        specification["cost_assumptions"]["fee_rate"] = value
+        connection.execute(
+            "UPDATE forward_experiments SET specification=?",
+            [json.dumps(specification, sort_keys=True)],
+        )
+    environment = os.environ.copy()
+    environment["HCL_PAPER_DATABASE"] = str(database)
+    before = _persistent_file_state(database)
+
+    completed = subprocess.run(
+        [sys.executable, str(root / "run_paper.py"), mode],
+        cwd=root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "authoritative cost assumptions" in completed.stderr
+    assert _persistent_file_state(database) == before
 
 
 @pytest.mark.parametrize("mode", ["--status", "--reconcile", "--kill-switch-status"])

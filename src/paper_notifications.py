@@ -314,7 +314,7 @@ class NotificationService:
         """Deliver a committed monthly report through the same durable outbox."""
         with self.store.connect(read_only=True) as connection:
             row = connection.execute(
-                "SELECT target, report_path, status, report_sha256 "
+                "SELECT target, report_path, status, report_sha256, notification_kind "
                 "FROM paper_notifications WHERE run_id=?",
                 [notification_id],
             ).fetchone()
@@ -336,7 +336,11 @@ class NotificationService:
                     "NULL, ?, 'MONTHLY')",
                     [notification_id, self.target, str(report_path), now, now, report_sha256],
                 )
-            row = (self.target, str(report_path), "PENDING", report_sha256)
+            row = (self.target, str(report_path), "PENDING", report_sha256, "MONTHLY")
+        if row[4] != "MONTHLY":
+            raise NotificationError(
+                f"Notification for run {notification_id} is not a MONTHLY notification"
+            )
         if row[2] == "DELIVERED":
             return {"ok": True, "already_delivered": True}
         if row[2] in {"SENDING", "DELIVERY_UNKNOWN"}:

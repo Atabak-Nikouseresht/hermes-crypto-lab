@@ -925,14 +925,7 @@ def test_sample_notification_cli_writes_paper_only_report_and_delivers(
 
 
 def test_resend_cli_only_retries_existing_notification(monkeypatch, tmp_path, capsys):
-    root = Path(__file__).resolve().parents[1]
-    config, values = run_paper.load_paper_configuration(root)
-    settings = SimpleNamespace(project_root=root, logs_dir=tmp_path, log_level="INFO")
     resent = []
-
-    @contextmanager
-    def open_fake(**_kwargs):
-        yield SimpleNamespace(store=object())
 
     class FakeNotifications:
         def __init__(self, *_args, **_kwargs):
@@ -941,11 +934,8 @@ def test_resend_cli_only_retries_existing_notification(monkeypatch, tmp_path, ca
         def resend(self, run_id):
             resent.append(run_id)
 
-    monkeypatch.setattr(run_paper, "load_settings", lambda: settings)
-    monkeypatch.setattr(run_paper, "load_paper_configuration", lambda _root: (config, values))
-    monkeypatch.setattr(run_paper, "configure_logging", lambda *_args: None)
-    monkeypatch.setattr(run_paper, "_verify_research_lock", lambda *_args: "verified")
-    monkeypatch.setattr(run_paper, "open_locked_system", open_fake)
+    monkeypatch.setattr(run_paper, "diagnostic_project_root", lambda: tmp_path)
+    monkeypatch.setattr(PaperStore, "open_notification_store", lambda _path: object())
     monkeypatch.setattr(run_paper, "NotificationService", FakeNotifications)
     monkeypatch.setattr(sys, "argv", ["run_paper.py", "--resend", "committed-run"])
 

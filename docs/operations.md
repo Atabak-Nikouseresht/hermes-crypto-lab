@@ -42,6 +42,14 @@ confirmed sender failure transitions that attempt to `FAILED` and permits retry.
 Because Telegram does not provide an externally enforced idempotency key or a
 transaction shared with DuckDB, a process interruption while `SENDING` is
 ambiguous: automatic resend is refused and explicit manual recovery is required.
+`SENDING` is always shown as potentially ambiguous; a timeout or caught process
+interruption is persisted as `DELIVERY_UNKNOWN`. Status is read-only and reports
+counts for `PENDING`, `SENDING`, `DELIVERY_UNKNOWN`, `FAILED`, and `DELIVERED`.
+Every new outbox row stores the report SHA-256, checked before initial delivery
+and every retry; legacy rows without a digest fail closed and are not backfilled.
+Legacy notifications without a digest cannot be delivered by `--resend`; preserve
+their record and handle any required external notification through a separately
+audited operator process rather than assigning a hash to historical bytes.
 This is ambiguity-safe at-least-once delivery, not exactly-once delivery.
 
 `forward_experiment/scheduler_manifest.json` is the portable static contract:
@@ -82,6 +90,20 @@ This may create operational `MISSED_SCHEDULE` evidence. It must not fetch market
 ```
 
 This retries only an already-committed report. It cannot rerun strategy or paper execution.
+It opens only an existing compatible notification database and does not migrate,
+recover, or initialize trading state. `SENDING` and `DELIVERY_UNKNOWN` require an
+explicit operator decision; for example:
+
+```bash
+.venv/Scripts/python.exe run_paper.py --recover-notification RUN_ID \
+  --resolution not-delivered --operator "operator-id" --reason "provider logs confirm no delivery"
+```
+
+Choose `--resolution delivered` when delivery is confirmed, `not-delivered` only
+when evidence supports a safe retry, or `unknown` to leave it blocked. Each
+decision is written to the notification audit log; this command never sends or
+executes a trade. Stale `SENDING` rows are treated as ambiguous without relying
+on a clock or configurable threshold.
 
 ## Monthly reporting
 
@@ -109,7 +131,10 @@ is written only after pair validation. Retries reuse a valid committed pair;
 uncommitted partial output is recovered only when it matches the deterministic
 forward-only report, while hash or marker corruption fails closed. Telegram is
 called only after this completion check and monthly recovery never changes paper
-trading state.
+trading state. Monthly Telegram delivery uses the same durable notification
+outbox and report digest. A rerun reuses a committed report and existing
+notification; delivered rows are no-ops, while ambiguous rows require the
+explicit recovery action above.
 On platforms with directory `fsync` support, each published entry is synced
 before the next publication; an orphaned valid marker is recoverable only when
 regenerated pair hashes match its declared hashes.

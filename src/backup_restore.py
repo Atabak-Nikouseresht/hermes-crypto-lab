@@ -6,12 +6,13 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import tempfile
 from typing import Any
 
 import duckdb
 
 from src.forward_operations import InterProcessLock
-from src.paper_store import PaperStore
+from src.paper_store import CURRENT_SCHEMA_VERSION, PaperStore
 
 
 DEFAULT_RECONCILIATION_SETTINGS = {
@@ -35,6 +36,7 @@ def _sha256(path: Path) -> str:
 def _database_checks(
     database_path: Path, reconciliation_settings: dict[str, Any]
 ) -> dict[str, Any]:
+    PaperStore.assert_supported_schema(database_path)
     with duckdb.connect(str(database_path), read_only=True) as connection:
         connection.execute("SET TimeZone='UTC'")
         tables = sorted(row[0] for row in connection.execute("SHOW TABLES").fetchall())
@@ -111,42 +113,58 @@ def create_verified_backup(
 ) -> Path:
     project_root = Path(project_root).resolve()
     database_path = Path(database_path).resolve()
+    if not database_path.is_file():
+        raise ValueError(f"backup source must be an existing regular file: {database_path}")
+    PaperStore.assert_supported_schema(database_path)
     reconciliation_settings = {
         **DEFAULT_RECONCILIATION_SETTINGS,
         **(reconciliation_settings or {}),
     }
     backup_dir = Path(output_root).resolve() / timestamp
-    backup_dir.mkdir(parents=True, exist_ok=False)
+    if backup_dir.exists():
+        raise FileExistsError(f"backup destination already exists: {backup_dir}")
     with InterProcessLock(lock_path, timeout_seconds=10, command_name="forward-backup"):
+        if backup_dir.exists():
+            raise FileExistsError(f"backup destination already exists: {backup_dir}")
+        # The source may have changed while waiting for the writer lock.
+        PaperStore.assert_supported_schema(database_path)
         with duckdb.connect(str(database_path)) as connection:
             connection.execute("CHECKPOINT")
-        copied_database = backup_dir / "paper_trading.duckdb"
-        shutil.copy2(database_path, copied_database)
-        for relative in ("forward_experiment", "reports/paper", "reports/forward_monthly"):
-            source = project_root / relative
-            if source.exists():
-                shutil.copytree(source, backup_dir / relative, dirs_exist_ok=False)
-        checksums = {}
-        for path in sorted(backup_dir.rglob("*")):
-            if path.is_file():
-                checksums[str(path.relative_to(backup_dir)).replace("\\", "/")] = _sha256(path)
-        db_checks = _database_checks(copied_database, reconciliation_settings)
-        manifest = {
-            "backup_timestamp": timestamp,
-            "commit_hash": commit_hash,
-            "schema_version": db_checks["schema_version"],
-            "checksums": checksums,
-            "database_checks": db_checks,
-            "reconciliation_settings": reconciliation_settings,
-            "secrets_included": False,
-            "retention_policy": "non-destructive; deletion requires explicit human approval",
-        }
-        manifest_path = backup_dir / "backup_manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-        (backup_dir / "backup_manifest.sha256").write_text(
-            f"{_sha256(manifest_path)}  backup_manifest.json\n", encoding="ascii"
-        )
-    verify_backup(backup_dir)
+        backup_dir.parent.mkdir(parents=True, exist_ok=True)
+        # A same-filesystem staging directory keeps partial copies unpublished;
+        # its context removes all staged artifacts on copy or verification errors.
+        with tempfile.TemporaryDirectory(prefix=".forward-backup-", dir=backup_dir.parent) as temporary:
+            staging_dir = Path(temporary)
+            copied_database = staging_dir / "paper_trading.duckdb"
+            shutil.copy2(database_path, copied_database)
+            for relative in ("forward_experiment", "reports/paper", "reports/forward_monthly"):
+                source = project_root / relative
+                if source.exists():
+                    shutil.copytree(source, staging_dir / relative, dirs_exist_ok=False)
+            checksums = {}
+            for path in sorted(staging_dir.rglob("*")):
+                if path.is_file():
+                    checksums[str(path.relative_to(staging_dir)).replace("\\", "/")] = _sha256(path)
+            db_checks = _database_checks(copied_database, reconciliation_settings)
+            manifest = {
+                "backup_timestamp": timestamp,
+                "commit_hash": commit_hash,
+                "schema_version": db_checks["schema_version"],
+                "checksums": checksums,
+                "database_checks": db_checks,
+                "reconciliation_settings": reconciliation_settings,
+                "secrets_included": False,
+                "retention_policy": "non-destructive; deletion requires explicit human approval",
+            }
+            manifest_path = staging_dir / "backup_manifest.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+            (staging_dir / "backup_manifest.sha256").write_text(
+                f"{_sha256(manifest_path)}  backup_manifest.json\n", encoding="ascii"
+            )
+            verify_backup(staging_dir)
+            if backup_dir.exists():
+                raise FileExistsError(f"backup destination already exists: {backup_dir}")
+            staging_dir.rename(backup_dir)
     return backup_dir
 
 
@@ -161,6 +179,12 @@ def verify_backup(backup_dir: Path) -> dict[str, Any]:
     sidecar_expected = (backup_dir / "backup_manifest.sha256").read_text(encoding="ascii").split()[0]
     if _sha256(manifest_path) != sidecar_expected:
         raise ValueError("backup manifest checksum mismatch")
+    manifest_schema_version = manifest.get("schema_version")
+    if type(manifest_schema_version) is int and manifest_schema_version > CURRENT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported future backup schema version {manifest_schema_version}; "
+            f"maximum supported is {CURRENT_SCHEMA_VERSION}"
+        )
     reconciliation_settings = {
         **DEFAULT_RECONCILIATION_SETTINGS,
         **manifest.get("reconciliation_settings", {}),

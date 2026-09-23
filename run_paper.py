@@ -276,6 +276,12 @@ def _status(store: PaperStore) -> dict:
             "(SELECT COUNT(*) FROM forward_incidents WHERE resolved_at_utc IS NULL), "
             "(SELECT COUNT(*) FROM paper_notifications WHERE status='FAILED')"
         ).fetchone()
+        notifications = dict.fromkeys(
+            ("PENDING", "SENDING", "DELIVERY_UNKNOWN", "FAILED", "DELIVERED"), 0
+        )
+        notifications.update(dict(connection.execute(
+            "SELECT status, COUNT(*) FROM paper_notifications GROUP BY status"
+        ).fetchall()))
     return {
         "account": account,
         "positions": positions,
@@ -283,6 +289,9 @@ def _status(store: PaperStore) -> dict:
         "fills": int(counts[1]),
         "open_forward_incidents": int(counts[2]),
         "failed_notifications": int(counts[3]),
+        "notifications": notifications,
+        # All SENDING is potentially ambiguous, without a clock/config threshold.
+        "ambiguous_notifications": notifications["SENDING"] + notifications["DELIVERY_UNKNOWN"],
         "reconciliation": {
             "valid": reconciliation.valid,
             "message": reconciliation.message,
@@ -309,6 +318,10 @@ def main() -> None:
         help="Record every missing window since forward start; no market fetch",
     )
     mode.add_argument("--resend", metavar="RUN_ID", help="Retry Telegram only; never execute strategy")
+    mode.add_argument(
+        "--recover-notification", metavar="RUN_ID",
+        help="Record an operator resolution of ambiguous delivery; never send or trade",
+    )
     mode.add_argument("--status", action="store_true", help="Print persistent forward status as JSON")
     mode.add_argument("--reconcile", action="store_true", help="Run reconciliation only")
     mode.add_argument(
@@ -322,7 +335,42 @@ def main() -> None:
         help="Send a sample report without fetching data or changing paper state",
     )
     parser.add_argument("--telegram-target", default=None)
+    parser.add_argument("--resolution", choices=("unknown", "delivered", "not-delivered"))
+    parser.add_argument("--operator", help="Identity of the operator resolving delivery")
+    parser.add_argument("--reason", help="Evidence/reason for the explicit delivery resolution")
     args = parser.parse_args()
+
+    if args.recover_notification:
+        if not all(value and value.strip() for value in (args.resolution, args.operator, args.reason)):
+            parser.error("--recover-notification requires --resolution, --operator and --reason")
+    elif any(value is not None for value in (args.resolution, args.operator, args.reason)):
+        parser.error("--resolution, --operator and --reason require --recover-notification")
+
+    if args.resend or args.recover_notification:
+        try:
+            root = diagnostic_project_root()
+            database_path = diagnostic_paper_database_path(root)
+            # Preflight before even creating the writer-lock directory; reopen
+            # under the lock so no writable connection can bypass compatibility.
+            PaperStore.open_notification_store(database_path)
+            with InterProcessLock(
+                root / "runtime" / "forward_writer.lock", timeout_seconds=5,
+                command_name="notification-recovery" if args.recover_notification else "telegram-resend",
+            ):
+                store = PaperStore.open_notification_store(database_path)
+                service = NotificationService(store, target="", sender=HermesTelegramSender())
+                if args.recover_notification:
+                    service.recover(
+                        args.recover_notification, resolution=args.resolution,
+                        operator=args.operator, reason=args.reason,
+                    )
+                    print(f"Notification resolution recorded for {args.recover_notification}; no delivery or strategy execution")
+                else:
+                    service.resend(args.resend)
+                    print(f"Notification resent for run {args.resend}; strategy was not executed")
+            return
+        except Exception as error:
+            parser.error(f"Unable to perform notification-only action: {error}")
 
     if args.status or args.reconcile or args.kill_switch_status:
         try:
@@ -386,20 +434,7 @@ def main() -> None:
             system.store.reset_kill_switch(now=datetime.now(timezone.utc))
         print("Paper-trading kill switch reset after successful reconciliation")
         return
-    if args.resend:
-        with open_locked_system(
-            database_path=database_path,
-            config=config,
-            project_root=settings.project_root,
-            lock_path=writer_lock,
-            command_name="telegram-resend",
-        ) as system:
-            service = NotificationService(
-                system.store, target="", sender=HermesTelegramSender()
-            )
-            service.resend(args.resend)
-        print(f"Notification resent for run {args.resend}; strategy was not executed")
-        return
+
     if args.sample_telegram:
         telegram_target = resolve_telegram_target(args.telegram_target)
         path = _send_sample(telegram_target, reports_dir, config)

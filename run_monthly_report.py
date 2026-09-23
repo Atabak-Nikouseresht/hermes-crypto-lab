@@ -20,7 +20,7 @@ from src.forward_monthly import (
     is_monthly_report_committed,
 )
 from src.forward_operations import record_missed_windows
-from src.paper_notifications import HermesTelegramSender
+from src.paper_notifications import HermesTelegramSender, NotificationService
 
 
 def main() -> None:
@@ -64,10 +64,13 @@ def main() -> None:
         if not is_monthly_report_committed(output_dir, period):
             raise RuntimeError("Monthly report is not committed; Telegram delivery is blocked")
         report_path = result["report_path"]
-        telegram_target = os.getenv("HCL_TELEGRAM_TARGET")
-        if not telegram_target:
-            raise ValueError("Monthly delivery requires HCL_TELEGRAM_TARGET")
-        HermesTelegramSender()(telegram_target, Path(report_path))
+        # Existing outbox rows own their destination, even without a current env target.
+        # NotificationService validates a target before registering a new monthly row.
+        telegram_target = os.getenv("HCL_TELEGRAM_TARGET") or ""
+        notification_id = f'monthly:{governance["experiment_id"]}:{period}'
+        NotificationService(
+            system.store, target=telegram_target, sender=HermesTelegramSender()
+        ).send_committed_monthly(notification_id, Path(report_path))
         print(f"Forward-only monthly report delivered: {report_path}")
 
 

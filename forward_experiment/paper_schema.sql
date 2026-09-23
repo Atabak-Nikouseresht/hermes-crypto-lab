@@ -29,6 +29,9 @@ CREATE TABLE forward_schedule_windows(schedule_key VARCHAR PRIMARY KEY, schedule
 -- notification_attempts
 CREATE TABLE notification_attempts(attempt_id VARCHAR PRIMARY KEY, run_id VARCHAR NOT NULL, attempted_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, status VARCHAR NOT NULL, "error" VARCHAR);;
 
+-- notification_audit_events
+CREATE TABLE notification_audit_events(event_id VARCHAR PRIMARY KEY, run_id VARCHAR NOT NULL, attempt_id VARCHAR, resolution VARCHAR NOT NULL, operator VARCHAR NOT NULL, reason VARCHAR NOT NULL, previous_status VARCHAR NOT NULL, new_status VARCHAR NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
+
 -- paper_accounts
 CREATE TABLE paper_accounts(account_id VARCHAR PRIMARY KEY, initial_cash DOUBLE NOT NULL, cash DOUBLE NOT NULL, status VARCHAR NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, updated_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
 
@@ -66,7 +69,7 @@ CREATE TABLE paper_incidents(incident_id VARCHAR PRIMARY KEY, run_id VARCHAR, ac
 CREATE TABLE paper_legacy_order_semantics(order_id VARCHAR PRIMARY KEY, preserved_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, execution_protocol_version VARCHAR);;
 
 -- paper_notifications
-CREATE TABLE paper_notifications(run_id VARCHAR PRIMARY KEY, "target" VARCHAR NOT NULL, report_path VARCHAR NOT NULL, status VARCHAR NOT NULL, attempt_count INTEGER NOT NULL, last_error VARCHAR, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, updated_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, delivered_at_utc TIMESTAMP WITH TIME ZONE);;
+CREATE TABLE paper_notifications(run_id VARCHAR PRIMARY KEY, "target" VARCHAR NOT NULL, report_path VARCHAR NOT NULL, status VARCHAR NOT NULL, attempt_count INTEGER NOT NULL, last_error VARCHAR, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, updated_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, delivered_at_utc TIMESTAMP WITH TIME ZONE, report_sha256 VARCHAR, notification_kind VARCHAR DEFAULT 'PAPER' NOT NULL);;
 
 -- paper_order_rejections
 CREATE TABLE paper_order_rejections(run_id VARCHAR NOT NULL, rejection_index INTEGER NOT NULL, symbol VARCHAR NOT NULL, side VARCHAR NOT NULL, stage VARCHAR NOT NULL, reason VARCHAR NOT NULL, notional DOUBLE NOT NULL, rejected_at_utc TIMESTAMP WITH TIME ZONE NOT NULL, requested_quantity DOUBLE, target_weight DOUBLE, idempotency_key VARCHAR, PRIMARY KEY(run_id, rejection_index));;
@@ -90,4 +93,4 @@ CREATE TABLE paper_schema_versions("version" INTEGER PRIMARY KEY, applied_at_utc
 CREATE TABLE position_ledger(event_id VARCHAR PRIMARY KEY, run_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL, symbol VARCHAR NOT NULL, quantity_delta DOUBLE NOT NULL, quantity_after DOUBLE NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
 
 -- schema versions
-[(2, 'forward paper operations'), (3, 'forward baseline and monthly benchmark alignment'), (4, 'experiment-scoped windows and incidents'), (5, 'versioned ask-bid execution context'), (6, 'final executable order quantity ledger semantics'), (7, 'explicit preservation of pre-adoption ledger semantics'), (8, 'persist proposal and final execution rejection diagnostics'), (9, 'persist run-attributable paper order rejection audit trail'), (10, 'atomically persist forward execution evidence'), (11, 'explicit execution outcomes and post-execution deviation audit'), (12, 'quote coherence provenance and legacy v5 normalization'), (13, 'per-forward-run release provenance'), (14, 'retryable forward admission attempt schedule identity'), (15, 'official schedule nullability parity'), (16, 'prospective Binance market-rule evidence'), (17, 'prospective market-rule acquisition and admission evidence v2'), (18, 'prospective Binance executionRules PRICE_RANGE evidence')]
+[(2, 'forward paper operations'), (3, 'forward baseline and monthly benchmark alignment'), (4, 'experiment-scoped windows and incidents'), (5, 'versioned ask-bid execution context'), (6, 'final executable order quantity ledger semantics'), (7, 'explicit preservation of pre-adoption ledger semantics'), (8, 'persist proposal and final execution rejection diagnostics'), (9, 'persist run-attributable paper order rejection audit trail'), (10, 'atomically persist forward execution evidence'), (11, 'explicit execution outcomes and post-execution deviation audit'), (12, 'quote coherence provenance and legacy v5 normalization'), (13, 'per-forward-run release provenance'), (14, 'retryable forward admission attempt schedule identity'), (15, 'official schedule nullability parity'), (16, 'prospective Binance market-rule evidence'), (17, 'prospective market-rule acquisition and admission evidence v2'), (18, 'prospective Binance executionRules PRICE_RANGE evidence'), (19, 'prospective notification report integrity and manual recovery audit')]

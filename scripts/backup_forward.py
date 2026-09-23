@@ -32,10 +32,10 @@ def main() -> None:
     verify.add_argument("backup_dir")
     args = parser.parse_args()
 
-    settings = load_settings()
-    config, values = load_paper_configuration(settings.project_root)
-    database_path, _reports = _project_paths(settings.project_root, values)
     if args.command == "create":
+        settings = load_settings()
+        config, values = load_paper_configuration(settings.project_root)
+        database_path, _reports = _project_paths(settings.project_root, values)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -79,7 +79,6 @@ def main() -> None:
                 "verification": verification,
                 "temporary_restore_valid": restore["valid"],
                 "production_database_untouched": restore["production_database_untouched"],
-                "locked_candidate": config.locked_candidate_id,
             },
             indent=2,
             sort_keys=True,

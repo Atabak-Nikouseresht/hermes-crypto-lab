@@ -120,7 +120,7 @@ def test_process_interruption_after_durable_send_claim_preserves_ambiguous_deliv
         trades = connection.execute(
             "SELECT (SELECT COUNT(*) FROM paper_orders), (SELECT COUNT(*) FROM paper_fills)"
         ).fetchone()
-    assert state[:2] == ("SENDING", 1)
+    assert state[:2] == ("DELIVERY_UNKNOWN", 1)
     assert state[2] == str(report.resolve())
     assert trades == (0, 0)
     assert externally_sent == [("telegram:test-target", report.resolve())]
@@ -140,8 +140,13 @@ def test_resend_allows_only_retryable_notification_states(tmp_path, status):
             [now, now],
         )
         connection.execute(
-            "INSERT INTO paper_notifications VALUES (?, ?, ?, ?, 0, NULL, ?, ?, NULL)",
-            ["retryable", "telegram:test", str(report.resolve()), status, now, now],
+            "INSERT INTO paper_notifications (run_id, target, report_path, status, attempt_count, "
+            "last_error, created_at_utc, updated_at_utc, delivered_at_utc, report_sha256, "
+            "notification_kind) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, NULL, ?, 'PAPER')",
+            [
+                "retryable", "telegram:test", str(report.resolve()), status, now, now,
+                NotificationService._report_sha256(report),
+            ],
         )
     sent = []
     service = NotificationService(
@@ -168,8 +173,13 @@ def test_resend_refuses_delivered_notification_without_sending(tmp_path):
             [now, now],
         )
         connection.execute(
-            "INSERT INTO paper_notifications VALUES (?, ?, ?, 'DELIVERED', 1, NULL, ?, ?, ?)",
-            ["delivered", "telegram:test", str(report.resolve()), now, now, now],
+            "INSERT INTO paper_notifications (run_id, target, report_path, status, attempt_count, "
+            "last_error, created_at_utc, updated_at_utc, delivered_at_utc, report_sha256, "
+            "notification_kind) VALUES (?, ?, ?, 'DELIVERED', 1, NULL, ?, ?, ?, ?, 'PAPER')",
+            [
+                "delivered", "telegram:test", str(report.resolve()), now, now, now,
+                NotificationService._report_sha256(report),
+            ],
         )
     sent = []
     service = NotificationService(system.store, target="", sender=lambda *args: sent.append(args))

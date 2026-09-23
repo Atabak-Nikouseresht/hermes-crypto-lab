@@ -144,7 +144,7 @@ def test_fresh_schema_has_unambiguous_v5_and_release_provenance_snapshot(tmp_pat
             for row in connection.execute("PRAGMA table_info('paper_run_release_provenance')").fetchall()
         }
 
-    assert set(versions) == set(range(2, 19))
+    assert set(versions) == set(range(2, 20))
     assert versions[5] == V5_EXECUTION
     assert versions[12] == V12_QUOTE
     assert versions[13] == V13_RELEASE
@@ -366,9 +366,11 @@ def test_real_v15_migration_preserves_history_and_is_idempotent(tmp_path):
                 (16, V16_MARKET_RULES),
                 (17, "prospective market-rule acquisition and admission evidence v2"),
                 (18, V18_PRICE_RANGE),
+                (19, "prospective notification report integrity and manual recovery audit"),
             ]
             current_tables = _schema_tables(connection)
             assert current_tables == tables | {
+                "notification_audit_events",
                 "paper_market_rule_evidence",
                 "paper_execution_rules_evidence",
                 "paper_price_range_decisions",
@@ -413,7 +415,7 @@ def test_fresh_runtime_schema_structurally_matches_checked_in_snapshot(tmp_path,
             for table in tables:
                 assert _schema_structure(runtime, table) == _schema_structure(canonical, table), table
             runtime_versions = dict(runtime.execute("SELECT version, description FROM paper_schema_versions").fetchall())
-            assert set(runtime_versions) == set(range(2, 19))
+            assert set(runtime_versions) == set(range(2, 20))
             assert runtime_versions[15] == V15_OFFICIAL_SCHEDULE
             assert runtime_versions[16] == V16_MARKET_RULES
             assert runtime_versions[18] == V18_PRICE_RANGE

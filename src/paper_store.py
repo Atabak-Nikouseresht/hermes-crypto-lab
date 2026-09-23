@@ -28,6 +28,7 @@ BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v2
 _LEGACY_BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v1"
 BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION = "binance-execution-rules-evidence-v1-price-range"
 CURRENT_LEDGER_QUANTITY_TOLERANCE = 1e-12
+CURRENT_SCHEMA_VERSION = 19
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,27 @@ class PaperStore:
             )
             return reference * multiplier
 
+    @staticmethod
+    def assert_supported_schema(path: Path) -> int | None:
+        """Read-only preflight; legacy unversioned databases remain migratable."""
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Paper database does not exist: {path}")
+        with duckdb.connect(str(path), read_only=True) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='main' AND table_name='paper_schema_versions'"
+            ).fetchone()
+            if exists is None:
+                return None
+            version = connection.execute("SELECT MAX(version) FROM paper_schema_versions").fetchone()[0]
+            if version is not None and version > CURRENT_SCHEMA_VERSION:
+                raise ValueError(
+                    f"Unsupported future paper schema version {version}; "
+                    f"maximum supported is {CURRENT_SCHEMA_VERSION}"
+                )
+            return version
+
     def __init__(
         self,
         path: Path,
@@ -84,6 +106,8 @@ class PaperStore:
         max_quote_timestamp_skew_seconds: int = 30,
     ):
         self.path = Path(path)
+        if self.path.exists():
+            self.assert_supported_schema(self.path)
         self.account_id = account_id
         self.quantity_tolerance = quantity_tolerance
         self.fee_rate = fee_rate
@@ -100,6 +124,49 @@ class PaperStore:
         return connection
 
     @classmethod
+    def open_notification_store(cls, path: Path) -> PaperStore:
+        """Bind only existing notification state; never migrate/bootstrap/recover."""
+        path = Path(path)
+        version = cls.assert_supported_schema(path)
+        if version != CURRENT_SCHEMA_VERSION:
+            raise ValueError(
+                f"Incompatible notification schema {version}; requires {CURRENT_SCHEMA_VERSION}. "
+                "Run the normal schema migration explicitly before notification-only operations."
+            )
+        required = {
+            "paper_notifications": {
+                "run_id": "VARCHAR", "target": "VARCHAR", "report_path": "VARCHAR",
+                "status": "VARCHAR", "attempt_count": "INTEGER", "last_error": "VARCHAR",
+                "created_at_utc": "TIMESTAMP WITH TIME ZONE", "updated_at_utc": "TIMESTAMP WITH TIME ZONE",
+                "delivered_at_utc": "TIMESTAMP WITH TIME ZONE", "report_sha256": "VARCHAR",
+                "notification_kind": "VARCHAR",
+            },
+            "notification_attempts": {
+                "attempt_id": "VARCHAR", "run_id": "VARCHAR", "attempted_at_utc": "TIMESTAMP WITH TIME ZONE",
+                "status": "VARCHAR", "error": "VARCHAR",
+            },
+            "notification_audit_events": {
+                "event_id": "VARCHAR", "run_id": "VARCHAR", "attempt_id": "VARCHAR",
+                "resolution": "VARCHAR", "operator": "VARCHAR", "reason": "VARCHAR",
+                "previous_status": "VARCHAR", "new_status": "VARCHAR",
+                "created_at_utc": "TIMESTAMP WITH TIME ZONE",
+            },
+            "paper_runs": {"run_id": "VARCHAR", "status": "VARCHAR", "completed_at_utc": "TIMESTAMP WITH TIME ZONE"},
+        }
+        with duckdb.connect(str(path), read_only=True) as connection:
+            for table, columns in required.items():
+                actual = dict(connection.execute(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema='main' AND table_name=?", [table]
+                ).fetchall())
+                if any(actual.get(name) != kind for name, kind in columns.items()):
+                    raise ValueError(f"Incompatible notification schema: {table}")
+        store = cls.__new__(cls)
+        store.path = path
+        store._notification_only = True
+        return store
+
+    @classmethod
     def open_existing_read_only(
         cls,
         path: Path,
@@ -113,6 +180,7 @@ class PaperStore:
     ) -> PaperStore:
         """Bind an existing database for inspection without initialization or recovery."""
         path = Path(path)
+        cls.assert_supported_schema(path)
         if not path.is_file():
             raise FileNotFoundError(f"Paper database does not exist: {path}")
         store = cls.__new__(cls)
@@ -125,10 +193,12 @@ class PaperStore:
         store.max_quote_timestamp_skew_seconds = max_quote_timestamp_skew_seconds
         return store
 
+
     @classmethod
     def open_diagnostic_read_only(cls, path: Path) -> PaperStore:
         """Bind persisted diagnostic authority without loading active trading config."""
         path = Path(path)
+        cls.assert_supported_schema(path)
         if not path.is_file():
             raise FileNotFoundError(f"Paper database does not exist: {path}")
         with duckdb.connect(str(path), read_only=True) as connection:
@@ -433,6 +503,17 @@ class PaperStore:
                     status VARCHAR NOT NULL,
                     error VARCHAR
                 );
+                CREATE TABLE IF NOT EXISTS notification_audit_events (
+                    event_id VARCHAR PRIMARY KEY,
+                    run_id VARCHAR NOT NULL,
+                    attempt_id VARCHAR,
+                    resolution VARCHAR NOT NULL,
+                    operator VARCHAR NOT NULL,
+                    reason VARCHAR NOT NULL,
+                    previous_status VARCHAR NOT NULL,
+                    new_status VARCHAR NOT NULL,
+                    created_at_utc TIMESTAMPTZ NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS paper_execution_context (
                     run_id VARCHAR NOT NULL,
                     symbol VARCHAR NOT NULL,
@@ -672,6 +753,24 @@ class PaperStore:
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES (18, ?, 'prospective Binance executionRules PRICE_RANGE evidence')",
                 [now],
             )
+            # Prospective evidence only: historical report hashes remain NULL.
+            connection.execute(
+                "ALTER TABLE paper_notifications ADD COLUMN IF NOT EXISTS report_sha256 VARCHAR"
+            )
+            connection.execute(
+                "ALTER TABLE paper_notifications ADD COLUMN IF NOT EXISTS notification_kind VARCHAR DEFAULT 'PAPER'"
+            )
+            connection.execute(
+                "ALTER TABLE paper_notifications ALTER COLUMN notification_kind SET DEFAULT 'PAPER'"
+            )
+            connection.execute(
+                "ALTER TABLE paper_notifications ALTER COLUMN notification_kind SET NOT NULL"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_schema_versions VALUES "
+                "(?, ?, 'prospective notification report integrity and manual recovery audit')",
+                [CURRENT_SCHEMA_VERSION, now],
+            )
             schema_v6 = connection.execute(
                 "SELECT 1 FROM paper_schema_versions WHERE version=6"
             ).fetchone()
@@ -780,6 +879,7 @@ class PaperStore:
         }
 
     def reconcile(self, tolerance: float = 1e-7) -> ReconciliationResult:
+        self.assert_supported_schema(self.path)
         with self.connect(read_only=True) as connection:
             if connection.execute(
                 "SELECT COUNT(*) FROM paper_runs WHERE official_scheduled IS NULL"

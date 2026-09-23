@@ -22,7 +22,7 @@
     "docs/forward-validation.md": "e69b83d10c6a134d9a54260a381250278b2de41230d51d277b2f87b83fc584f1",
     "docs/governance.md": "41ff48b95108701a91fa7a861214248f47d3368177140e7d71c97eae84a2a090",
     "docs/methodology.md": "3df6f946712ff2640a3553f4ea6eea7b1822a92c6a20d86390f8fef55be5ce13",
-    "docs/operations.md": "038aad470b9eb427ad63eb6b27cd0a195f1b959cba18f43bac0bd896980ed9e4",
+    "docs/operations.md": "4a68db244b1ab58bf8499994056449b2473ebe68446e70cdcb55ee2ccd4dbf2e",
     "docs/public-history-rewrite.md": "e1f5f8f60fc13d231287af5244a203595ac4f2f0bfc13a142e69de576cd2a254",
     "docs/repository-policy.md": "1aeba452d3438ddf3c42c997cf3428acb62e0fe70ffce4d100f537f0c68f4499",
     "docs/testing.md": "4f46a93bcb619cb2b49eca97bfb2fd01d5ed1f6c2b0f3b69393054d39c149613",
@@ -87,7 +87,7 @@
     "src/paper_broker.py": "6a9bdd98cdfa8a34051ee583ef3fca1037b2712f80bf1f7687e34dc717739f72",
     "src/paper_forward.py": "5b892c40f2bd950976e9d25f333df704e978bed1bf77485ad9fe81e41b58a961",
     "src/paper_market.py": "d280e0898b80cc6d94ce93a7d86b9861ac87933d1956b6b065251b47c2f786ed",
-    "src/paper_notifications.py": "40c0ff85d9b2f0002e55e8ae3b713b8e7e0c15f2cc07348abc7e0352f45792d1",
+    "src/paper_notifications.py": "77aefe4ae4288e94c1c2b066286c27d614f6afea3ffc4de8262a382f49867852",
     "src/paper_report.py": "dd89846992e5acd645959143e76a2903eabbfad4c7bf3e8e5931cff93e5c568b",
     "src/paper_store.py": "e9f9d17d6d7bee0210623a5be6ad4efb8ba851dcbfad413d91e74cb697b467e8",
     "src/portfolio.py": "89e393c466d7850eec5f2d82b2944d8bc6871c12952cf5779baa33d7a5985a02",
@@ -113,7 +113,7 @@
     "tests/test_statistical_diagnostics.py": "50fdf41340ed5f4df67bbaa3db7bbacbc6cbc224ef6d9fce113ab849651f6ac6"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-23T21:13:57.834920+00:00",
+  "generated_at_utc": "2026-09-23T22:08:39.408798+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

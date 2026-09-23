@@ -17,6 +17,10 @@ class NotificationError(RuntimeError):
     pass
 
 
+class NotificationDeliveryUnknown(RuntimeError):
+    """The sender failed without proving whether external delivery occurred."""
+
+
 class HermesTelegramSender:
     """Send an existing report through the configured Hermes Telegram target."""
 
@@ -42,6 +46,9 @@ class HermesTelegramSender:
         )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "unknown delivery error").strip()
+            if completed.returncode != 2:
+                raise NotificationDeliveryUnknown(detail)
+            # Hermes documents exit 2 as a usage error, before any send attempt.
             raise RuntimeError(detail)
         try:
             return json.loads(completed.stdout) if completed.stdout.strip() else {"ok": True}
@@ -193,7 +200,12 @@ class NotificationService:
         attempt_id = self._claim_attempt(run_id)
         try:
             response = self.sender(target, report_path)
-        except (subprocess.TimeoutExpired, TimeoutError, ConnectionError) as error:
+        except (
+            NotificationDeliveryUnknown,
+            subprocess.TimeoutExpired,
+            TimeoutError,
+            ConnectionError,
+        ) as error:
             message = str(error) or type(error).__name__
             self._mark_unsuccessful(run_id, attempt_id, message, 'DELIVERY_UNKNOWN')
             raise NotificationError(message) from error

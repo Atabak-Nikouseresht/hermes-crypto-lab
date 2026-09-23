@@ -37,8 +37,11 @@ be reconstructed without fabrication.
 Recovery also writes a report from committed database evidence and records the
 notification as `PENDING`; `--resend RUN_ID` retries delivery only and never
 invokes market fetch, signal generation, or execution. Before the external sender
-is called, delivery atomically claims a durable `SENDING` attempt identity. A
-confirmed sender failure transitions that attempt to `FAILED` and permits retry.
+is called, delivery atomically claims a durable `SENDING` attempt identity.
+Hermes delivery/backend errors (exit code 1) and timeouts are ambiguous and become
+`DELIVERY_UNKNOWN`; only a known pre-delivery usage error (exit code 2) remains
+retryable as `FAILED`. A nonzero delivery/backend result does not prove the
+external platform rejected the message.
 Because Telegram does not provide an externally enforced idempotency key or a
 transaction shared with DuckDB, a process interruption while `SENDING` is
 ambiguous: automatic resend is refused and explicit manual recovery is required.

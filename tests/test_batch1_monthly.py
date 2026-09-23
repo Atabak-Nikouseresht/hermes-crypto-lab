@@ -186,6 +186,46 @@ def test_monthly_rerun_delegates_persisted_target_without_environment(monthly_cl
     assert calls == [(NOTIFICATION_ID, report_path)]
 
 
+def test_monthly_outbox_rejects_existing_paper_notification_id(monthly_cli):
+    result = run_monthly_report.generate_monthly_forward_report(
+        monthly_cli.store,
+        experiment_id="forward-monthly-test",
+        report_date=REPORT_DATE,
+        output_dir=monthly_cli.output_dir,
+        assets=("BTC/USDT",),
+        slippage_rate=0.0005,
+    )
+    report_path = result["report_path"].resolve()
+    with monthly_cli.store.connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_notifications "
+            "(run_id, target, report_path, status, attempt_count, created_at_utc, updated_at_utc, "
+            "notification_kind, report_sha256) "
+            "VALUES (?, ?, ?, 'PENDING', 0, ?, ?, 'PAPER', ?)",
+            [
+                NOTIFICATION_ID, TARGET, str(report_path), REPORT_DATE, REPORT_DATE,
+                hashlib.sha256(report_path.read_bytes()).hexdigest(),
+            ],
+        )
+    sent = []
+    service = NotificationService(
+        monthly_cli.store,
+        target=TARGET,
+        sender=lambda *args: sent.append(args) or {"ok": True},
+    )
+
+    with pytest.raises(NotificationError, match="not a MONTHLY notification"):
+        service.send_committed_monthly(NOTIFICATION_ID, report_path)
+
+    assert sent == []
+    with monthly_cli.store.connect(read_only=True) as connection:
+        row = connection.execute(
+            "SELECT status, attempt_count, notification_kind FROM paper_notifications WHERE run_id=?",
+            [NOTIFICATION_ID],
+        ).fetchone()
+    assert row == ("PENDING", 0, "PAPER")
+
+
 def _publication_bytes(output_dir):
     return {
         path.name: path.read_bytes()

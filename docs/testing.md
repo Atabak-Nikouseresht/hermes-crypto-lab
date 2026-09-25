@@ -63,9 +63,12 @@ initial gate rather than being hidden behind broad ignores.
 .venv/Scripts/python.exe scripts/generate_hardening_manifest.py
 .venv/Scripts/python.exe -c "from pathlib import Path; from run_paper import load_paper_configuration; from src.forward_governance import economic_spec_hash_v2, locked_strategy_hash, verify_trust_anchors; root=Path('.').resolve(); config,_=load_paper_configuration(root); print(locked_strategy_hash(config)); print(economic_spec_hash_v2(config)); print(verify_trust_anchors(root,config))"
 .venv/Scripts/python.exe -c "from pathlib import Path; from src.hardening_manifest import verify_hardening_manifest; print(verify_hardening_manifest(Path('.'), Path('forward_experiment/hardening_manifest.json')))"
+.venv/Scripts/python.exe scripts/sealed_v1_manifest.py --expected-sha256 5f5ad2ba69c9b0283bb925399c8a2815f73502a94b671a5c3c43ed26869079d8
 ```
 
 Regenerate the active manifest only after reviewing that changes are non-strategy maintenance. The generator refuses to proceed if the locked strategy hash or governance trust anchors differ. The frozen baseline manifest remains archived separately.
+
+The active hardening manifest is regeneratable and verifies transitive local dependencies of governed entry points. The sealed V1 run-artifact manifest is different: CI verifies its exact file set and byte hashes against the independently anchored digest above and never regenerates it. `--generate` is reserved for an explicitly approved initial freeze or formally versioned historical-preservation process.
 
 ## Dependency checks
 
@@ -93,6 +96,7 @@ The suite includes:
 - downloader retry and market-data validation tests;
 - raw/Parquet/DuckDB persistence integration tests;
 - experiment-grid, holdout-gate and hash-ledger tests;
+- restart-safe experiment-ledger seals and frozen V1 artifact integrity tests;
 - paper quote, post-scaling quantity-rule, non-negative-cash, state, reconciliation and notification tests;
 - property-based portfolio invariants;
 - real subprocess lock contention/recovery tests;
@@ -112,4 +116,4 @@ No mutation score is claimed. This limitation should not be relabeled as a pass.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes and pull requests with read-only repository permissions. It installs the hash-pinned lock, compiles source/tests, runs the low-noise Ruff correctness gate, verifies the public-only boundary, audits dependencies, checks trust anchors and the active hardening manifest, and runs the complete suite with branch coverage.
+`.github/workflows/ci.yml` runs on pushes and pull requests with read-only repository permissions. It installs the hash-pinned lock, compiles source/tests, runs the low-noise Ruff correctness gate, verifies the public-only boundary, audits dependencies, checks trust anchors, the active hardening manifest and its current dependency closure, verifies the frozen V1 manifest without regenerating it, and runs the complete suite with branch coverage.

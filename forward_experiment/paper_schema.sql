@@ -92,5 +92,7 @@ CREATE TABLE paper_schema_versions("version" INTEGER PRIMARY KEY, applied_at_utc
 -- position_ledger
 CREATE TABLE position_ledger(event_id VARCHAR PRIMARY KEY, run_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL, symbol VARCHAR NOT NULL, quantity_delta DOUBLE NOT NULL, quantity_after DOUBLE NOT NULL, created_at_utc TIMESTAMP WITH TIME ZONE NOT NULL);;
 
+
+
 -- schema versions
 [(2, 'forward paper operations'), (3, 'forward baseline and monthly benchmark alignment'), (4, 'experiment-scoped windows and incidents'), (5, 'versioned ask-bid execution context'), (6, 'final executable order quantity ledger semantics'), (7, 'explicit preservation of pre-adoption ledger semantics'), (8, 'persist proposal and final execution rejection diagnostics'), (9, 'persist run-attributable paper order rejection audit trail'), (10, 'atomically persist forward execution evidence'), (11, 'explicit execution outcomes and post-execution deviation audit'), (12, 'quote coherence provenance and legacy v5 normalization'), (13, 'per-forward-run release provenance'), (14, 'retryable forward admission attempt schedule identity'), (15, 'official schedule nullability parity'), (16, 'prospective Binance market-rule evidence'), (17, 'prospective market-rule acquisition and admission evidence v2'), (18, 'prospective Binance executionRules PRICE_RANGE evidence'), (19, 'prospective notification report integrity and manual recovery audit')]

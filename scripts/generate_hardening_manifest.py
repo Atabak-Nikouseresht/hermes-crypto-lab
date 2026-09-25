@@ -85,6 +85,7 @@ STATIC_CRITICAL_FILES = (
     "scripts/paper_forward_monthly.py",
     "scripts/interpreter.py",
     "scripts/paper_forward_weekly.py",
+    "scripts/sealed_v1_manifest.py",
     "scripts/verify_safety.py",
     "scripts/verify_scheduler_manifest.py",
     "src/backtest.py",
@@ -124,29 +125,70 @@ ECONOMIC_ENTRYPOINTS = (
     "run_backtest.py",
     "run_experiments.py",
     "run_paper.py",
+    "run_monthly_report.py",
+    "scripts/backup_forward.py",
+    "scripts/paper_forward_audit.py",
+    "scripts/paper_forward_monthly.py",
+    "scripts/paper_forward_weekly.py",
 )
+
+
+def _module_file(project_root: Path, module: str) -> str | None:
+    if not module:
+        return None
+    relative = module.replace(".", "/")
+    module_file = f"{relative}.py"
+    if (project_root / module_file).is_file():
+        return module_file
+    package_file = f"{relative}/__init__.py"
+    if (project_root / package_file).is_file():
+        return package_file
+    return None
 
 
 def _local_imports(project_root: Path, relative: str) -> set[str]:
     tree = ast.parse((project_root / relative).read_text(encoding="utf-8"), filename=relative)
     imports: set[str] = set()
+    source = (project_root / relative).resolve()
+    try:
+        package = source.relative_to(project_root.resolve()).parent.parts
+    except ValueError:
+        package = ()
     for node in ast.walk(tree):
-        module = node.module if isinstance(node, ast.ImportFrom) else None
-        names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else []
-        candidates = ([module] if module else []) + names
-        for candidate in candidates:
-            if not candidate or not candidate.startswith("src."):
-                continue
-            path = candidate.replace(".", "/") + ".py"
-            if (project_root / path).is_file():
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                path = _module_file(project_root, alias.name)
+                if path:
+                    imports.add(path)
+        elif isinstance(node, ast.ImportFrom):
+            base_parts = list(package) if node.level else []
+            if node.level:
+                base_parts = base_parts[: max(0, len(base_parts) - node.level + 1)]
+            if node.module:
+                base_parts.extend(node.module.split("."))
+            base = ".".join(base_parts)
+            path = _module_file(project_root, base)
+            if path:
                 imports.add(path)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                path = _module_file(
+                    project_root, ".".join(filter(None, (base, alias.name)))
+                )
+                if path:
+                    imports.add(path)
     return imports
 
 
 def discover_critical_source_files(project_root: Path) -> tuple[str, ...]:
-    """Return the transitive local dependencies of economic entry points."""
-    pending = list(ECONOMIC_ENTRYPOINTS)
-    discovered: set[str] = set()
+    """Return the transitive local dependency closure of governed entry points."""
+    roots = set(ECONOMIC_ENTRYPOINTS)
+    roots.update(path.name for path in project_root.glob("run_*.py"))
+    pending = sorted((root for root in roots if (project_root / root).is_file()), reverse=True)
+    # Governed entry points are themselves trust-surface files, including newly
+    # added run_*.py files even when they currently have no local imports.
+    discovered: set[str] = set(pending)
     while pending:
         relative = pending.pop()
         for dependency in _local_imports(project_root, relative):
@@ -154,6 +196,32 @@ def discover_critical_source_files(project_root: Path) -> tuple[str, ...]:
                 discovered.add(dependency)
                 pending.append(dependency)
     return tuple(sorted(discovered))
+
+
+def verify_critical_source_coverage(
+    project_root: Path,
+    critical_files: tuple[str, ...] | set[str] | None = None,
+) -> None:
+    """Fail when a reachable local source dependency is absent from coverage."""
+    if critical_files is None:
+        critical_files = CRITICAL_FILES
+    omitted = sorted(set(discover_critical_source_files(project_root)) - set(critical_files))
+    if omitted:
+        raise ValueError(f"critical manifest omits reachable local dependencies: {omitted}")
+
+
+def verify_manifest_critical_source_coverage(
+    project_root: Path, manifest_path: Path
+) -> None:
+    """Require the checked-in active manifest to list every reachable local dependency."""
+    try:
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("active hardening manifest is malformed") from error
+    files = payload.get("files") if type(payload) is dict else None
+    if type(files) is not dict:
+        raise ValueError("active hardening manifest file inventory is malformed")
+    verify_critical_source_coverage(project_root, set(files))
 
 
 CRITICAL_FILES = tuple(
@@ -183,6 +251,7 @@ def generate(project_root: Path, output_path: Path) -> dict:
     missing = [relative for relative in CRITICAL_FILES if not (project_root / relative).is_file()]
     if missing:
         raise FileNotFoundError(f"critical manifest files are missing: {missing}")
+    verify_critical_source_coverage(project_root, CRITICAL_FILES)
 
     payload = {
         "purpose": "active publication-and-operations critical-file manifest",

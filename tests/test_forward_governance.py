@@ -1,5 +1,8 @@
 
 from dataclasses import replace
+from datetime import datetime, timezone
+import hashlib
+import json
 
 import pytest
 
@@ -15,6 +18,7 @@ from src.forward_governance import (
     verify_quote_coherence_runtime_contract,
     verify_trust_anchors,
 )
+from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
 from src.paper_broker import PaperConfig
 
 ASSETS = ("BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT")
@@ -263,5 +267,189 @@ def test_forward_experiment_bootstrap_is_idempotent(tmp_path):
 
     with store.connect(read_only=True) as connection:
         count = connection.execute("SELECT COUNT(*) FROM forward_experiments").fetchone()[0]
+        raw_specification = connection.execute(
+            "SELECT specification FROM forward_experiments WHERE experiment_id=?", [first]
+        ).fetchone()[0]
+        tables = {row[0] for row in connection.execute("SHOW TABLES").fetchall()}
     assert first == second == "paper-forward-20260822"
     assert count == 1
+    specification = json.loads(raw_specification)
+    assert specification["economic_spec_v2"]["execution"]["quantity_tolerance"] == config.quantity_tolerance
+    assert specification["economic_spec_v2_sha256"] == economic_spec_hash_v2(config)
+    assert "quantity_tolerance" not in specification
+    assert specification["quantity_tolerance_authority_version"] == "quantity-tolerance-v1"
+    assert specification["execution_protocol_version"] == EXECUTION_PROTOCOL_VERSION
+    assert "paper_reconciliation_authority" not in tables
+    assert "paper_reconciliation_authority_adoptions" not in tables
+    diagnostic = PaperStore.open_diagnostic_read_only(store.path)
+    assert diagnostic.quantity_tolerance == config.quantity_tolerance
+
+
+def test_bootstrapped_experiment_missing_specification_quantity_fails_closed(tmp_path):
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    config = _economic_config()
+    from src.paper_store import PaperStore
+    store = PaperStore(tmp_path / "paper.duckdb", account_id="locked_strategy", initial_cash=2000)
+    bootstrap_forward_experiment(store, root, config)
+    with store.connect() as connection:
+        raw = connection.execute(
+            "SELECT specification FROM forward_experiments WHERE status='ACTIVE'"
+        ).fetchone()[0]
+        specification = json.loads(raw)
+        del specification["economic_spec_v2"]
+        del specification["economic_spec_v2_sha256"]
+        connection.execute(
+            "UPDATE forward_experiments SET specification=? WHERE status='ACTIVE'",
+            [json.dumps(specification)],
+        )
+    with pytest.raises(ValueError, match="Persisted quantity tolerance is missing"):
+        PaperStore.open_diagnostic_read_only(store.path)
+
+
+@pytest.mark.parametrize(
+    "authority_damage",
+    [
+        "quantity_tolerance_authority_version",
+        "economic_spec_v2_sha256",
+        "null_economic_spec_without_v2_markers",
+        "remove_economic_spec_and_version_marker",
+        "remove_all_v2_authority_fields",
+    ],
+)
+def test_partial_current_persisted_quantity_authority_fails_closed(tmp_path, authority_damage):
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    config = _economic_config()
+    from src.paper_store import PaperStore
+
+    store = PaperStore(tmp_path / "paper.duckdb", account_id="locked_strategy", initial_cash=2000)
+    bootstrap_forward_experiment(store, root, config)
+    with store.connect() as connection:
+        raw = connection.execute(
+            "SELECT specification FROM forward_experiments WHERE status='ACTIVE'"
+        ).fetchone()[0]
+        specification = json.loads(raw)
+        if authority_damage == "null_economic_spec_without_v2_markers":
+            specification["economic_spec_v2"] = None
+            specification.pop("quantity_tolerance_authority_version")
+            specification.pop("economic_spec_v2_sha256")
+        elif authority_damage == "remove_economic_spec_and_version_marker":
+            specification.pop("economic_spec_v2")
+            specification.pop("quantity_tolerance_authority_version")
+        elif authority_damage == "remove_all_v2_authority_fields":
+            for key in (
+                "economic_spec_v2",
+                "economic_spec_v2_sha256",
+                "quantity_tolerance_authority_version",
+            ):
+                specification.pop(key)
+        else:
+            specification.pop(authority_damage)
+        connection.execute(
+            "UPDATE forward_experiments SET specification=? WHERE status='ACTIVE'",
+            [json.dumps(specification)],
+        )
+
+    with pytest.raises(ValueError, match="Persisted quantity tolerance"):
+        PaperStore.open_diagnostic_read_only(store.path)
+    result = store.reconcile()
+    assert not result.valid
+    assert "Persisted quantity tolerance" in result.message
+
+
+@pytest.mark.parametrize("invalid_tolerance", [True, "1e-12", 0, -1, 1e-6])
+def test_invalid_persisted_specification_quantity_tolerance_fails_closed(
+    tmp_path, invalid_tolerance, monkeypatch
+):
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    config = _economic_config()
+    from src.paper_store import PaperStore
+    store = PaperStore(tmp_path / "paper.duckdb", account_id="locked_strategy", initial_cash=2000)
+    bootstrap_forward_experiment(store, root, config)
+    with store.connect() as connection:
+        raw = connection.execute(
+            "SELECT specification FROM forward_experiments WHERE status='ACTIVE'"
+        ).fetchone()[0]
+        specification = json.loads(raw)
+        specification["economic_spec_v2"]["execution"]["quantity_tolerance"] = invalid_tolerance
+        digest = hashlib.sha256(
+            json.dumps(
+                specification["economic_spec_v2"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        specification["economic_spec_v2_sha256"] = digest
+        monkeypatch.setattr(
+            "src.forward_governance.ECONOMIC_SPEC_HASH_V2_SHA256", digest
+        )
+        connection.execute(
+            "UPDATE forward_experiments SET specification=? WHERE status='ACTIVE'",
+            [json.dumps(specification)],
+        )
+    with pytest.raises(ValueError, match="(?i)persisted quantity tolerance"):
+        PaperStore.open_diagnostic_read_only(store.path)
+
+
+@pytest.mark.parametrize("invalid_tolerance", [float("nan"), float("inf")])
+def test_nonfinite_persisted_quantity_tolerance_fails_closed(invalid_tolerance, monkeypatch):
+    config = _economic_config()
+    specification = economic_spec_v2(config)
+    specification["execution"]["quantity_tolerance"] = invalid_tolerance
+    digest = hashlib.sha256(
+        json.dumps(specification, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    monkeypatch.setattr("src.forward_governance.ECONOMIC_SPEC_HASH_V2_SHA256", digest)
+    from src.paper_store import resolve_persisted_quantity_tolerance
+
+    with pytest.raises(ValueError, match="Persisted quantity tolerance is invalid"):
+        resolve_persisted_quantity_tolerance(
+            {
+                "economic_spec_v2": specification,
+                "economic_spec_v2_sha256": digest,
+                "quantity_tolerance_authority_version": "quantity-tolerance-v1",
+            },
+            legacy_tolerance=1e-12,
+        )
+
+
+def test_pre_adoption_experiment_uses_named_legacy_quantity_contract(tmp_path):
+    from src.paper_store import (
+        LEGACY_FORWARD_RECONCILIATION_TOLERANCE_V1,
+        LEGACY_FORWARD_SPEC_V1_KEYS,
+        PaperStore,
+    )
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    legacy_specification = json.loads(
+        (root / "forward_experiment" / "governance.json").read_text(encoding="utf-8")
+    )
+    assert set(legacy_specification) == LEGACY_FORWARD_SPEC_V1_KEYS
+    store = PaperStore(tmp_path / "paper.duckdb", account_id="locked_strategy", initial_cash=2000)
+    with store.connect() as connection:
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES ('historic', ?, 'candidate', ?, ?, "
+            "?, 'ACTIVE')",
+            [
+                datetime(2026, 8, 22, tzinfo=timezone.utc),
+                "a" * 64,
+                "b" * 64,
+                json.dumps(legacy_specification, sort_keys=True),
+            ],
+        )
+    assert PaperStore.open_diagnostic_read_only(store.path).quantity_tolerance == LEGACY_FORWARD_RECONCILIATION_TOLERANCE_V1
+    assert store.reconcile().valid
+    assert store.quantity_tolerance == LEGACY_FORWARD_RECONCILIATION_TOLERANCE_V1
+    direct_override = store.reconcile(tolerance=1e-7)
+    assert not direct_override.valid
+    assert "legacy forward reconciliation contract" in direct_override.message
+
+    database_override = PaperStore.reconcile_database(
+        store.path,
+        account_id="locked_strategy",
+        quantity_tolerance=1e-7,
+        fee_rate=store.fee_rate,
+        minimum_spread_rate=store.minimum_spread_rate,
+        slippage_rate=store.slippage_rate,
+        max_quote_timestamp_skew_seconds=store.max_quote_timestamp_skew_seconds,
+    )
+    assert not database_override.valid
+    assert "legacy forward reconciliation contract" in database_override.message

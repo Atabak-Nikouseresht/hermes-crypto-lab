@@ -41,6 +41,22 @@ unordered collections are sorted before canonical JSON SHA-256 hashing. The v3
 amendment explicitly records that no strategy was reselected, no parameter was
 retuned, and no research result changed.
 
+Newly bootstrapped forward experiments persist the trust-anchored `economic_spec_v2`
+inside the existing `forward_experiments.specification` JSON. Reconciliation reads
+`economic_spec_v2.execution.quantity_tolerance` and verifies its unchanged economic
+specification hash; the `quantity-tolerance-v1` marker declares the authority
+contract. No duplicate tolerance field, table, or schema version is introduced,
+and historical specifications are never backfilled.
+Diagnostics, reconciliation, backup creation, backup verification, and temporary
+restore use the persisted value when present and reject malformed, non-positive,
+hash-incomplete, or marker-incomplete current authority. A pre-adoption
+`legacy-forward-spec-v1` record is recognized only by its exact historical
+governance field inventory; forward diagnostics and reconciliation both retain
+the historical `1e-12` tolerance for that contract. A store without an experiment
+retains the generic `1e-7` reconciliation default. New backup creation requires
+persisted current authority; legacy manifest v1 is verification-only.
+The economic-spec v2 and locked strategy hashes remain unchanged.
+
 The publication-security rewrite changed public Git commit identities without
 changing sealed evidence. The historical frozen baseline
 `ebeac389b1c309f1ef8f5a9056e96c3b28e08e01` maps to rewritten public commit

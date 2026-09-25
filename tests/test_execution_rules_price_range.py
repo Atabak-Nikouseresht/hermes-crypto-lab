@@ -342,18 +342,61 @@ def test_price_range_unbounded_reference_tampering_fails_closed_without_reconcil
     assert not system.store.reconcile().valid
 
 
-def test_price_range_backup_and_temporary_restore_use_offline_runtime_reconciliation(tmp_path):
+def test_price_range_backup_and_temporary_restore_use_offline_runtime_reconciliation(
+    tmp_path, monkeypatch
+):
     import hashlib
     import json
+    from pathlib import Path
 
     import duckdb
 
+    from run_paper import load_paper_configuration
     from src.backup_restore import create_verified_backup, verify_backup, verify_restore_to_temporary
+    from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
+    from src.forward_governance import economic_spec_hash_v2, economic_spec_v2, locked_strategy_hash
 
     system = _current_price_range_run(tmp_path)
     project = tmp_path / "project"
     (project / "forward_experiment").mkdir(parents=True)
     (project / "forward_experiment" / "governance.json").write_text("{}", encoding="utf-8")
+    hardening_manifest = project / "forward_experiment" / "hardening_manifest.json"
+    hardening_manifest.write_text("{}", encoding="utf-8")
+    governed_config, _ = load_paper_configuration(Path(__file__).resolve().parents[1])
+    persisted_economic_spec = economic_spec_v2(governed_config)
+    assert persisted_economic_spec["execution"]["quantity_tolerance"] == system.config.quantity_tolerance
+    candidate_id = governed_config.locked_candidate_id
+    strategy_hash = locked_strategy_hash(governed_config)
+    specification = {
+        "locked_strategy": {"candidate_id": candidate_id},
+        "locked_strategy_hash_sha256": strategy_hash,
+        "economic_spec_v2": persisted_economic_spec,
+        "economic_spec_v2_sha256": economic_spec_hash_v2(governed_config),
+        "quantity_tolerance_authority_version": "quantity-tolerance-v1",
+        "max_quote_timestamp_skew_seconds": system.config.max_quote_timestamp_skew_seconds,
+        "execution_protocol_version": EXECUTION_PROTOCOL_VERSION,
+        "cost_assumptions": {
+            "fee_rate": system.config.fee_rate,
+            "minimum_spread_rate": system.config.minimum_spread_rate,
+            "slippage_rate": system.config.slippage_rate,
+        },
+    }
+    with system.store.connect() as connection:
+        run_started_at = connection.execute(
+            "SELECT started_at_utc FROM paper_runs WHERE run_id='run'"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
+            [
+                "test-experiment", run_started_at, candidate_id, strategy_hash,
+                "f" * 64, json.dumps(specification, sort_keys=True),
+            ],
+        )
+    provenance = ReleaseProvenance(
+        "a" * 40, False, hashlib.sha256(hardening_manifest.read_bytes()).hexdigest(),
+        EXECUTION_PROTOCOL_VERSION, pd.Timestamp.now(tz="UTC").to_pydatetime(),
+    )
+    monkeypatch.setattr("src.backup_restore.capture_release_provenance", lambda _root: provenance)
     backup = create_verified_backup(
         project_root=project, database_path=system.store.path,
         output_root=tmp_path / "backups", lock_path=project / "runtime" / "forward_writer.lock",

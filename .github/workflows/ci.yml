@@ -62,6 +62,11 @@ jobs:
       - name: Verify portable scheduler manifest and wrapper hashes
         run: python scripts/verify_scheduler_manifest.py
 
+      - name: Verify frozen sealed V1 research artifacts
+        run: >-
+          python scripts/sealed_v1_manifest.py
+          --expected-sha256 5f5ad2ba69c9b0283bb925399c8a2815f73502a94b671a5c3c43ed26869079d8
+
       - name: Verify Markdown local links
         run: python scripts/check_markdown_links.py
 
@@ -83,8 +88,11 @@ jobs:
       - name: Verify active hardening manifest
         run: >-
           python -c "from pathlib import Path;
+          from scripts.generate_hardening_manifest import verify_manifest_critical_source_coverage;
           from src.hardening_manifest import verify_hardening_manifest;
-          print(verify_hardening_manifest(Path('.'), Path('forward_experiment/hardening_manifest.json')))"
+          root=Path('.').resolve(); manifest=root/'forward_experiment/hardening_manifest.json';
+          verify_manifest_critical_source_coverage(root, manifest);
+          print(verify_hardening_manifest(root, manifest))"
 
       - name: Run unit, property and integration tests
         run: >-

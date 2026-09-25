@@ -17,7 +17,11 @@ from src.execution_protocol import (
 )
 from src.forward_operations import verify_immutable_manifest
 from src.paper_broker import PaperConfig
-from src.paper_store import BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION, PaperStore
+from src.paper_store import (
+    BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION,
+    PaperStore,
+    resolve_persisted_quantity_tolerance,
+)
 
 LOCKED_STRATEGY_HASH_SHA256 = "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6"
 CHECKPOINT_MANIFEST_HASH_SHA256 = "97e8d1770a1d78010566760ac3d4121b8b6eafd8f13b617782286cbfaab31c4b"
@@ -576,21 +580,35 @@ def bootstrap_forward_experiment(
     payload = json.loads(governance_path.read_text(encoding="utf-8"))
     with store.connect() as connection:
         rows = connection.execute(
-            "SELECT experiment_id, locked_candidate_id, locked_strategy_hash, governance_hash, status "
+            "SELECT experiment_id, locked_candidate_id, locked_strategy_hash, governance_hash, status, specification "
             "FROM forward_experiments"
         ).fetchall()
         if not rows:
-            connection.execute(
-                "INSERT INTO forward_experiments VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
-                [
-                    payload["experiment_id"],
-                    payload["experiment_start_utc"],
-                    payload["locked_strategy"]["candidate_id"],
-                    verified["locked_strategy"],
-                    verified["governance"],
-                    json.dumps(payload, sort_keys=True),
-                ],
-            )
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                persisted_specification = {
+                    **payload,
+                    "economic_spec_v2": economic_spec_v2(config),
+                    "economic_spec_v2_sha256": verified["economic_spec_v2"],
+                    "quantity_tolerance_authority_version": "quantity-tolerance-v1",
+                    "max_quote_timestamp_skew_seconds": config.max_quote_timestamp_skew_seconds,
+                    "execution_protocol_version": EXECUTION_PROTOCOL_VERSION,
+                }
+                connection.execute(
+                    "INSERT INTO forward_experiments VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
+                    [
+                        payload["experiment_id"],
+                        payload["experiment_start_utc"],
+                        payload["locked_strategy"]["candidate_id"],
+                        verified["locked_strategy"],
+                        verified["governance"],
+                        json.dumps(persisted_specification, sort_keys=True),
+                    ],
+                )
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
         else:
             if len(rows) != 1:
                 raise ValueError("Multiple forward experiments exist; automatic selection is forbidden")
@@ -601,8 +619,21 @@ def bootstrap_forward_experiment(
                 verified["governance"],
                 "ACTIVE",
             )
-            if tuple(rows[0]) != expected:
+            if tuple(rows[0][:5]) != expected:
                 raise ValueError(
                     f"Persistent forward governance differs from release anchor: {rows[0]}"
                 )
+            stored_tolerance, _contract, is_persisted = resolve_persisted_quantity_tolerance(
+                rows[0][5], legacy_tolerance=1e-12
+            )
+            if is_persisted and stored_tolerance != config.quantity_tolerance:
+                raise ValueError("Persisted reconciliation quantity tolerance conflicts with governed runtime")
+            if is_persisted:
+                specification = json.loads(rows[0][5]) if isinstance(rows[0][5], str) else rows[0][5]
+                if (
+                    type(specification.get("max_quote_timestamp_skew_seconds")) is not int
+                    or specification["max_quote_timestamp_skew_seconds"]
+                    != config.max_quote_timestamp_skew_seconds
+                ):
+                    raise ValueError("Persisted quote-coherence setting conflicts with governed runtime")
     return str(payload["experiment_id"])

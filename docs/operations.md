@@ -159,7 +159,7 @@ scheduled/completed/missed window counts.
 .venv/Scripts/python.exe scripts/backup_forward.py verify backups/TIMESTAMP
 ```
 
-Backups are timestamped and non-overwriting, acquire the global writer lock, checkpoint DuckDB, include manifests/reports but not `.env`, and remain local. Verification restores only under a temporary directory and never replaces production.
+Backups are timestamped and non-overwriting, acquire the global writer lock, checkpoint DuckDB, include manifests/reports but not `.env`, and remain local. Governed v2 backups record the current verified Git commit, require a clean tree, and include the active hardening-manifest SHA plus persisted experiment/reconciliation identity. Verification and restore use only the manifest and database evidence, not current runtime configuration. Explicit v1 backups are limited to identified pre-adoption legacy state; unknown/malformed manifest versions fail closed.
 
 ## Gateway and scheduler recovery
 

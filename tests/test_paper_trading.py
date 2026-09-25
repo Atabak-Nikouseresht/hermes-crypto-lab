@@ -26,6 +26,12 @@ from src.paper_store import ReconciliationResult
 ASSETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "TRX/USDT"]
 
 
+def _legacy_forward_specification_json() -> str:
+    return (
+        Path(__file__).resolve().parents[1] / "forward_experiment" / "governance.json"
+    ).read_text(encoding="utf-8")
+
+
 def _snapshot(now: datetime, stale_days: int = 0) -> MarketSnapshot:
     end = pd.Timestamp("2024-08-04", tz="UTC") - pd.Timedelta(days=stale_days)
     dates = pd.date_range(end=end, periods=230, freq="D", tz="UTC")
@@ -914,7 +920,7 @@ def _quote_coherence_reconciliation_system(
         )
         connection.execute(
             "INSERT INTO forward_experiments VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
-            ["forward", base - pd.Timedelta(days=1), "locked", "strategy", "governance", "{}"],
+            ["forward", base - pd.Timedelta(days=1), "locked", "strategy", "governance", _legacy_forward_specification_json()],
         )
     system.store.insert_run(
         run_id=run_id,
@@ -1457,7 +1463,8 @@ def test_run_message_counts_pre_execution_and_final_rejections(tmp_path, monkeyp
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     history = pd.date_range(end="2024-08-04T00:00:00Z", periods=200, freq="D")
     snapshot = MarketSnapshot(
@@ -1901,7 +1908,8 @@ def test_scheduled_dry_run_does_not_consume_real_paper_window(tmp_path):
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
 
     dry = system.run(_snapshot(now), now=now, dry_run=True)
@@ -1941,7 +1949,8 @@ def test_finalization_uses_persisted_schedule_identity(tmp_path, finalized_at):
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     snapshot = _snapshot(started_at)
     result = system.run(snapshot, now=started_at, dry_run=False)
@@ -1968,7 +1977,8 @@ def test_finalization_never_fabricates_schedule_for_unscheduled_run(tmp_path):
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     snapshot = _snapshot(now)
     result = system.run(snapshot, now=now, dry_run=False)
@@ -2241,7 +2251,8 @@ def test_repeated_transient_operational_failures_remain_retryable(tmp_path):
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
 
     first = commit_operational_failure(
@@ -2311,7 +2322,8 @@ def test_forward_classification_uses_persisted_execution(
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     if scenario == "liquidation":
         assert system.run(snapshot, now=now.to_pydatetime(), dry_run=False).status == "EXECUTED"
@@ -2406,7 +2418,8 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     original_finish = system.store.finish_run
     monkeypatch.setattr(
@@ -2534,7 +2547,8 @@ def test_recovers_terminal_run_missing_post_commit_evidence(tmp_path):
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     result = system.run(_snapshot(now), now=now, dry_run=False)
 
@@ -2577,7 +2591,8 @@ def test_recovers_post_finalization_crash_as_incomplete_delivery_incident(tmp_pa
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     snapshot = _snapshot(now)
     result = system.run(snapshot, now=now, dry_run=False)
@@ -2614,7 +2629,8 @@ def test_delivery_recovery_retries_after_report_creation_crash(tmp_path, monkeyp
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     snapshot = _snapshot(now)
     result = system.run(snapshot, now=now, dry_run=False)
@@ -2665,7 +2681,8 @@ def test_delivery_recovery_reuses_report_after_pending_registration_crash(
     with system.store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov','{}','ACTIVE')"
+            "('test-forward','2024-08-01T00:00:00Z','locked','hash','gov',?,'ACTIVE')",
+            [_legacy_forward_specification_json()],
         )
     snapshot = _snapshot(now)
     result = system.run(snapshot, now=now, dry_run=False)

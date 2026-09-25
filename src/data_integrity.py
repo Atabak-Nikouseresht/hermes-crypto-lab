@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pandas as pd
@@ -97,25 +98,88 @@ def _semantic_check(path: Path) -> dict[str, Any]:
     return {"bytes": path.stat().st_size}
 
 
+def _validate_metadata(metadata: Any) -> None:
+    def is_json_value(value: Any) -> bool:
+        if value is None or isinstance(value, (str, bool, int)):
+            return True
+        if isinstance(value, float):
+            return math.isfinite(value)
+        if isinstance(value, list):
+            return all(is_json_value(item) for item in value)
+        if isinstance(value, dict):
+            return all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
+        return False
+
+    if not isinstance(metadata, dict) or not is_json_value(metadata):
+        raise ValueError("invalid manifest metadata: expected a JSON object with finite JSON values")
+
+
+def _relative_path(path: str) -> Path:
+    if (
+        not isinstance(path, str)
+        or not path
+        or "\\" in path
+        or PurePosixPath(path).is_absolute()
+        or PureWindowsPath(path).is_absolute()
+        or ":" in path
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+    ):
+        raise ValueError(f"invalid manifest path: {path!r}")
+    return Path(*path.split("/"))
+
+
+def _validate_semantic(semantic: Any) -> None:
+    if not isinstance(semantic, dict):
+        raise ValueError("invalid semantic metadata")
+    if set(semantic) == {"bytes"}:
+        if type(semantic["bytes"]) is not int or semantic["bytes"] < 0:
+            raise ValueError("invalid semantic metadata")
+        return
+    expected = {
+        "rows", "first_candle_open_utc", "first_candle_close_utc",
+        "last_candle_open_utc", "last_candle_close_utc",
+        "extreme_price_change_count", "extreme_volume_change_count",
+    }
+    if set(semantic) != expected:
+        raise ValueError("invalid semantic metadata")
+    for key in ("rows", "extreme_price_change_count", "extreme_volume_change_count"):
+        if type(semantic[key]) is not int or semantic[key] < 0:
+            raise ValueError("invalid semantic metadata")
+    for key in expected - {"rows", "extreme_price_change_count", "extreme_volume_change_count"}:
+        if not isinstance(semantic[key], str):
+            raise ValueError("invalid semantic metadata")
+
+
 def build_data_integrity_manifest(
-    *, files: list[Path], output_path: Path, metadata: dict[str, Any]
+    *, files: list[Path], output_path: Path, metadata: dict[str, Any],
+    project_root: Path,
 ) -> dict[str, Any]:
     output_path = Path(output_path)
+    root = Path(project_root).resolve()
+    _validate_metadata(metadata)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         raise FileExistsError(output_path)
-    records = []
-    for source in sorted(Path(path).resolve() for path in files):
+    normalized_sources = []
+    for source in (Path(path).resolve() for path in files):
         if not source.is_file():
             raise FileNotFoundError(source)
+        try:
+            relative = source.relative_to(root)
+        except ValueError as error:
+            raise ValueError(f"file is outside project root: {source}") from error
+        normalized_sources.append((relative.as_posix(), source))
+    records = []
+    for relative_path, source in sorted(normalized_sources, key=lambda item: item[0]):
         records.append(
             {
-                "path": str(source),
+                "path": relative_path,
                 "sha256": file_sha256(source),
                 "semantic": _semantic_check(source),
             }
         )
     payload = {
+        "schema_version": 1,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "metadata": metadata,
         "files": records,
@@ -125,11 +189,48 @@ def build_data_integrity_manifest(
     return payload
 
 
-def verify_data_integrity_manifest(manifest_path: Path) -> dict[str, Any]:
-    payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+def verify_data_integrity_manifest(
+    manifest_path: Path, *, project_root: Path | None = None
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("invalid manifest JSON") from error
+    required = {"schema_version", "created_at_utc", "metadata", "files", "forward_fill_used"}
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ValueError("invalid manifest schema")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+        raise ValueError("invalid manifest schema version")
+    if not isinstance(payload["created_at_utc"], str):
+        raise ValueError("invalid manifest created_at_utc")
+    try:
+        datetime.fromisoformat(payload["created_at_utc"])
+    except ValueError as error:
+        raise ValueError("invalid manifest created_at_utc") from error
+    _validate_metadata(payload["metadata"])
+    if payload["forward_fill_used"] is not False or not isinstance(payload["files"], list):
+        raise ValueError("invalid manifest schema")
+    root = Path(project_root if project_root is not None else Path(manifest_path).parent).resolve()
+    seen_paths: set[str] = set()
     for record in payload["files"]:
-        path = Path(record["path"])
+        if not isinstance(record, dict) or set(record) != {"path", "sha256", "semantic"}:
+            raise ValueError("invalid manifest file record")
+        relative = _relative_path(record["path"])
+        normalized = relative.as_posix()
+        if normalized in seen_paths:
+            raise ValueError(f"duplicate manifest path: {normalized}")
+        seen_paths.add(normalized)
+        digest = record["sha256"]
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("invalid manifest sha256")
+        _validate_semantic(record["semantic"])
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as error:
+            raise ValueError(f"invalid manifest path outside project root: {normalized}") from error
         if not path.is_file() or file_sha256(path) != record["sha256"]:
             raise ValueError(f"data hash mismatch: {path}")
-        _semantic_check(path)
+        if _semantic_check(path) != record["semantic"]:
+            raise ValueError(f"data semantic mismatch: {path}")
     return {"valid": True, "files": len(payload["files"]), "metadata": payload["metadata"]}

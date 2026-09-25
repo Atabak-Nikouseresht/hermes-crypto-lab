@@ -150,3 +150,20 @@ def test_safety_scanner_covers_operational_scripts(tmp_path):
     assert scan(tmp_path) == [
         ("private order-management method", "scripts/paper_probe.py", 1)
     ]
+
+
+def test_safety_scanner_covers_every_root_run_entrypoint(tmp_path):
+    source = tmp_path / "run_backup.py"
+    source.write_text("exchange.create_order(symbol, 'market', 'buy', 1)\n", encoding="utf-8")
+
+    assert scan(tmp_path) == [("order creation method", "run_backup.py", 1)]
+
+
+def test_safety_scanner_does_not_exempt_its_own_script_path(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "verify_safety.py").write_text(
+        "exchange.create_order(symbol, 'market', 'buy', 1)\n", encoding="utf-8"
+    )
+
+    assert scan(tmp_path) == [("order creation method", "scripts/verify_safety.py", 1)]

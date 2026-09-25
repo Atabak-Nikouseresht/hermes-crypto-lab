@@ -27,14 +27,93 @@ FINAL_EXECUTABLE_LEDGER_SEMANTICS = "final-executable-v1"
 BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v2"
 _LEGACY_BINANCE_MARKET_RULE_EVIDENCE_CONTRACT_VERSION = "binance-market-rule-evidence-v1"
 BINANCE_EXECUTION_RULES_EVIDENCE_CONTRACT_VERSION = "binance-execution-rules-evidence-v1-price-range"
-CURRENT_LEDGER_QUANTITY_TOLERANCE = 1e-12
+LEGACY_FORWARD_RECONCILIATION_TOLERANCE_V1 = 1e-12
+LEGACY_RECONCILIATION_QUANTITY_TOLERANCE = 1e-7
 CURRENT_SCHEMA_VERSION = 19
+LEGACY_FORWARD_SPEC_V1_KEYS = frozenset(
+    {
+        "acceptance_criteria",
+        "benchmark_definitions",
+        "cost_assumptions",
+        "experiment_id",
+        "experiment_start_utc",
+        "incident_policy",
+        "locked_strategy",
+        "locked_strategy_hash_sha256",
+        "minimum_observation_weeks",
+        "preferred_evaluation_weeks",
+        "prohibited_changes",
+        "rejection_criteria",
+        "research_status",
+        "schedule",
+    }
+)
 
 
 @dataclass(frozen=True)
 class ReconciliationResult:
     valid: bool
     message: str
+
+
+def resolve_persisted_quantity_tolerance(
+    specification_raw: Any, *, legacy_tolerance: float
+) -> tuple[float, str, bool]:
+    """Read quantity tolerance from the persisted, trust-anchored economic spec."""
+    try:
+        specification = (
+            json.loads(specification_raw)
+            if isinstance(specification_raw, str)
+            else specification_raw
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ValueError("Persisted experiment specification is malformed") from error
+    if type(specification) is not dict:
+        raise ValueError("Persisted experiment specification is malformed")
+    authority_version = specification.get("quantity_tolerance_authority_version")
+    if authority_version is not None and type(authority_version) is not str:
+        raise ValueError("Persisted quantity tolerance authority version is malformed")
+    if authority_version is not None and authority_version != "quantity-tolerance-v1":
+        raise ValueError("Persisted quantity tolerance authority version is unsupported")
+    economic_spec = specification.get("economic_spec_v2")
+    if economic_spec is None:
+        if (
+            "economic_spec_v2" in specification
+            or "quantity_tolerance_authority_version" in specification
+            or "economic_spec_v2_sha256" in specification
+        ):
+            raise ValueError("Persisted quantity tolerance is missing from governed specification")
+        if set(specification) != LEGACY_FORWARD_SPEC_V1_KEYS:
+            raise ValueError("Persisted quantity tolerance authority is missing or legacy specification is malformed")
+        return float(legacy_tolerance), "legacy-forward-spec-v1", False
+    if authority_version != "quantity-tolerance-v1":
+        raise ValueError("Persisted quantity tolerance authority version is missing")
+    if type(economic_spec) is not dict or economic_spec.get("version") != "economic-spec-v2":
+        raise ValueError("Persisted economic specification is malformed")
+    canonical = json.dumps(economic_spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    economic_spec_hash = hashlib.sha256(canonical).hexdigest()
+    from src.forward_governance import ECONOMIC_SPEC_HASH_V2_SHA256
+
+    if economic_spec_hash != ECONOMIC_SPEC_HASH_V2_SHA256:
+        raise ValueError("Persisted economic specification hash is invalid")
+    if "economic_spec_v2_sha256" not in specification:
+        raise ValueError("Persisted quantity tolerance economic specification hash is missing")
+    recorded_hash = specification.get("economic_spec_v2_sha256")
+    if type(recorded_hash) is not str or recorded_hash != economic_spec_hash:
+        raise ValueError("Persisted economic specification hash conflicts with its contents")
+    execution = economic_spec.get("execution")
+    if type(execution) is not dict or "quantity_tolerance" not in execution:
+        raise ValueError("Persisted quantity tolerance is missing from economic specification v2")
+    tolerance = execution["quantity_tolerance"]
+    if type(tolerance) not in (int, float):
+        raise ValueError("Persisted quantity tolerance must be an exact numeric value")
+    try:
+        tolerance = float(tolerance)
+    except (OverflowError, ValueError) as error:
+        raise ValueError("Persisted quantity tolerance is invalid") from error
+    if not math.isfinite(tolerance) or not 0 < tolerance <= 1e-7:
+        raise ValueError("Persisted quantity tolerance is invalid")
+    return tolerance, "quantity-tolerance-v1", True
 
 
 class PaperStore:
@@ -210,14 +289,18 @@ class PaperStore:
                     f"found {len(accounts)}"
                 )
             experiments = connection.execute(
-                "SELECT specification FROM forward_experiments WHERE status='ACTIVE'"
+                "SELECT experiment_id, started_at_utc, specification FROM forward_experiments WHERE status='ACTIVE'"
             ).fetchall()
             if len(experiments) != 1:
                 raise ValueError(
                     "Expected exactly one persisted forward experiment for diagnostics, "
                     f"found {len(experiments)}"
                 )
-            specification_raw = experiments[0][0]
+            _experiment_id, _experiment_started_at, specification_raw = experiments[0]
+            tolerance, _authority_version, _is_persisted = resolve_persisted_quantity_tolerance(
+                specification_raw,
+                legacy_tolerance=LEGACY_FORWARD_RECONCILIATION_TOLERANCE_V1,
+            )
             try:
                 specification = (
                     json.loads(specification_raw)
@@ -276,7 +359,7 @@ class PaperStore:
         return cls.open_existing_read_only(
             path,
             account_id=str(accounts[0][0]),
-            quantity_tolerance=CURRENT_LEDGER_QUANTITY_TOLERANCE,
+            quantity_tolerance=float(tolerance),
             fee_rate=fee_rate,
             minimum_spread_rate=minimum_spread_rate,
             slippage_rate=slippage_rate,
@@ -305,7 +388,7 @@ class PaperStore:
             slippage_rate=slippage_rate,
             max_quote_timestamp_skew_seconds=max_quote_timestamp_skew_seconds,
         )
-        return store.reconcile()
+        return store.reconcile(tolerance=quantity_tolerance)
 
     def _initialize(self, initial_cash: float) -> None:
         now = datetime.now(timezone.utc)
@@ -622,6 +705,7 @@ class PaperStore:
                 );
                 """
             )
+
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES (2, ?, 'forward paper operations')",
                 [now],
@@ -768,9 +852,10 @@ class PaperStore:
             )
             connection.execute(
                 "INSERT OR IGNORE INTO paper_schema_versions VALUES "
-                "(?, ?, 'prospective notification report integrity and manual recovery audit')",
-                [CURRENT_SCHEMA_VERSION, now],
+                "(19, ?, 'prospective notification report integrity and manual recovery audit')",
+                [now],
             )
+
             schema_v6 = connection.execute(
                 "SELECT 1 FROM paper_schema_versions WHERE version=6"
             ).fetchone()
@@ -878,8 +963,59 @@ class PaperStore:
             for symbol, quantity, average_cost in rows
         }
 
-    def reconcile(self, tolerance: float = 1e-7) -> ReconciliationResult:
+    def reconcile(self, tolerance: float | None = None) -> ReconciliationResult:
         self.assert_supported_schema(self.path)
+        with self.connect(read_only=True) as authority_connection:
+            active = authority_connection.execute(
+                "SELECT specification FROM forward_experiments WHERE status='ACTIVE'"
+            ).fetchall()
+            if len(active) > 1:
+                return ReconciliationResult(False, "Ambiguous active experiment for quantity tolerance")
+            if not active:
+                if tolerance is None:
+                    tolerance = LEGACY_RECONCILIATION_QUANTITY_TOLERANCE
+            else:
+                try:
+                    persisted_tolerance, _authority_version, has_authority = (
+                        resolve_persisted_quantity_tolerance(
+                            active[0][0],
+                            legacy_tolerance=LEGACY_FORWARD_RECONCILIATION_TOLERANCE_V1,
+                        )
+                    )
+                except ValueError as error:
+                    return ReconciliationResult(False, str(error))
+                if has_authority:
+                    if tolerance is not None:
+                        try:
+                            requested_tolerance = float(tolerance)
+                        except (OverflowError, TypeError, ValueError):
+                            return ReconciliationResult(False, "Requested quantity tolerance is invalid")
+                        if (
+                            type(tolerance) not in (int, float)
+                            or not math.isfinite(requested_tolerance)
+                            or requested_tolerance != persisted_tolerance
+                        ):
+                            return ReconciliationResult(
+                                False, "Requested quantity tolerance differs from persisted authority"
+                            )
+                    tolerance = persisted_tolerance
+                else:
+                    if tolerance is not None:
+                        try:
+                            requested_tolerance = float(tolerance)
+                        except (OverflowError, TypeError, ValueError):
+                            return ReconciliationResult(False, "Requested quantity tolerance is invalid")
+                        if (
+                            type(tolerance) not in (int, float)
+                            or not math.isfinite(requested_tolerance)
+                            or requested_tolerance != persisted_tolerance
+                        ):
+                            return ReconciliationResult(
+                                False,
+                                "Requested quantity tolerance differs from legacy forward reconciliation contract",
+                            )
+                    tolerance = persisted_tolerance
+        self.quantity_tolerance = float(tolerance)
         with self.connect(read_only=True) as connection:
             if connection.execute(
                 "SELECT COUNT(*) FROM paper_runs WHERE official_scheduled IS NULL"

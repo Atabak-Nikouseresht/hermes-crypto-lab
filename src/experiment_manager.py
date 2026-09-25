@@ -164,6 +164,12 @@ def select_stable_finalists(
     *,
     finalist_count: int,
 ) -> tuple[list[Candidate], dict[str, dict[str, float | int]]]:
+    if (
+        type(finalist_count) is not int
+        or finalist_count <= 0
+        or finalist_count > len(candidates)
+    ):
+        raise ValueError("finalist_count must be a positive integer no greater than candidate count")
     diagnostics: dict[str, dict[str, float | int]] = {}
     for candidate in candidates:
         region = [
@@ -196,6 +202,8 @@ class ExperimentGate:
     """Enforce train -> validation -> lock -> final-test access ordering."""
 
     def __init__(self, expected_training_trials: int):
+        if type(expected_training_trials) is not int or expected_training_trials <= 0:
+            raise ValueError("expected_training_trials must be a positive integer")
         self.expected_training_trials = expected_training_trials
         self.training_ids: set[str] = set()
         self.finalist_ids: set[str] | None = None
@@ -208,6 +216,19 @@ class ExperimentGate:
         self.training_ids.add(candidate_id)
 
     def set_finalists(self, candidate_ids: list[str]) -> None:
+        if type(candidate_ids) is not list or not candidate_ids:
+            raise ValueError("Finalists must be a non-empty list")
+        if any(
+            type(candidate_id) is not str
+            or not candidate_id.strip()
+            or candidate_id != candidate_id.strip()
+            for candidate_id in candidate_ids
+        ):
+            raise ValueError("Finalist IDs must be non-empty canonical strings")
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("Finalist IDs must be unique")
+        if len(candidate_ids) > len(self.training_ids):
+            raise ValueError("Finalist count cannot exceed completed training candidates")
         if len(self.training_ids) != self.expected_training_trials:
             raise PermissionError("All training trials must finish before finalist selection")
         if not set(candidate_ids).issubset(self.training_ids):

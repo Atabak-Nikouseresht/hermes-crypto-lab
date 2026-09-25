@@ -36,4 +36,7 @@ tests/test_scheduler_contract.py text eol=lf
 forward_experiment/**/*.json -text
 forward_experiment/**/*.sha256 -text
 forward_experiment/**/*.sql -text
-experiments/runs/*/experiment_ledger.jsonl -text
+experiments/runs/**/*.json text eol=crlf
+experiments/runs/**/*.md text eol=crlf
+experiments/runs/**/*.jsonl -text
+experiments/runs/**/*.parquet -text

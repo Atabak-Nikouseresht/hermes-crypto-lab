@@ -29,6 +29,7 @@ from src.paper_store import (
     FINAL_EXECUTABLE_LEDGER_SEMANTICS,
     PaperStore,
 )
+from src.schedule import schedule_timestamps, target_offset_minutes
 from src.strategy import StrategyConfig, generate_signal
 from src.validate_data import validate_ohlcv
 
@@ -354,6 +355,8 @@ class PaperConfig:
     def __post_init__(self) -> None:
         if not math.isfinite(self.initial_cash) or self.initial_cash <= 0:
             raise ValueError("initial_cash must be positive")
+        if type(self.exchange_id) is not str or not self.exchange_id.strip():
+            raise ValueError("exchange_id must be a nonempty string")
         if not self.assets:
             raise ValueError("assets cannot be empty")
         if type(self.require_exchange_rules) is not bool:
@@ -365,18 +368,25 @@ class PaperConfig:
         for rate in (self.fee_rate, self.minimum_spread_rate, self.slippage_rate):
             if not math.isfinite(rate) or not 0 <= rate < 1:
                 raise ValueError("cost rates must be in [0, 1)")
-        if not 0 <= self.schedule_weekday <= 6:
+        if type(self.schedule_weekday) is not int or not 0 <= self.schedule_weekday <= 6:
             raise ValueError("schedule_weekday must be in [0, 6]")
-        if not 0 <= self.schedule_hour <= 23:
+        if type(self.schedule_hour) is not int or not 0 <= self.schedule_hour <= 23:
             raise ValueError("schedule_hour must be in [0, 23]")
-        if not 0 <= self.schedule_minute <= 59:
+        if type(self.schedule_minute) is not int or not 0 <= self.schedule_minute <= 59:
             raise ValueError("schedule_minute must be in [0, 59]")
-        if not 0 <= self.execution_target_minute <= 59:
+        if (
+            type(self.execution_target_minute) is not int
+            or not 0 <= self.execution_target_minute <= 59
+        ):
             raise ValueError("execution_target_minute must be in [0, 59]")
-        if self.schedule_window_minutes <= 0:
-            raise ValueError("schedule_window_minutes must be positive")
-        window_end_minute = self.schedule_minute + self.schedule_window_minutes
-        if not self.schedule_minute <= self.execution_target_minute <= window_end_minute:
+        if (
+            type(self.schedule_window_minutes) is not int
+            or not 1 <= self.schedule_window_minutes <= 60
+        ):
+            raise ValueError("schedule_window_minutes must be an integer in [1, 60]")
+        if target_offset_minutes(
+            self.schedule_minute, self.execution_target_minute
+        ) > self.schedule_window_minutes:
             raise ValueError("execution_target_minute must fall within the schedule window")
         if (
             isinstance(self.max_data_staleness_minutes, bool)
@@ -472,10 +482,7 @@ class PaperTradingSystem:
     def _scheduled_key(self, now: pd.Timestamp) -> str | None:
         if now.weekday() != self.config.schedule_weekday:
             return None
-        scheduled = now.normalize() + pd.Timedelta(
-            hours=self.config.schedule_hour, minutes=self.config.schedule_minute
-        )
-        end = scheduled + pd.Timedelta(minutes=self.config.schedule_window_minutes)
+        scheduled, _target, end = schedule_timestamps(self.config, now)
         if scheduled <= now <= end:
             return scheduled.strftime("%Y-%m-%dT%H:%MZ")
         return None

@@ -55,6 +55,8 @@ class StrategyConfig:
             or self.momentum_skip_days < 0
         ):
             raise ValueError("momentum_skip_days must be a nonnegative integer")
+        if self.momentum_skip_days >= self.momentum_long_days:
+            raise ValueError("momentum_skip_days must be less than momentum_long_days")
         if (
             isinstance(self.annualization_days, bool)
             or not isinstance(self.annualization_days, Real)

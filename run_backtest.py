@@ -14,6 +14,13 @@ from src.backtest import BacktestConfig, EventDrivenBacktester
 from src.backtest_report import write_backtest_report
 from src.benchmarks import run_benchmarks
 from src.config import load_canonical_research_config
+from src.config_validation import (
+    require_boolean,
+    require_integer,
+    require_mapping,
+    require_number,
+    require_string_list,
+)
 from src.logging_config import configure_logging
 from src.research_data import load_canonical_close_prices
 from src.strategy import StrategyConfig, generate_signal
@@ -27,29 +34,71 @@ def load_close_prices(processed_dir: Path, assets: list[str], timeframe: str) ->
 
 def load_run_configuration(project_root: Path) -> tuple[StrategyConfig, BacktestConfig]:
     load_dotenv(project_root / ".env", override=False)
-    payload = yaml.safe_load(
-        (project_root / "config" / "strategy.yaml").read_text(encoding="utf-8")
+    payload = require_mapping(
+        yaml.safe_load(
+            (project_root / "config" / "strategy.yaml").read_text(encoding="utf-8")
+        ),
+        "strategy configuration",
     )
-    if payload.get("optimization_enabled"):
+    for name in (
+        "research_only",
+        "strategy_enabled",
+        "optimization_enabled",
+        "experiment_manager_enabled",
+        "live_trading_enabled",
+    ):
+        require_boolean(payload.get(name), name)
+    if payload["optimization_enabled"]:
         raise ValueError("Parameter optimization must remain disabled in this phase")
-    strategy_values = payload["strategy"]
-    strategy = StrategyConfig(
-        momentum_short_days=int(strategy_values["momentum_short_days"]),
-        momentum_long_days=int(strategy_values["momentum_long_days"]),
-        momentum_skip_days=int(strategy_values["momentum_skip_days"]),
-        btc_moving_average_days=int(strategy_values["btc_moving_average_days"]),
-        volatility_days=int(strategy_values["volatility_days"]),
-        annualization_days=int(strategy_values["annualization_days"]),
-        max_assets=int(strategy_values["max_assets"]),
-        asset_caps={key: float(value) for key, value in strategy_values["asset_caps"].items()},
-        altcoins=set(strategy_values["altcoins"]),
-        max_altcoin_weight=float(strategy_values["max_altcoin_weight"]),
+    strategy_values = require_mapping(payload.get("strategy"), "strategy")
+    for name, minimum in (
+        ("momentum_short_days", 1),
+        ("momentum_long_days", 1),
+        ("momentum_skip_days", 0),
+        ("btc_moving_average_days", 1),
+        ("volatility_days", 2),
+        ("annualization_days", 1),
+        ("max_assets", 1),
+    ):
+        require_integer(strategy_values.get(name), f"strategy.{name}", minimum=minimum)
+    raw_caps = require_mapping(strategy_values.get("asset_caps"), "strategy.asset_caps")
+    asset_caps = {
+        key: require_number(value, f"strategy.asset_caps[{key}]", minimum=0.0, maximum=1.0)
+        for key, value in raw_caps.items()
+    }
+    altcoins = require_string_list(strategy_values.get("altcoins"), "strategy.altcoins", unique=True)
+    maximum_altcoin_weight = require_number(
+        strategy_values.get("max_altcoin_weight"),
+        "strategy.max_altcoin_weight",
+        minimum=0.0,
+        maximum=1.0,
     )
-    backtest_values = payload["backtest"]
+    strategy = StrategyConfig(
+        momentum_short_days=strategy_values["momentum_short_days"],
+        momentum_long_days=strategy_values["momentum_long_days"],
+        momentum_skip_days=strategy_values["momentum_skip_days"],
+        btc_moving_average_days=strategy_values["btc_moving_average_days"],
+        volatility_days=strategy_values["volatility_days"],
+        annualization_days=strategy_values["annualization_days"],
+        max_assets=strategy_values["max_assets"],
+        asset_caps=asset_caps,
+        altcoins=set(altcoins),
+        max_altcoin_weight=maximum_altcoin_weight,
+    )
+    backtest_values = require_mapping(payload.get("backtest"), "backtest")
     backtest = BacktestConfig(
-        initial_cash=float(backtest_values["initial_cash"]),
-        fee_rate=float(backtest_values["fee_rate"]),
-        slippage_rate=float(backtest_values["slippage_rate"]),
+        initial_cash=require_number(
+            backtest_values.get("initial_cash"), "backtest.initial_cash", minimum=0.0,
+            minimum_exclusive=True,
+        ),
+        fee_rate=require_number(
+            backtest_values.get("fee_rate"), "backtest.fee_rate", minimum=0.0,
+            maximum=1.0, maximum_exclusive=True,
+        ),
+        slippage_rate=require_number(
+            backtest_values.get("slippage_rate"), "backtest.slippage_rate", minimum=0.0,
+            maximum=1.0, maximum_exclusive=True,
+        ),
     )
     return strategy, backtest
 
@@ -62,11 +111,7 @@ def _week_key(timestamp: pd.Timestamp) -> tuple[int, int]:
 def find_common_analysis_start(
     prices: pd.DataFrame, strategy: StrategyConfig
 ) -> tuple[pd.Timestamp, pd.Timestamp]:
-    required = max(
-        strategy.momentum_long_days,
-        strategy.btc_moving_average_days - 1,
-        strategy.volatility_days,
-    ) + 1
+    required = strategy.required_observations
     for location in range(required - 1, len(prices.index) - 1):
         if _week_key(prices.index[location]) != _week_key(prices.index[location + 1]):
             return prices.index[location], prices.index[location + 1]

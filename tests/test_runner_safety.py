@@ -259,6 +259,48 @@ def test_canonical_backtest_ignores_economic_environment_overrides(tmp_path, mon
     assert backtest.slippage_rate == float(expected["slippage_rate"])
 
 
+@pytest.mark.parametrize(
+    ("section", "key", "value", "loader"),
+    [
+        ("paper_trading", "enabled", "false", "paper"),
+        ("paper_trading", "require_exchange_rules", "false", "paper"),
+        ("paper_trading", "initial_cash", "2000", "paper"),
+        ("paper_trading", "schedule_weekday", True, "paper"),
+        ("paper_trading", "accounting_currency", 5, "paper"),
+        ("strategy", "momentum_long_days", "90", "backtest"),
+        ("backtest", "initial_cash", "2000", "backtest"),
+        (None, "optimization_enabled", "false", "backtest"),
+        ("strategy", "asset_caps", ["BTC/USDT"], "backtest"),
+        ("strategy", "altcoins", [1], "backtest"),
+    ],
+)
+def test_configuration_loaders_reject_yaml_type_coercion(
+    tmp_path, section, key, value, loader
+):
+    import yaml
+
+    source_root = Path(__file__).resolve().parents[1]
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    shutil.copyfile(source_root / "config" / "assets.yaml", config_dir / "assets.yaml")
+    payload = yaml.safe_load(
+        (source_root / "config" / "strategy.yaml").read_text(encoding="utf-8")
+    )
+    if section is None:
+        payload[key] = value
+    else:
+        payload[section][key] = value
+    (config_dir / "strategy.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises((ValueError, PermissionError, TypeError, AttributeError)):
+        if loader == "paper":
+            run_paper.load_paper_configuration(tmp_path)
+        else:
+            from run_backtest import load_run_configuration
+
+            load_run_configuration(tmp_path)
+
+
 def test_backtest_cli_identifies_fixed_baseline_not_locked_candidate(monkeypatch, capsys):
     import run_backtest
 

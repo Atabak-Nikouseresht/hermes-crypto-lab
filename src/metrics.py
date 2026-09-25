@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from numbers import Real
 
 import numpy as np
 import pandas as pd
@@ -43,10 +44,29 @@ def calculate_performance_metrics(
     annualization_days: int = 365,
     cvar_confidence: float = 0.95,
 ) -> dict[str, float | int]:
+    if type(annualization_days) is not int or annualization_days <= 0:
+        raise ValueError("annualization_days must be an exact positive integer")
+    if (
+        isinstance(cvar_confidence, bool)
+        or not isinstance(cvar_confidence, Real)
+        or not math.isfinite(float(cvar_confidence))
+        or not 0 < cvar_confidence < 1
+    ):
+        raise ValueError("cvar_confidence must be finite and strictly between 0 and 1")
     if "equity" not in equity_curve or equity_curve.empty:
         raise ValueError("equity_curve must contain a non-empty equity column")
-    equity = equity_curve["equity"].astype(float).sort_index()
-    returns = equity.pct_change().dropna()
+    raw_equity = equity_curve["equity"]
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+        for value in raw_equity
+    ):
+        raise ValueError("equity values must be finite numeric values")
+    equity = raw_equity.astype(float).sort_index()
+    returns = equity.pct_change(fill_method=None).dropna()
+    if not np.isfinite(returns.to_numpy(dtype=float)).all():
+        raise ValueError("equity values produce non-finite returns")
     elapsed_days = max((equity.index[-1] - equity.index[0]).total_seconds() / 86_400, 0.0)
     if elapsed_days > 0 and equity.iloc[0] > 0 and equity.iloc[-1] > 0:
         cagr = (equity.iloc[-1] / equity.iloc[0]) ** (365.25 / elapsed_days) - 1.0

@@ -77,7 +77,7 @@ def test_momentum_skip_contract_and_no_lookahead(long, skip):
         ({"momentum_long_days": 120, "momentum_skip_days": 0,
           "btc_moving_average_days": 150}, 150),
         ({"momentum_short_days": 100}, 101),
-        ({"momentum_skip_days": 95}, 96),
+        ({"momentum_long_days": 100, "momentum_skip_days": 95}, 101),
         ({"volatility_days": 100}, 101),
     ],
 )
@@ -145,7 +145,29 @@ def test_strategy_config_rejects_invalid_allocation_structures(field, value):
         StrategyConfig(**{field: value})
 
 
-def test_strategy_config_retains_governed_skip_formula_without_skip_order_restriction():
-    config = StrategyConfig(momentum_long_days=90, momentum_skip_days=95)
+@pytest.mark.parametrize("skip", [90, 91])
+def test_strategy_config_rejects_skip_not_shorter_than_long_window(skip):
+    with pytest.raises(ValueError, match="momentum_skip_days"):
+        StrategyConfig(momentum_long_days=90, momentum_skip_days=skip)
 
-    assert config.momentum_skip_days > config.momentum_long_days
+
+@pytest.mark.parametrize("skip", [0, 89])
+def test_strategy_config_accepts_skip_shorter_than_long_window(skip):
+    assert StrategyConfig(momentum_long_days=90, momentum_skip_days=skip)
+
+
+def test_common_analysis_start_tracks_strategy_required_observations():
+    from run_backtest import find_common_analysis_start
+
+    prices = _rising_prices().iloc[:]
+    strategy = StrategyConfig(
+        momentum_short_days=220,
+        momentum_long_days=90,
+        momentum_skip_days=7,
+        btc_moving_average_days=100,
+        volatility_days=30,
+    )
+
+    signal_date, _execution_date = find_common_analysis_start(prices, strategy)
+
+    assert prices.index.get_loc(signal_date) >= strategy.required_observations - 1

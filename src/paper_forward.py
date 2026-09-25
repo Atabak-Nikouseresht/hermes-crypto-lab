@@ -14,6 +14,7 @@ import pandas as pd
 from src.paper_broker import MarketSnapshot, PaperRunResult, PaperTradingSystem
 from src.paper_notifications import NotificationService
 from src.paper_report import write_recovered_committed_report
+from src.schedule import schedule_target_from_start, schedule_timestamps
 from src.strategy import generate_signal
 
 ERROR_OUTCOMES = {
@@ -50,9 +51,7 @@ def _persisted_schedule_start(
         scheduled_start = scheduled_start.tz_convert("UTC")
     except (TypeError, ValueError):
         raise RuntimeError("Persisted schedule identity is invalid") from None
-    expected_start = scheduled_start.normalize() + pd.Timedelta(
-        hours=system.config.schedule_hour, minutes=system.config.schedule_minute
-    )
+    expected_start, _target, _end = schedule_timestamps(system.config, scheduled_start)
     if (
         scheduled_start != expected_start
         or scheduled_start.weekday() != system.config.schedule_weekday
@@ -171,10 +170,7 @@ def recover_committed_forward_evidence(
         elif not evidence_complete and system.store.forward_baseline_eligible(run_id=run_id):
             system.store.ensure_recovered_forward_baseline(run_id=run_id)
         schedule_start = pd.Timestamp(schedule_key).tz_convert("UTC")
-        scheduled_for = schedule_start.normalize() + pd.Timedelta(
-            hours=system.config.schedule_hour,
-            minutes=system.config.execution_target_minute,
-        )
+        scheduled_for = schedule_target_from_start(system.config, schedule_start)
         system.store.record_forward_window(
             schedule_key=schedule_key,
             scheduled_for=scheduled_for.to_pydatetime(),
@@ -284,10 +280,7 @@ def commit_operational_failure(
         reconciliation=reconciliation,
     )
     if schedule_key:
-        target = now_ts.normalize() + pd.Timedelta(
-            hours=system.config.schedule_hour,
-            minutes=system.config.execution_target_minute,
-        )
+        target = schedule_target_from_start(system.config, pd.Timestamp(schedule_key))
         system.store.record_forward_window(
             schedule_key=schedule_key,
             scheduled_for=target.to_pydatetime(),
@@ -491,10 +484,7 @@ def finalize_forward_run(
         system.store.ensure_forward_baseline(run_id=result.run_id)
     scheduled_for = None
     if schedule_start is not None:
-        scheduled_for = schedule_start.normalize() + pd.Timedelta(
-            hours=system.config.schedule_hour,
-            minutes=system.config.execution_target_minute,
-        )
+        scheduled_for = schedule_target_from_start(system.config, schedule_start)
         system.store.record_forward_window(
             schedule_key=row[5],
             scheduled_for=scheduled_for.to_pydatetime(),

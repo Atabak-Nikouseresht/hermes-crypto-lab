@@ -20,6 +20,7 @@ ASSETS = ("BTC/USDT",)
         ({"execution_target_minute": -1}, "execution_target_minute"),
         ({"execution_target_minute": 60}, "execution_target_minute"),
         ({"schedule_window_minutes": 0}, "schedule_window_minutes"),
+        ({"schedule_window_minutes": 61}, "schedule_window_minutes"),
         ({"schedule_minute": 5, "execution_target_minute": 4}, "execution_target_minute"),
         (
             {
@@ -45,6 +46,35 @@ def test_paper_config_rejects_operationally_invalid_values(overrides, message):
 
 def test_current_paper_config_defaults_remain_valid():
     PaperConfig(assets=ASSETS)
+
+
+def test_schedule_target_minute_rolls_into_next_hour():
+    config = PaperConfig(
+        assets=ASSETS,
+        schedule_hour=0,
+        schedule_minute=55,
+        execution_target_minute=5,
+        schedule_window_minutes=20,
+    )
+
+    assert config.execution_target_minute == 5
+
+
+def test_schedule_target_outside_cross_hour_window_is_rejected():
+    with pytest.raises(ValueError, match="execution_target_minute"):
+        PaperConfig(
+            assets=ASSETS,
+            schedule_hour=0,
+            schedule_minute=55,
+            execution_target_minute=20,
+            schedule_window_minutes=20,
+        )
+
+
+@pytest.mark.parametrize("exchange_id", ["", 1, None])
+def test_paper_config_rejects_malformed_exchange_id(exchange_id):
+    with pytest.raises(ValueError, match="exchange_id"):
+        PaperConfig(assets=ASSETS, exchange_id=exchange_id)
 
 
 @pytest.mark.parametrize("value", [True, 1.5, math.inf, "30"])

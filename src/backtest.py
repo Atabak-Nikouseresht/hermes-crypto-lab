@@ -25,10 +25,20 @@ class BacktestConfig:
     quantity_tolerance: float = 1e-12
 
     def __post_init__(self) -> None:
-        if self.initial_cash <= 0:
-            raise ValueError("initial_cash must be positive")
-        if self.rebalance_interval_days <= 0 or self.rebalance_interval_days % 7 != 0:
+        if (
+            isinstance(self.initial_cash, bool)
+            or not isinstance(self.initial_cash, Real)
+            or not math.isfinite(float(self.initial_cash))
+            or self.initial_cash <= 0
+        ):
+            raise ValueError("initial_cash must be a positive finite number")
+        if (
+            type(self.rebalance_interval_days) is not int
+            or self.rebalance_interval_days <= 0
+            or self.rebalance_interval_days % 7 != 0
+        ):
             raise ValueError("rebalance_interval_days must be a positive multiple of 7")
+        ExecutionCostModel(self.fee_rate, self.slippage_rate)
         if (
             isinstance(self.quantity_tolerance, bool)
             or not isinstance(self.quantity_tolerance, Real)

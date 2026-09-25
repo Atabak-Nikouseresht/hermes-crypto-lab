@@ -100,18 +100,13 @@ def _prohibited_category(method_name: str) -> str | None:
 
 def scan(root: Path) -> list[tuple[str, str, int]]:
     findings: list[tuple[str, str, int]] = []
-    candidates = [root / "src", root / "scripts"] + [
-        root / name
-        for name in ("run_paper.py", "run_monthly_report.py", "run_data_pipeline.py")
-    ]
+    candidates = [root / "src", root / "scripts", *sorted(root.glob("run_*.py"))]
     files = []
     for candidate in candidates:
         if candidate.is_dir():
             files.extend(candidate.rglob("*.py"))
         elif candidate.is_file():
             files.append(candidate)
-    scanner_path = (root / "scripts" / "verify_safety.py").resolve()
-    files = [path for path in files if path.resolve() != scanner_path]
     for path in sorted(files):
         text = path.read_text(encoding="utf-8")
         for line_number, line in enumerate(text.splitlines(), start=1):

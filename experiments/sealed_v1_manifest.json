@@ -1,0 +1,125 @@
+{
+  "files": [
+    {
+      "path": "experiments/runs/20260821T235949528849Z/candidate_lock.json",
+      "sha256": "ddc4a4a5c144378d13640e659aa0d2476aff4352cf954beda955a1d719874b80"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/experiment_ledger.jsonl",
+      "sha256": "7057e069593c714044b6931882e565e01f3f5ded4e3a3e169f095b3ad220de5e"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/experiment_summary.json",
+      "sha256": "5803bf10d5f657cbfff0913855f009ce821863650b2acf69ce245a7cb01bd155"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/final_test.json",
+      "sha256": "4fdf108c352eeb5287f8cc6820360cc40b7d685d337e2284146f4d669f328b4b"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/final_test_cash.parquet",
+      "sha256": "0428681c823bffb11cdc9556a34d77525da48ecf1770c3330198abb87cb44e72"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/final_test_equity.parquet",
+      "sha256": "25df61139e6f6acd9f5036b166d9f5c55c47cb0f907c64f86301352b6f4e983e"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/final_test_fills.parquet",
+      "sha256": "2f693d9f532761a2a06f60266bdc18bae25235a53bccb6b49b440ae812573f64"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/final_test_orders.parquet",
+      "sha256": "b4d5ce7a73fb853679de4734cc9598cd1af90001a12f8c0021d9c6c604ec542b"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/final_test_positions.parquet",
+      "sha256": "1d6b091c46554dfe9ee41847a30769862d55a545a39dc89bb7c7cefbc6daa846"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/ledger_manifest.json",
+      "sha256": "ee8dddf367330ee5e56dc29df6ff8070d04879d0f9b075b82c67e62976989c83"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/robustness_report.md",
+      "sha256": "47822c42cd22ea1cfa7147deacbfd2b85e4b708a8c683c1b09cc0c545d016092"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/training_trials.parquet",
+      "sha256": "b0142de81d21107378b120e78a2fb6a20b1400f05283c1e2ea8c4bab449a8231"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/validation_trials.parquet",
+      "sha256": "d2a5e5527c113c1efa83f9b3a2b083d9fac2d55ce36976372421407f90b5a5e9"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/walk_forward_trials.parquet",
+      "sha256": "0cc08957020b44a30204c632c4092288a0f89fd70770aa57d9c3b069d673a1f9"
+    },
+    {
+      "path": "experiments/runs/20260821T235949528849Z/walk_forward_validation.md",
+      "sha256": "a6b4d46643b74b5eaaf0710bc93740bdc5b2a41134a86319c86a339800bd172c"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/candidate_lock.json",
+      "sha256": "a41c537097f54d106bf691a09ec7172110b314d02425a71aa0e8745f78dbf944"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/experiment_ledger.jsonl",
+      "sha256": "18650fd42f491451c3cf7ee2a3faf122d18fd828ee01292c4d6f6d46951691f6"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/experiment_summary.json",
+      "sha256": "d14be16ba63ce4920eae1ac8d4fd8258f5593e81e2ae33bc72cc2b0c17263703"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/final_test.json",
+      "sha256": "f745af92a841c0a9f7b7393c0bc97955081ef6f3c871cead95b970f09fd4d3ed"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/final_test_cash.parquet",
+      "sha256": "e54d23f0679946dc1326c1dae9751327be260e49f9b7c4b656d91cce6abc2174"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/final_test_equity.parquet",
+      "sha256": "7815e4d79316440032ad2cf48ebe1b63df277aae6c762270c6d6b51b8873c7f2"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/final_test_fills.parquet",
+      "sha256": "cc3d805f042168e3ee090f38933538692543b91590693f486e5fb0e192bf393e"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/final_test_orders.parquet",
+      "sha256": "dbf644cd01518ea6879a02addaeb98a1b07790eaf0ab81bfb36ad12541fdc598"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/final_test_positions.parquet",
+      "sha256": "88d0b32ca8fa091b6b9a49c4d3afa4073bc58c8edcc285e59cf749b56194f184"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/ledger_manifest.json",
+      "sha256": "93b2a901f942dbd205f9947b834b31667c25b74ba6c5ad518fb0793d22d66957"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/robustness_report.md",
+      "sha256": "a3a3fd72f442896eca32ffd30cd51c97728d1c8228423670a082e16b40adf2b2"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/training_trials.parquet",
+      "sha256": "a39e5099eb58b446edaefe7d823cba785ab400f89f11f1bca89f34c9980b667c"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/validation_trials.parquet",
+      "sha256": "17e03d5a2468786611a4d81443cf833b8f06920657cf35c8fe6d5c7de220ac11"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/walk_forward_trials.parquet",
+      "sha256": "081bee80d0802ed888922278780c0743ec50ebfde95977b310a98628daf55cbc"
+    },
+    {
+      "path": "experiments/runs/20260822T000641481839Z/walk_forward_validation.md",
+      "sha256": "26198f303b486e7e05fe1fe74e4201c63310486c04d5b88bf960e2b1a20e80e1"
+    }
+  ],
+  "version": 1
+}

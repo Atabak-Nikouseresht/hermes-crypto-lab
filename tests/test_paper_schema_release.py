@@ -26,6 +26,12 @@ def _store(path: Path) -> PaperStore:
     return PaperStore(path, account_id="locked_strategy", initial_cash=2_000.0)
 
 
+def _legacy_forward_specification_json() -> str:
+    return (Path(__file__).resolve().parents[1] / "forward_experiment" / "governance.json").read_text(
+        encoding="utf-8"
+    )
+
+
 def _schema_versions_from_snapshot(snapshot: str) -> dict[int, str]:
     footer = snapshot.split("-- schema versions\n", maxsplit=1)[1].strip()
     return dict(ast.literal_eval(footer))
@@ -96,8 +102,8 @@ def _seed_valid_official_run(store: PaperStore, *, run_id: str = "current") -> d
     now = datetime.now(timezone.utc)
     with store.connect() as connection:
         connection.execute(
-            "INSERT INTO forward_experiments VALUES (?, ?, 'locked', 'strategy', ?, '{}', 'ACTIVE')",
-            ["forward-1", now, f"governance-{run_id}"],
+            "INSERT INTO forward_experiments VALUES (?, ?, 'locked', 'strategy', ?, ?, 'ACTIVE')",
+            ["forward-1", now, f"governance-{run_id}", _legacy_forward_specification_json()],
         )
     store.insert_run(
         run_id=run_id,
@@ -201,8 +207,8 @@ def test_release_provenance_is_immutable_and_required_after_adoption(tmp_path):
     with store.connect() as connection:
         connection.execute(
             "INSERT INTO forward_experiments VALUES "
-            "('forward-1', ?, 'locked', 'strategy', 'governance', '{}', 'ACTIVE')",
-            [now],
+            "('forward-1', ?, 'locked', 'strategy', 'governance', ?, 'ACTIVE')",
+            [now, _legacy_forward_specification_json()],
         )
         connection.execute(
             "INSERT INTO paper_runs "
@@ -357,6 +363,7 @@ def test_real_v15_migration_preserves_history_and_is_idempotent(tmp_path):
                     f'SELECT {selected} FROM "{table}"{where} ORDER BY ALL'
                 ).fetchall() == historical[table], (initialization, table)
             assert connection.execute("SELECT * FROM paper_market_rule_evidence").fetchall() == []
+
             assert connection.execute(
                 "SELECT run_id, official_scheduled, market_rule_evidence_required FROM paper_runs"
             ).fetchall() == [("legacy-paper", True, False)]
@@ -367,14 +374,14 @@ def test_real_v15_migration_preserves_history_and_is_idempotent(tmp_path):
                 (17, "prospective market-rule acquisition and admission evidence v2"),
                 (18, V18_PRICE_RANGE),
                 (19, "prospective notification report integrity and manual recovery audit"),
-            ]
+                ]
             current_tables = _schema_tables(connection)
             assert current_tables == tables | {
                 "notification_audit_events",
                 "paper_market_rule_evidence",
                 "paper_execution_rules_evidence",
                 "paper_price_range_decisions",
-            }
+                }
             structure = {table: _schema_structure(connection, table) for table in current_tables}
             rows = {
                 table: connection.execute(f'SELECT * FROM "{table}" ORDER BY ALL').fetchall()
@@ -429,7 +436,10 @@ def test_adoption_boundary_requires_official_provenance_at_and_after_v13(tmp_pat
     boundary = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
     with store.connect() as connection:
         connection.execute("UPDATE paper_schema_versions SET applied_at_utc=? WHERE version=13", [boundary])
-        connection.execute("INSERT INTO forward_experiments VALUES ('forward', ?, 'locked', 'strategy', 'governance', '{}', 'ACTIVE')", [boundary])
+        connection.execute(
+            "INSERT INTO forward_experiments VALUES ('forward', ?, 'locked', 'strategy', 'governance', ?, 'ACTIVE')",
+            [boundary, _legacy_forward_specification_json()],
+        )
         for run_id, timestamp in (("before", datetime(2026, 9, 5, 11, 59, 59, tzinfo=timezone.utc)), ("at", boundary), ("after", datetime(2026, 9, 5, 12, 0, 1, tzinfo=timezone.utc))):
             connection.execute("INSERT INTO paper_runs (run_id, started_at_utc, completed_at_utc, status, mode, official_scheduled) VALUES (?, ?, ?, 'DATA_HALT', 'PAPER', TRUE)", [run_id, timestamp, timestamp])
     assert not store.reconcile().valid

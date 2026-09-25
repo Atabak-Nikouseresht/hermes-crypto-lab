@@ -175,3 +175,51 @@ def test_penalized_score_reduces_turnover_and_drawdown_excesses():
     assert penalized_score(base, duration_days=365) > penalized_score(
         expensive, duration_days=365
     )
+
+
+@pytest.mark.parametrize("finalist_count", [0, -1, True, False, 1.0, "1", 3])
+def test_select_stable_finalists_rejects_invalid_count_before_ranking(finalist_count):
+    candidates = [Candidate(60, 0, 150, 1, 7, 30), Candidate(90, 0, 150, 1, 7, 30)]
+    scores = {candidate.candidate_id: 1.0 for candidate in candidates}
+
+    with pytest.raises(ValueError, match="finalist_count"):
+        select_stable_finalists(candidates, scores, finalist_count=finalist_count)
+
+
+@pytest.mark.parametrize("expected_training_trials", [0, -1, True, False, 1.0, "1"])
+def test_experiment_gate_rejects_invalid_expected_training_count(
+    expected_training_trials,
+):
+    with pytest.raises(ValueError, match="expected_training_trials"):
+        ExperimentGate(expected_training_trials)
+
+
+def _gate_after_training(candidate_ids=("a", "b")) -> ExperimentGate:
+    gate = ExperimentGate(expected_training_trials=len(candidate_ids))
+    for candidate_id in candidate_ids:
+        gate.record_training(candidate_id)
+    return gate
+
+
+@pytest.mark.parametrize(
+    "candidate_ids",
+    [[], ["a", "a"], ["missing"], [" "], [1], ["a", "b", "c"]],
+)
+def test_set_finalists_rejects_invalid_declaration_without_mutating_state(candidate_ids):
+    gate = _gate_after_training()
+    training_ids = gate.training_ids.copy()
+
+    with pytest.raises(ValueError):
+        gate.set_finalists(candidate_ids)
+
+    assert gate.finalist_ids is None
+    assert gate.validated_ids == set()
+    assert gate.training_ids == training_ids
+
+
+def test_set_finalists_accepts_unique_observed_candidate_ids():
+    gate = _gate_after_training()
+
+    gate.set_finalists(["b", "a"])
+
+    assert gate.finalist_ids == {"a", "b"}

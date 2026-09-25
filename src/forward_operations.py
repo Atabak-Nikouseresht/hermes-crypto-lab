@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from src.paper_broker import PaperConfig, PaperRunResult
+from src.schedule import schedule_timestamps
 from src.paper_store import PaperStore
 
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc).isoformat()
@@ -166,14 +167,7 @@ def _scheduled_mondays(start: pd.Timestamp, now: pd.Timestamp, config: PaperConf
     while cursor.weekday() != config.schedule_weekday:
         cursor += pd.Timedelta(days=1)
     while cursor <= now.normalize():
-        window_start = cursor + pd.Timedelta(
-            hours=config.schedule_hour, minutes=config.schedule_minute
-        )
-        window_end = window_start + pd.Timedelta(minutes=config.schedule_window_minutes)
-        target = cursor + pd.Timedelta(
-            hours=config.schedule_hour,
-            minutes=getattr(config, "execution_target_minute", 10),
-        )
+        window_start, target, window_end = schedule_timestamps(config, cursor)
         if now > window_end:
             yield window_start, target
         cursor += pd.Timedelta(days=7)

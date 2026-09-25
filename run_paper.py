@@ -13,6 +13,13 @@ import yaml
 from dotenv import load_dotenv
 
 from src.config import Settings, load_assets, load_settings
+from src.config_validation import (
+    require_boolean,
+    require_integer,
+    require_mapping,
+    require_number,
+    require_string,
+)
 from src.execution_protocol import EXECUTION_PROTOCOL_VERSION
 from src.forward_governance import bootstrap_forward_experiment, verify_trust_anchors
 from src.forward_operations import (
@@ -38,6 +45,7 @@ from src.paper_notifications import (
 )
 from src.paper_report import write_operational_failure_report, write_weekly_paper_report
 from src.release_provenance import ReleaseProvenanceError, capture_release_provenance
+from src.schedule import schedule_timestamps, schedule_window_end
 
 LOGGER = logging.getLogger(__name__)
 CANONICAL_PAPER_DATABASE_PATH = Path("database") / "paper_trading.duckdb"
@@ -54,36 +62,94 @@ def _boolean(value: str) -> bool:
 
 def load_paper_configuration(project_root: Path) -> tuple[PaperConfig, dict]:
     load_dotenv(project_root / ".env", override=False)
-    payload = yaml.safe_load(
-        (project_root / "config" / "strategy.yaml").read_text(encoding="utf-8")
+    payload = require_mapping(
+        yaml.safe_load(
+            (project_root / "config" / "strategy.yaml").read_text(encoding="utf-8")
+        ),
+        "strategy configuration",
     )
-    values = payload["paper_trading"]
-    if not values.get("enabled"):
-        raise PermissionError("Paper trading is disabled")
-    if payload.get("live_trading_enabled"):
+    for name in (
+        "research_only",
+        "strategy_enabled",
+        "optimization_enabled",
+        "experiment_manager_enabled",
+        "live_trading_enabled",
+    ):
+        require_boolean(payload.get(name), name)
+    if payload["live_trading_enabled"]:
         raise PermissionError("Live trading must remain disabled")
-    if values.get("execution_protocol_version") != EXECUTION_PROTOCOL_VERSION:
+    if payload["optimization_enabled"]:
+        raise ValueError("Parameter optimization must remain disabled in this phase")
+    values = require_mapping(payload.get("paper_trading"), "paper_trading")
+    enabled = require_boolean(values.get("enabled"), "paper_trading.enabled")
+    if not enabled:
+        raise PermissionError("Paper trading is disabled")
+    require_boolean(values.get("default_dry_run"), "paper_trading.default_dry_run")
+    if (
+        require_string(
+            values.get("execution_protocol_version"),
+            "paper_trading.execution_protocol_version",
+        )
+        != EXECUTION_PROTOCOL_VERSION
+    ):
         raise PermissionError("Configured execution protocol differs from code-locked protocol")
+    exchange_id = require_string(values.get("exchange"), "paper_trading.exchange")
+    if exchange_id != "binance":
+        raise ValueError("paper execution supports only exchange_id='binance'")
+    candidate_id = require_string(
+        values.get("locked_candidate_id"), "paper_trading.locked_candidate_id"
+    )
+    accounting_currency = require_string(
+        values.get("accounting_currency"), "paper_trading.accounting_currency"
+    )
+    require_string(values.get("locked_from_experiment"), "paper_trading.locked_from_experiment")
+    require_string(values.get("database_path"), "paper_trading.database_path")
+    require_string(values.get("reports_dir"), "paper_trading.reports_dir")
+    initial_cash = require_number(
+        values.get("initial_cash"), "paper_trading.initial_cash", minimum=0.0,
+        minimum_exclusive=True,
+    )
+    for name, minimum in (
+        ("lookback_days", 1),
+        ("schedule_weekday", 0),
+        ("schedule_hour", 0),
+        ("schedule_minute", 0),
+        ("execution_target_minute", 0),
+        ("schedule_window_minutes", 1),
+        ("max_data_staleness_minutes", 1),
+        ("max_quote_staleness_minutes", 1),
+    ):
+        maximum = {"schedule_weekday": 6, "schedule_hour": 23,
+                   "schedule_minute": 59, "execution_target_minute": 59,
+                   "schedule_window_minutes": 60}.get(name)
+        require_integer(values.get(name), f"paper_trading.{name}", minimum=minimum, maximum=maximum)
+    for name in ("require_exchange_rules", "require_execution_rule_evidence"):
+        require_boolean(values.get(name), f"paper_trading.{name}")
+    for name in ("fee_rate", "minimum_spread_rate", "slippage_rate"):
+        require_number(
+            values.get(name), f"paper_trading.{name}", minimum=0.0,
+            maximum=1.0, maximum_exclusive=True,
+        )
     assets = tuple(load_assets(project_root / "config" / "assets.yaml"))
     config = PaperConfig.from_locked_candidate(
         assets=assets,
-        locked_candidate_id=str(values["locked_candidate_id"]),
-        initial_cash=float(values["initial_cash"]),
-        accounting_currency=str(values["accounting_currency"]),
-        exchange_id=str(values["exchange"]),
-        lookback_days=int(values["lookback_days"]),
-        fee_rate=float(values["fee_rate"]),
-        minimum_spread_rate=float(values["minimum_spread_rate"]),
-        slippage_rate=float(values["slippage_rate"]),
-        schedule_weekday=int(values["schedule_weekday"]),
-        schedule_hour=int(values["schedule_hour"]),
-        schedule_minute=int(values["schedule_minute"]),
-        execution_target_minute=int(values["execution_target_minute"]),
-        schedule_window_minutes=int(values["schedule_window_minutes"]),
-        max_data_staleness_minutes=int(values["max_data_staleness_minutes"]),
-        max_quote_staleness_minutes=int(values["max_quote_staleness_minutes"]),
-        require_exchange_rules=bool(values["require_exchange_rules"]),
-        require_execution_rule_evidence=bool(values["require_execution_rule_evidence"]),
+        locked_candidate_id=candidate_id,
+        initial_cash=initial_cash,
+        accounting_currency=accounting_currency,
+        exchange_id=exchange_id,
+        lookback_days=values["lookback_days"],
+        fee_rate=values["fee_rate"],
+        minimum_spread_rate=values["minimum_spread_rate"],
+        slippage_rate=values["slippage_rate"],
+        schedule_weekday=values["schedule_weekday"],
+        schedule_hour=values["schedule_hour"],
+        schedule_minute=values["schedule_minute"],
+        execution_target_minute=values["execution_target_minute"],
+        schedule_window_minutes=values["schedule_window_minutes"],
+        max_data_staleness_minutes=values["max_data_staleness_minutes"],
+        max_quote_staleness_minutes=values["max_quote_staleness_minutes"],
+        require_exchange_rules=values["require_exchange_rules"],
+        require_execution_rule_evidence=values["require_execution_rule_evidence"],
     )
     return config, values
 
@@ -202,10 +268,7 @@ def _current_schedule_window_closed(
     if current.tzinfo is None:
         raise ValueError("Schedule audit time must be timezone-aware")
     current = current.tz_convert("UTC")
-    window_end = current.normalize() + pd.Timedelta(
-        hours=config.schedule_hour,
-        minutes=config.schedule_minute + config.schedule_window_minutes,
-    )
+    _window_start, _target, window_end = schedule_timestamps(config, current)
     return current.weekday() == config.schedule_weekday and current > window_end
 
 
@@ -217,9 +280,7 @@ def _schedule_window_deadline(
     window_start = pd.Timestamp(schedule_key)
     if window_start.tzinfo is None:
         raise ValueError("Schedule key must be timezone-aware")
-    return window_start.tz_convert("UTC") + pd.Timedelta(
-        minutes=config.schedule_window_minutes
-    )
+    return schedule_window_end(config, window_start)
 
 
 def _latest_schedule_key(now: datetime | pd.Timestamp, config: PaperConfig) -> str:
@@ -228,13 +289,12 @@ def _latest_schedule_key(now: datetime | pd.Timestamp, config: PaperConfig) -> s
         raise ValueError("Schedule audit time must be timezone-aware")
     current = current.tz_convert("UTC")
     days_since_schedule = (current.weekday() - config.schedule_weekday) % 7
-    window_start = current.normalize() - pd.Timedelta(days=days_since_schedule)
-    window_start += pd.Timedelta(
-        hours=config.schedule_hour,
-        minutes=config.schedule_minute,
-    )
+    schedule_day = current.normalize() - pd.Timedelta(days=days_since_schedule)
+    window_start, _target, _end = schedule_timestamps(config, schedule_day)
     if window_start > current:
-        window_start -= pd.Timedelta(days=7)
+        window_start, _target, _end = schedule_timestamps(
+            config, schedule_day - pd.Timedelta(days=7)
+        )
     return window_start.strftime("%Y-%m-%dT%H:%MZ")
 
 

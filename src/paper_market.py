@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
+import logging
 import math
 from typing import Any, Callable, Protocol
 from urllib.error import HTTPError, URLError
@@ -26,6 +27,8 @@ from src.paper_broker import (
     validate_reference_price_evidence,
 )
 from src.validate_data import rows_to_frame
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PublicMarketCapability(Protocol):
@@ -383,6 +386,10 @@ def fetch_public_market_snapshot(
     acquisition_clock: Callable[[], datetime] | None = None,
 ) -> MarketSnapshot:
     """Fetch public OHLCV and ticker data; no trading method is ever called."""
+    if type(config.exchange_id) is not str or config.exchange_id != "binance":
+        raise ValueError("paper execution supports only exchange_id='binance'")
+    if exchange is None and (type(exchange_id) is not str or exchange_id != "binance"):
+        raise ValueError("paper execution supports only exchange_id='binance'")
     current = pd.Timestamp(now or datetime.now(timezone.utc)).tz_convert("UTC")
     since = current.normalize() - pd.Timedelta(days=lookback_days)
     since_ms = int(since.timestamp() * 1000)
@@ -553,7 +560,10 @@ def fetch_public_market_snapshot(
         if owned_exchange:
             close = getattr(market, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception:
+                    LOGGER.warning("Owned public market client cleanup failed", exc_info=True)
     fetched_at = current if now is not None else pd.Timestamp.now(tz="UTC")
     closes = pd.concat(close_series, axis=1, join="inner").sort_index()
     return MarketSnapshot(

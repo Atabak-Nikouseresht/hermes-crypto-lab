@@ -97,3 +97,31 @@ def test_canonical_research_config_uses_governed_daily_assets(monkeypatch, tmp_p
 
     assert canonical.settings.timeframe == "1d"
     assert canonical.assets == ("BTC/USDT",)
+
+
+@pytest.mark.parametrize(
+    "assets",
+    [
+        [" btc/usdt "],
+        ["BTCUSDT"],
+        ["BTC/"],
+        ["/USDT"],
+        ["BTC/USDT", "BTC/USDT"],
+        [True],
+        [1],
+        [None],
+        [""],
+        ["btc/usdt"],
+        ["BTC/U SDT"],
+    ],
+)
+def test_load_assets_rejects_malformed_symbols(tmp_path, assets):
+    import yaml
+
+    from src.config import load_assets
+
+    path = tmp_path / "assets.yaml"
+    path.write_text(yaml.safe_dump({"assets": assets}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="asset"):
+        load_assets(path)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 import os
+import re
 
 import yaml
 from dotenv import load_dotenv
@@ -98,10 +99,21 @@ def load_settings(project_root: Path | None = None) -> Settings:
 
 
 def load_assets(path: Path) -> list[str]:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    assets = payload.get("assets", [])
-    if not assets or not all(isinstance(symbol, str) for symbol in assets):
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid asset configuration in {path}")
+    assets = payload.get("assets")
+    if type(assets) is not list or not assets:
         raise ValueError(f"No valid assets configured in {path}")
+    if any(
+        type(symbol) is not str
+        or symbol != symbol.strip()
+        or re.fullmatch(r"[A-Z0-9]+/[A-Z0-9]+", symbol) is None
+        for symbol in assets
+    ):
+        raise ValueError(f"Invalid asset symbol in {path}")
+    if len(set(assets)) != len(assets):
+        raise ValueError(f"Duplicate asset symbols in {path}")
     return assets
 
 

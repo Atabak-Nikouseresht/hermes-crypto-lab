@@ -120,3 +120,52 @@ def test_backtest_config_rejects_tolerances_that_could_bypass_weight_validation(
 ):
     with pytest.raises(ValueError, match="quantity_tolerance"):
         BacktestConfig(quantity_tolerance=tolerance)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"initial_cash": True},
+        {"initial_cash": np.nan},
+        {"initial_cash": np.inf},
+        {"initial_cash": "100"},
+        {"rebalance_interval_days": True},
+        {"rebalance_interval_days": 7.0},
+        {"rebalance_interval_days": 0},
+        {"fee_rate": True},
+        {"fee_rate": np.nan},
+        {"fee_rate": 1.0},
+        {"slippage_rate": np.inf},
+    ],
+)
+def test_backtest_config_rejects_malformed_economic_controls(overrides):
+    with pytest.raises(ValueError):
+        BacktestConfig(**overrides)
+
+
+@pytest.mark.parametrize(
+    ("quantity", "price"),
+    [
+        (True, 100.0),
+        (np.nan, 100.0),
+        (np.inf, 100.0),
+        (1.0, True),
+        (1.0, np.nan),
+        (1.0, np.inf),
+        (1.0, 0.0),
+    ],
+)
+def test_execution_cost_fee_rejects_malformed_values(quantity, price):
+    with pytest.raises(ValueError):
+        ExecutionCostModel().fee(quantity, price)
+
+
+@pytest.mark.parametrize("price", [True, np.nan, np.inf, -np.inf, 0.0, -1.0])
+def test_execution_price_rejects_malformed_market_price(price):
+    with pytest.raises(ValueError):
+        ExecutionCostModel().execution_price(price, "BUY")
+
+
+def test_execution_price_rejects_non_string_side():
+    with pytest.raises(ValueError, match="side"):
+        ExecutionCostModel().execution_price(100.0, None)

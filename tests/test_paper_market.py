@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dataclasses import replace
 
 import pandas as pd
 import pytest
@@ -364,6 +365,77 @@ def test_public_snapshot_uses_only_market_data_methods():
     assert snapshot.rule_reference_prices["BTC/USDT"].source == "REFERENCE_PRICE"
     assert snapshot.rule_reference_prices["BTC/USDT"].timestamp == pd.Timestamp(now)
     assert not hasattr(exchange, "create_order")
+
+
+@pytest.mark.parametrize(
+    ("config_exchange", "requested_exchange"),
+    [("kraken", "binance"), ("binance", "coinbase")],
+)
+def test_paper_market_rejects_non_binance_before_client_creation(
+    monkeypatch, config_exchange, requested_exchange
+):
+    client_creation = []
+
+    def forbidden_create(*_args):
+        client_creation.append(True)
+        raise AssertionError("client creation must not occur")
+
+    monkeypatch.setattr("src.paper_market.create_public_market_client", forbidden_create)
+    config = replace(PaperConfig(assets=("BTC/USDT",)), exchange_id=config_exchange)
+
+    with pytest.raises(ValueError, match="only exchange_id='binance'"):
+        fetch_public_market_snapshot(config, exchange_id=requested_exchange)
+
+    assert client_creation == []
+
+
+def test_owned_exchange_cleanup_failure_does_not_replace_success(monkeypatch):
+    now = datetime(2024, 8, 5, 0, 10, tzinfo=timezone.utc)
+    dates = pd.date_range(end="2024-08-04", periods=160, freq="D", tz="UTC")
+    rows = [
+        [int(timestamp.timestamp() * 1000), 100, 101, 99, 100, 10]
+        for timestamp in dates
+    ]
+    exchange = FakePublicExchange(rows, int(pd.Timestamp(now).timestamp() * 1000))
+
+    def fail_close():
+        raise RuntimeError("cleanup")
+
+    exchange.close = fail_close
+    monkeypatch.setattr(
+        "src.paper_market.create_public_market_client",
+        lambda _exchange_id, _timeout_ms: exchange,
+    )
+
+    snapshot = fetch_public_market_snapshot(
+        PaperConfig(assets=("BTC/USDT",)),
+        now=now,
+        acquisition_clock=lambda: now,
+        lookback_days=200,
+        max_retries=0,
+    )
+
+    assert snapshot.closes.index[-1] == pd.Timestamp("2024-08-04", tz="UTC")
+
+
+def test_owned_exchange_cleanup_failure_does_not_mask_acquisition_error(monkeypatch):
+    exchange = FakePublicExchange([], 0)
+
+    def fail_load_markets():
+        raise ValueError("acquisition")
+
+    def fail_close():
+        raise RuntimeError("cleanup")
+
+    exchange.load_markets = fail_load_markets
+    exchange.close = fail_close
+    monkeypatch.setattr(
+        "src.paper_market.create_public_market_client",
+        lambda _exchange_id, _timeout_ms: exchange,
+    )
+
+    with pytest.raises(ValueError, match="acquisition"):
+        fetch_public_market_snapshot(PaperConfig(assets=("BTC/USDT",)), max_retries=0)
 
 
 @pytest.mark.parametrize(

@@ -33,17 +33,3 @@ files = [
 # Analyze the explicitly listed targets without expanding the bounded scope into
 # legacy imports; errors in every target remain visible.
 follow_imports = "silent"
-
-[tool.mutmut]
-source_paths = ["src/"]
-only_mutate = [
-    "src/config_validation.py",
-    "src/schedule.py",
-    "src/costs.py",
-]
-pytest_add_cli_args_test_selection = [
-    "tests/test_config_validation.py",
-    "tests/test_paper_config.py",
-    "tests/test_schedule.py",
-    "tests/test_costs.py",
-]

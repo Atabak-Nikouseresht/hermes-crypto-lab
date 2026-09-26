@@ -4,6 +4,8 @@ import tomllib
 
 import yaml
 
+from scripts.prepare_mutation_assurance import MUTATION_TARGETS
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -113,9 +115,9 @@ def test_gitleaks_is_pinned_redacted_and_least_privilege():
 def test_weekly_assurance_workflow_runs_deep_security_and_mutation_gates():
     workflow_path = ROOT / ".github" / "workflows" / "scheduled-assurance.yml"
     workflow = workflow_path.read_text(encoding="utf-8")
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert "workflow_dispatch:" in workflow
+    assert "prepare_mutation_assurance.py" in workflow
     assert re.search(r"schedule:\s*\n\s+- cron: ['\"]\d+ \d+ \* \* \d['\"]", workflow)
     assert "fetch-depth: 0" in workflow
     assert "pip check" in workflow
@@ -138,23 +140,17 @@ def test_weekly_assurance_workflow_runs_deep_security_and_mutation_gates():
     assert "pip install --require-hashes -r requirements.lock" in workflow
     assert "pip install --require-hashes -r requirements-quality.lock" in workflow
     assert "timeout-minutes: 60" in workflow
-
-    mutation_config = config["tool"]["mutmut"]
-    assert mutation_config["source_paths"] == ["src/"]
-    assert mutation_config["only_mutate"] == [
+    assert "working-directory: ${{ runner.temp }}/hcl-mutation-assurance" in workflow
+    assert "HCL_MUTATION_PACKAGE: mutation_targets" in workflow
+    assert "--minimum-score 80" in workflow
+    assert MUTATION_TARGETS == (
         "src/config_validation.py",
         "src/schedule.py",
         "src/costs.py",
-    ]
-    assert mutation_config["pytest_add_cli_args_test_selection"] == [
-        "tests/test_config_validation.py",
-        "tests/test_paper_config.py",
-        "tests/test_schedule.py",
-        "tests/test_costs.py",
-    ]
+    )
 
 
-def test_workflow_yaml_parses_and_scheduled_assurance_is_main_only():
+def test_workflow_yaml_parses_and_allows_manual_assurance_on_feature_branches():
     ci = yaml.load(
         (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
@@ -169,4 +165,6 @@ def test_workflow_yaml_parses_and_scheduled_assurance_is_main_only():
     assert set(ci["on"]) == {"pull_request", "push"}
     assert set(assurance["on"]) == {"schedule", "workflow_dispatch"}
     assert assurance["on"]["schedule"][0]["cron"] == "30 6 * * 1"
-    assert assurance["jobs"]["assurance"]["if"] == "github.ref == 'refs/heads/main'"
+    assert assurance["jobs"]["assurance"]["if"] == (
+        "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'"
+    )

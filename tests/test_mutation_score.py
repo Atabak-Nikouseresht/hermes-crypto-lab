@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -88,3 +89,60 @@ def test_mutation_score_cli_rejects_custom_stats_path(monkeypatch):
         mutation_score_module.main()
 
     assert error.value.code == 2
+
+
+def test_mutation_workspace_uses_matching_non_src_module_names(tmp_path):
+    from scripts.prepare_mutation_assurance import (
+        MUTATION_TARGETS,
+        prepare_mutation_workspace,
+    )
+
+    project_root = Path(__file__).resolve().parents[1]
+    workspace = tmp_path / "mutation-workspace"
+    prepare_mutation_workspace(project_root, workspace)
+
+    target_root = workspace / "mutation_targets"
+    assert (target_root / "__init__.py").is_file()
+    assert tuple(
+        sorted(
+            path.name
+            for path in target_root.glob("*.py")
+            if path.name != "__init__.py"
+        )
+    ) == tuple(sorted(Path(relative).name for relative in MUTATION_TARGETS))
+    for relative in MUTATION_TARGETS:
+        assert (target_root / Path(relative).name).read_bytes() == (
+            project_root / relative
+        ).read_bytes()
+
+    import tomllib
+
+    config = tomllib.loads((workspace / "pyproject.toml").read_text(encoding="utf-8"))
+    mutation_config = config["tool"]["mutmut"]
+    assert mutation_config["source_paths"] == ["mutation_targets/"]
+    assert mutation_config["only_mutate"] == [
+        f"mutation_targets/{Path(relative).name}" for relative in MUTATION_TARGETS
+    ]
+    assert mutation_config["pytest_add_cli_args_test_selection"] == [
+        "tests/test_mutation_assurance.py"
+    ]
+    assert (workspace / "tests" / "test_mutation_assurance.py").read_bytes() == (
+        project_root / "tests" / "test_mutation_assurance.py"
+    ).read_bytes()
+
+
+def test_mutation_workspace_uses_runner_or_hermes_scratch(monkeypatch, tmp_path):
+    from scripts.prepare_mutation_assurance import mutation_temporary_root
+
+    monkeypatch.delenv("RUNNER_TEMP", raising=False)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "system-temp"))
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert mutation_temporary_root() == Path(
+        hermes_home / "cache" / "scratch"
+    )
+
+    runner_temp = tmp_path / "actions" / "runner-temp"
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    assert mutation_temporary_root() == runner_temp.resolve()

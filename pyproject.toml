@@ -14,4 +14,36 @@ python_version = "3.11"
 warn_unused_configs = true
 no_implicit_optional = true
 check_untyped_defs = true
-ignore_missing_imports = true
+files = [
+    "src/validate_data.py",
+    "src/storage.py",
+    "src/hardening_manifest.py",
+    "src/config_validation.py",
+    "src/config.py",
+    "src/costs.py",
+    "src/metrics.py",
+    "src/schedule.py",
+    "src/scheduler_contract.py",
+    "src/scheduler_deployment.py",
+    "src/data_integrity.py",
+    "src/release_provenance.py",
+    "src/forward_counterfactual.py",
+    "src/paper_notifications.py",
+]
+# Analyze the explicitly listed targets without expanding the bounded scope into
+# legacy imports; errors in every target remain visible.
+follow_imports = "silent"
+
+[tool.mutmut]
+source_paths = ["src/"]
+only_mutate = [
+    "src/config_validation.py",
+    "src/schedule.py",
+    "src/costs.py",
+]
+pytest_add_cli_args_test_selection = [
+    "tests/test_config_validation.py",
+    "tests/test_paper_config.py",
+    "tests/test_schedule.py",
+    "tests/test_costs.py",
+]

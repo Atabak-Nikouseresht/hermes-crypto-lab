@@ -84,7 +84,10 @@ def clean_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
     cleaned = cleaned.sort_values("timestamp").drop_duplicates("timestamp", keep="first")
     non_positive, invalid_ohlc = _masks(cleaned)
     numeric = cleaned[COLUMNS[1:]]
-    non_finite = ~np.isfinite(numeric).all(axis=1)
+    non_finite = pd.Series(
+        ~np.isfinite(numeric.to_numpy(dtype=float)).all(axis=1),
+        index=cleaned.index,
+    )
     invalid_volume = numeric["volume"].lt(0)
     misaligned = cleaned["timestamp"].ne(cleaned["timestamp"].dt.normalize())
     cleaned = cleaned.loc[

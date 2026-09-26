@@ -27,6 +27,7 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
         "name": "crypto-paper-forward-weekly",
         "schedule": {"kind": "cron", "expr": "10 0 * * 1"},
         "script": "paper_forward_weekly.py",
+        "script_sha256": digest,
         "no_agent": True,
         "workdir": str(workdir),
         "enabled": True,
@@ -57,6 +58,103 @@ def test_scheduler_readback_contract_requires_exact_utc_schedule_path_hash_and_g
     with pytest.raises(SchedulerContractError):
         verify_scheduler_job(
             wrong,
+            expected_name="crypto-paper-forward-weekly",
+            expected_expression="10 0 * * 1",
+            expected_script=approved,
+            expected_workdir=workdir,
+            scripts_root=scripts_root,
+            expected_script_sha256=digest,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schedule", "10 0 * * 1"),
+        ("schedule", None),
+        ("schedule", {"kind": ["cron"], "expr": "10 0 * * 1"}),
+        ("schedule", {"kind": "cron", "expr": 10}),
+        ("schedule", {"kind": "cron", "expr": "0 0 * * 1"}),
+        ("no_agent", "true"),
+        ("no_agent", 1),
+        ("enabled", "true"),
+        ("enabled", 1),
+        ("enabled", False),
+        ("workdir", None),
+        ("workdir", 1),
+        ("script", None),
+        ("script", 1),
+        ("id", ""),
+        ("id", 1),
+        ("id", True),
+        ("script_sha256", "0" * 63),
+        ("script_sha256", "0" * 64),
+    ],
+)
+def test_scheduler_readback_rejects_malformed_typed_fields(tmp_path, field, value):
+    scripts_root = tmp_path / "scripts"
+    scripts_root.mkdir()
+    approved = scripts_root / "paper_forward_weekly.py"
+    approved.write_text("approved wrapper", encoding="utf-8")
+    digest = hashlib.sha256(approved.read_bytes()).hexdigest()
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    job = {
+        "id": "abc123",
+        "name": "crypto-paper-forward-weekly",
+        "schedule": {"kind": "cron", "expr": "10 0 * * 1"},
+        "script": "paper_forward_weekly.py",
+        "script_sha256": digest,
+        "no_agent": True,
+        "workdir": str(workdir),
+        "enabled": True,
+    }
+    job[field] = value
+
+    with pytest.raises(SchedulerContractError):
+        verify_scheduler_job(
+            job,
+            expected_name="crypto-paper-forward-weekly",
+            expected_expression="10 0 * * 1",
+            expected_script=approved,
+            expected_workdir=workdir,
+            scripts_root=scripts_root,
+            expected_script_sha256=digest,
+        )
+
+
+def test_scheduler_readback_requires_explicit_enabled_and_nontraversing_script(tmp_path):
+    scripts_root = tmp_path / "scripts"
+    scripts_root.mkdir()
+    approved = scripts_root / "paper_forward_weekly.py"
+    approved.write_text("approved wrapper", encoding="utf-8")
+    digest = hashlib.sha256(approved.read_bytes()).hexdigest()
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    job = {
+        "id": "abc123",
+        "name": "crypto-paper-forward-weekly",
+        "schedule": {"kind": "cron", "expr": "10 0 * * 1"},
+        "script": "paper_forward_weekly.py",
+        "script_sha256": digest,
+        "no_agent": True,
+        "workdir": str(workdir),
+    }
+
+    with pytest.raises(SchedulerContractError, match="enabled"):
+        verify_scheduler_job(
+            job,
+            expected_name="crypto-paper-forward-weekly",
+            expected_expression="10 0 * * 1",
+            expected_script=approved,
+            expected_workdir=workdir,
+            scripts_root=scripts_root,
+            expected_script_sha256=digest,
+        )
+
+    with pytest.raises(SchedulerContractError):
+        verify_scheduler_job(
+            {**job, "enabled": True, "script": "../scripts/paper_forward_weekly.py"},
             expected_name="crypto-paper-forward-weekly",
             expected_expression="10 0 * * 1",
             expected_script=approved,

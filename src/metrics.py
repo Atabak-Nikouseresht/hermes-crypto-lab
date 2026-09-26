@@ -14,11 +14,14 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
 
 
 def _maximum_recovery_duration(equity: pd.Series) -> int:
+    timestamps = equity.index
+    if not isinstance(timestamps, pd.DatetimeIndex):
+        raise ValueError("equity index must be a pandas DatetimeIndex")
     peak_value = float(equity.iloc[0])
-    peak_timestamp = equity.index[0]
+    peak_timestamp = timestamps[0]
     underwater_peak_timestamp: pd.Timestamp | None = None
     maximum_days = 0
-    for timestamp, value in equity.iloc[1:].items():
+    for timestamp, value in zip(timestamps[1:], equity.iloc[1:], strict=True):
         value = float(value)
         if value >= peak_value:
             if underwater_peak_timestamp is not None:
@@ -32,7 +35,7 @@ def _maximum_recovery_duration(equity: pd.Series) -> int:
             underwater_peak_timestamp = peak_timestamp
     if underwater_peak_timestamp is not None:
         maximum_days = max(
-            maximum_days, (equity.index[-1] - underwater_peak_timestamp).days
+            maximum_days, (timestamps[-1] - underwater_peak_timestamp).days
         )
     return int(maximum_days)
 
@@ -64,10 +67,13 @@ def calculate_performance_metrics(
     ):
         raise ValueError("equity values must be finite numeric values")
     equity = raw_equity.astype(float).sort_index()
+    if not isinstance(equity.index, pd.DatetimeIndex):
+        raise ValueError("equity_curve index must be a pandas DatetimeIndex")
+    timestamps = equity.index
     returns = equity.pct_change(fill_method=None).dropna()
     if not np.isfinite(returns.to_numpy(dtype=float)).all():
         raise ValueError("equity values produce non-finite returns")
-    elapsed_days = max((equity.index[-1] - equity.index[0]).total_seconds() / 86_400, 0.0)
+    elapsed_days = max((timestamps[-1] - timestamps[0]).total_seconds() / 86_400, 0.0)
     if elapsed_days > 0 and equity.iloc[0] > 0 and equity.iloc[-1] > 0:
         cagr = (equity.iloc[-1] / equity.iloc[0]) ** (365.25 / elapsed_days) - 1.0
     else:

@@ -519,6 +519,37 @@ def test_v2_verification_rejects_persisted_execution_protocol_mismatch(tmp_path)
         verify_backup(backup)
 
 
+def test_v2_verification_rejects_database_checks_that_differ_from_recomputed_state(
+    tmp_path,
+):
+    system, project = _verified_execution_system(tmp_path)
+    backup = create_verified_backup(
+        project_root=project,
+        database_path=system.store.path,
+        output_root=tmp_path / "backups",
+        lock_path=project / "runtime" / "forward_writer.lock",
+        timestamp="database-checks-mismatch",
+        commit_hash="a" * 40,
+    )
+    manifest_path = backup / "backup_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["database_checks"]["cash_reconciles"] is True
+    manifest["database_checks"]["cash_reconciles"] = False
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    (backup / "backup_manifest.sha256").write_text(
+        f"{hashlib.sha256(manifest_path.read_bytes()).hexdigest()}  backup_manifest.json\n",
+        encoding="ascii",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Backup database checks do not match recomputed persisted checks",
+    ):
+        verify_backup(backup)
+
+
 def test_current_governed_backup_fails_closed_when_tree_is_dirty(tmp_path, monkeypatch):
     system, project = _verified_execution_system(tmp_path)
     def dirty(_root):

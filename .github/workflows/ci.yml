@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   verify:
@@ -20,10 +21,12 @@ jobs:
           - os: windows-latest
             python-version: '3.11.9'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -31,6 +34,25 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: requirements.lock
+
+      - name: Scan secrets in pull request or push
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+      - name: Remove the action's generated SARIF file before tree scan
+        run: python -c "from pathlib import Path; Path('results.sarif').unlink(missing_ok=True)"
+
+      - name: Scan checked-out repository contents
+        run: >-
+          gitleaks dir . --redact --no-banner --config .gitleaks.toml
+          --exit-code=2 --report-format=json
+          --report-path="${{ runner.temp }}/gitleaks-worktree.json"
 
       - name: Install locked dependencies
         run: python -m pip install --require-hashes -r requirements.lock
@@ -48,7 +70,7 @@ jobs:
         run: python -m ruff check .
 
       - name: Run scoped static typing
-        run: python -m mypy src/validate_data.py src/storage.py src/hardening_manifest.py
+        run: python -m mypy
 
       - name: Run standard security lint
         run: >-
@@ -86,13 +108,7 @@ jobs:
           print('PASS: locked strategy and trust anchors verified')"
 
       - name: Verify active hardening manifest
-        run: >-
-          python -c "from pathlib import Path;
-          from scripts.generate_hardening_manifest import verify_manifest_critical_source_coverage;
-          from src.hardening_manifest import verify_hardening_manifest;
-          root=Path('.').resolve(); manifest=root/'forward_experiment/hardening_manifest.json';
-          verify_manifest_critical_source_coverage(root, manifest);
-          print(verify_hardening_manifest(root, manifest))"
+        run: python -m scripts.verify_hardening_manifest
 
       - name: Run unit, property and integration tests
         run: >-
@@ -116,3 +132,14 @@ jobs:
           python -m coverage report --precision=2 --include=src/experiment_runner.py --fail-under=80
           python -m coverage report --precision=2 --include=src/research_data.py --fail-under=85
           python -m coverage report --precision=2 --include=scripts/paper_forward_monthly.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/forward_governance.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/paper_notifications.py --fail-under=82
+          python -m coverage report --precision=2 --include=src/backup_restore.py --fail-under=78
+          python -m coverage report --precision=2 --include=src/paper_market.py --fail-under=80
+          python -m coverage report --precision=2 --include=src/scheduler_contract.py --fail-under=70
+          python -m coverage report --precision=2 --include=src/forward_counterfactual.py --fail-under=80
+
+      - name: Test Gitleaks canary and hash policy
+        env:
+          HCL_REQUIRE_GITLEAKS: "1"
+        run: python -m pytest tests/test_secret_scanner.py -q

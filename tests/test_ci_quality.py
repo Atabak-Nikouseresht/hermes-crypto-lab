@@ -50,6 +50,15 @@ def test_quality_gate_configuration_is_protected():
     assert '"pyproject.toml"' in generator
 
 
+def test_hardening_manifest_text_inputs_have_portable_line_endings():
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+    assert ".gitleaks.toml text eol=lf" in attributes
+    assert "requirements-quality.in text eol=lf" in attributes
+    assert "requirements-quality.lock text eol=lf" in attributes
+    assert "tests/*.py text eol=lf" in attributes
+
+
 def test_mypy_targets_are_centralized_and_cover_critical_modules():
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     mypy_config = config["tool"]["mypy"]

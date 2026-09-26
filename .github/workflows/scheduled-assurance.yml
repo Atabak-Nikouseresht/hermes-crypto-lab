@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   assurance:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -90,9 +90,16 @@ jobs:
           python scripts/sealed_v1_manifest.py
           --expected-sha256 5f5ad2ba69c9b0283bb925399c8a2815f73502a94b671a5c3c43ed26869079d8
 
+      - name: Prepare isolated mutation assurance workspace
+        run: python scripts/prepare_mutation_assurance.py
+
       - name: Run bounded mutation testing
         timeout-minutes: 50
+        working-directory: ${{ runner.temp }}/hcl-mutation-assurance
+        env:
+          HCL_MUTATION_PACKAGE: mutation_targets
         run: python -m mutmut run
 
       - name: Enforce bounded mutation-score floor
-        run: python scripts/verify_mutation_score.py --minimum-score 80
+        working-directory: ${{ runner.temp }}/hcl-mutation-assurance
+        run: python "$GITHUB_WORKSPACE/scripts/verify_mutation_score.py" --minimum-score 80

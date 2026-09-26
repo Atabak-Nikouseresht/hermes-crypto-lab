@@ -104,15 +104,15 @@ The suite includes:
 - scheduler and repeated missed-window tests;
 - legacy and comprehensive economic governance, protocol, manifest and prohibited-private-path tests.
 
-## Mutation testing limitation
+## Mutation testing
 
-Mutation testing was attempted but not completed on the validated Windows/Python 3.11 environment:
-
-- `mutmut` reported that native Windows is unsupported;
-- `mutatest` installed only with an explicit `setuptools` compatibility dependency;
-- the bounded run failed on Python 3.11 AST handling before producing a mutation score.
-
-No mutation score is claimed. This limitation should not be relabeled as a pass.
+The `Scheduled Security Assurance` workflow runs the hash-locked `mutmut` on
+Ubuntu and enforces an 80% mutation-score floor. It copies only the selected
+targets into a temporary `mutation_targets` package because `mutmut` rejects
+modules imported under the project's `src.*` namespace. The scheduled run is
+main-only; `workflow_dispatch` can also be used on a feature branch to verify
+the bounded mutation suite before merge. Native Windows execution is
+unsupported, so claim a mutation score only from a successful assurance run.
 
 ## CI
 

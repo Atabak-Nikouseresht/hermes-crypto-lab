@@ -40,22 +40,27 @@ The frozen functional baseline at historical pre-rewrite commit `ebeac389b1c309f
 
 Coverage output is generated locally and ignored. It is a testing diagnostic, not permanent governance evidence.
 
-CI also enforces branch-aware critical-path floors after the full suite:
+CI also enforces branch-aware critical-path floors after the full suite: 85%
+for `src/paper_broker.py`, `src/paper_store.py`, `src/forward_operations.py`,
+and `src/research_data.py`; 82% for `src/paper_notifications.py`; 78% for
+`src/backup_restore.py`; 70% for `src/scheduler_contract.py`; and 80% for
 `run_paper.py`, `src/paper_forward.py`, `src/statistical_diagnostics.py`,
-`src/download_data.py`, `src/experiment_runner.py`, and the monthly wrapper at
-80%; `src/paper_broker.py`, `src/paper_store.py`, and
-`src/forward_operations.py` remain at 85%. These gates emphasize real failure,
-recovery, idempotency, reconciliation, data-boundary, and retry behavior.
-The branch-aware baseline measured for this hardening release is 83% across
-`src` and `run_paper.py`. CI uses a 75% floor: a three-point margin avoids a
-fragile vanity threshold while still catching material coverage regressions.
+`src/download_data.py`, `src/experiment_runner.py`,
+`scripts/paper_forward_monthly.py`, `src/forward_governance.py`,
+`src/paper_market.py`, and `src/forward_counterfactual.py`. These gates
+emphasize real failure, recovery, idempotency, reconciliation, data-boundary,
+and retry behavior. CI also retains a 75% overall branch-coverage floor.
 
 Ruff enforces syntax/indentation (`E4`, `E7`, `E9`), Pyflakes (`F`), and
 correctness-oriented Bugbear (`B`) rules. CI also runs Ruff's selected security
 rules over production code while retaining the domain-specific public-only
-scanner. Mypy is intentionally scoped to stable validation, storage, and
-hardening-manifest modules; dynamic pandas/DuckDB diagnostics remain outside the
-initial gate rather than being hidden behind broad ignores.
+scanner. MyPy is a deliberately bounded critical-module gate, not repo-wide
+strict typing: `pyproject.toml` explicitly lists 14 targets across validation
+and configuration, storage/data integrity, hardening, metrics/costs, scheduling,
+release provenance, counterfactual analysis, and paper notifications.
+`check_untyped_defs` and `no_implicit_optional` remain enabled, while
+`follow_imports = "silent"` prevents the gate from expanding through imported
+modules; errors in listed targets remain visible.
 
 ## Integrity checks
 

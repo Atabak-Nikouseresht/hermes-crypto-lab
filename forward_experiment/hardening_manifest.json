@@ -27,7 +27,7 @@
     "docs/operations.md": "734ff6e2710e1d9c5aea9bda1b1fbf13c8c04178173383d3923193391fc4acb2",
     "docs/public-history-rewrite.md": "e1f5f8f60fc13d231287af5244a203595ac4f2f0bfc13a142e69de576cd2a254",
     "docs/repository-policy.md": "1aeba452d3438ddf3c42c997cf3428acb62e0fe70ffce4d100f537f0c68f4499",
-    "docs/testing.md": "b6067a345f985c178fea1908e02c37af8bf9a6ca69d30d4740dab11e60a285db",
+    "docs/testing.md": "196e0da43fa18a06e01e22edb626ee2440b6dc33af35c1fb8dd675c5cb3f1531",
     "forward_experiment/checkpoint_manifest.json": "97e8d1770a1d78010566760ac3d4121b8b6eafd8f13b617782286cbfaab31c4b",
     "forward_experiment/execution_protocol_v2.json": "682b0b494c0309428c6e9fd1d1306dfbd2495ea450fdb278c12e65033fc1605c",
     "forward_experiment/execution_protocol_v3.json": "cd118b83b8428d4c2eccaa92360ca0f1aa14a85463221f75241797a48bbf7989",
@@ -138,7 +138,7 @@
     "tests/test_validate_data.py": "da64110625effa64f8cde2efe3b79e3045cd5a5cccb0252688f355d5c71c72f1"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-26T13:33:45.381168+00:00",
+  "generated_at_utc": "2026-09-26T14:54:48.579039+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

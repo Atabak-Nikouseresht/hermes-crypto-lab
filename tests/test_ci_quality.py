@@ -104,6 +104,10 @@ def test_gitleaks_is_pinned_redacted_and_least_privilege():
     )
     assert action_step["if"] == "runner.os == 'Linux'"
     assert tree_scan_step["if"] == "runner.os == 'Linux'"
+    canary_step = next(
+        step for step in steps if step.get("name") == "Test Gitleaks canary and hash policy"
+    )
+    assert canary_step["if"] == "runner.os == 'Linux'"
 
 
 def test_weekly_assurance_workflow_runs_deep_security_and_mutation_gates():

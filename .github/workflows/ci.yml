@@ -47,6 +47,7 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: "false"
 
       - name: Remove the action's generated SARIF file before tree scan
+        if: runner.os == 'Linux'
         run: python -c "from pathlib import Path; Path('results.sarif').unlink(missing_ok=True)"
 
       - name: Scan checked-out repository contents
@@ -142,6 +143,7 @@ jobs:
           python -m coverage report --precision=2 --include=src/forward_counterfactual.py --fail-under=80
 
       - name: Test Gitleaks canary and hash policy
+        if: runner.os == 'Linux'
         env:
           HCL_REQUIRE_GITLEAKS: "1"
         run: python -m pytest tests/test_secret_scanner.py -q

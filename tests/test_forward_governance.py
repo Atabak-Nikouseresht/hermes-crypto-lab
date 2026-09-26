@@ -189,6 +189,24 @@ def test_forward_governance_record_is_create_once_and_hash_verified(tmp_path):
         create_immutable_governance(path, payload)
 
 
+def test_governance_creation_removes_payload_when_sidecar_creation_fails(tmp_path):
+    path = tmp_path / "governance.json"
+    path.with_suffix(path.suffix + ".sha256").mkdir()
+
+    with pytest.raises(OSError):
+        create_immutable_governance(
+            path,
+            {
+                "experiment_id": "forward-1",
+                "locked_strategy_hash": EXPECTED_HASH,
+                "minimum_observation_weeks": 12,
+                "live_promotion": False,
+            },
+        )
+
+    assert not path.exists()
+
+
 def test_repository_governance_uses_code_anchored_release_hashes():
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
     config = _economic_config()

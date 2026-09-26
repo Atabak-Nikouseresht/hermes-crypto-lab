@@ -45,6 +45,12 @@
     "wrapper_sha256": "83e0dc9f31a88a1939183ddc59e04f35808e21c06121fe28ef1c4f90ca9f37e1"
   },
   "windows_task_scheduler_watchdog": {
+    "action": {
+      "arguments_prefix": "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File",
+      "executable": "powershell.exe",
+      "script": "scripts/hermes_gateway_watchdog.ps1"
+    },
+    "enabled": true,
     "multiple_instances": "IgnoreNew",
     "restart_on_failure": {
       "count": 3,
@@ -54,6 +60,18 @@
     "start_when_available": true,
     "task_name": "Hermes_Crypto_Lab_Watchdog",
     "trigger": "logon plus every 15 minutes for one day",
+    "triggers": [
+      {
+        "enabled": true,
+        "type": "logon"
+      },
+      {
+        "enabled": true,
+        "repetition_duration": "P1D",
+        "repetition_interval": "PT15M",
+        "type": "daily"
+      }
+    ],
     "working_directory": "[PROJECT_ROOT]"
   }
 }

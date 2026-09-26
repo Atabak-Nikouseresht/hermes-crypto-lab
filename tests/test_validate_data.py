@@ -53,6 +53,7 @@ def test_cleaning_sorts_deduplicates_and_removes_invalid_rows():
             [datetime(2024, 1, 1, tzinfo=timezone.utc), 10, 12, 9, 11, 100],
             [datetime(2024, 1, 1, tzinfo=timezone.utc), 10, 12, 9, 11, 100],
             [datetime(2024, 1, 3, tzinfo=timezone.utc), -1, 2, -2, 1, 100],
+            [datetime(2024, 1, 4, tzinfo=timezone.utc), 11, float("inf"), 10, 12, 100],
         ]
     )
 

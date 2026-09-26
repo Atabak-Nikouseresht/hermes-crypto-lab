@@ -173,6 +173,48 @@ C:/Windows/System32/schtasks.exe /Query /TN Hermes_Crypto_Lab_Watchdog /V /FO LI
 
 The watchdog checks Gateway, attempts restart when unavailable, and invokes startup audit only. It cannot bypass the weekly paper wrapper. On failure it retains only compact, sanitized tail output in its local log; credential- or destination-shaped lines are redacted. Scheduling still depends on the host being powered on and the Windows task environment being available.
 
+## Verify the installed scheduler deployment
+
+`scripts/verify_scheduler_manifest.py` verifies only the portable source contract;
+it does not prove that Hermes or Windows Task Scheduler has the expected live
+configuration. After installing or updating scheduled jobs, run this operator
+gate on the deployment host from the repository root:
+
+```bash
+uv run python -m scripts.verify_scheduler_deployment --export-hermes-cli --verify-windows-task
+```
+
+The installed Hermes Agent v0.21.4 (2026.9.21) exposes the read-only
+`hermes cron list --all` command, but its local help has no JSON-output option.
+The verifier therefore runs that supported command, strictly parses its text
+read-back, writes a minimal schema-versioned JSON export to
+`%LOCALAPPDATA%/hermes/cache/scratch/hermes-crypto-lab-scheduler-readback.json`,
+and consumes that explicit export against the static manifest. It checks all
+governed job identities, names, UTC cron expressions, wrapper paths and SHA-256
+hashes, workdirs, enabled state, and no-agent mode. A changed or incomplete CLI
+format fails closed; do not edit the governed manifest to make a mismatched
+deployment pass.
+
+The same command reads `Hermes_Crypto_Lab_Watchdog` through PowerShell
+`Get-ScheduledTask` and verifies its enabled state, executable, arguments/script,
+working directory, multiple-instance policy, network requirement,
+start-when-available flag, restart policy, and trigger/repetition settings. Raw
+PowerShell output is captured and never printed. This is a local operator gate,
+not a claim that cloud CI can observe the host. CI tests the parsers and drift
+checks with fixtures. To validate an already exported Hermes snapshot without
+refreshing it, pass `--hermes-readback-file PATH` and omit
+`--export-hermes-cli`; the file must remain outside the Git repository.
+
+## Scheduled security assurance
+
+`.github/workflows/scheduled-assurance.yml` runs on the default branch every
+Monday at 06:30 UTC and can also be dispatched manually from `main`. It audits
+the hash-locked runtime and quality dependencies, scans full fetched Git history,
+and runs the bounded Linux mutation suite. Results describe the default-branch
+contents and vulnerability database available at execution time. Mutation
+testing is limited to `src/config_validation.py`, `src/schedule.py`, and
+`src/costs.py`, with an 80% minimum score; it does not run on every PR.
+
 ## Dependency update and rollback
 
 Dependency maintenance is an operational change and should not occur immediately before a scheduled window.

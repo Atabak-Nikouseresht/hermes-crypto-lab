@@ -61,3 +61,10 @@ def test_metrics_reject_nonfinite_equity(values):
 
     with pytest.raises(ValueError, match="equity"):
         calculate_performance_metrics(equity, pd.DataFrame())
+
+
+def test_metrics_reject_non_datetime_equity_index():
+    equity = pd.DataFrame({"equity": [100.0, 101.0]}, index=[0, 1])
+
+    with pytest.raises(ValueError, match="DatetimeIndex"):
+        calculate_performance_metrics(equity, pd.DataFrame())

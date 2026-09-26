@@ -25,6 +25,8 @@ dist/
 coverage.xml
 htmlcov/
 .mypy_cache/
+.mutmut-cache/
+mutants/
 .pyright/
 .ruff_cache/
 .hypothesis/
@@ -71,3 +73,4 @@ security/*.json
 
 # Keep the reproducible dependency lock despite the generic lock rule
 !requirements.lock
+!requirements-quality.lock

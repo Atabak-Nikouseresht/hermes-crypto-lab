@@ -1,0 +1,11 @@
+title = "Hermes Crypto Lab secret scanning policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Allow only generated SHA-256 values in the active hardening manifest"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)forward_experiment/hardening_manifest\.json$''']
+regexes = ['''^\s+"[^"]+": "[0-9a-f]{64}",?$''']

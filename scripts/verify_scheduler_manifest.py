@@ -26,6 +26,30 @@ JOBS = {
         "crypto-paper-forward-monthly",
     ),
 }
+EXPECTED_WATCHDOG = {
+    "action": {
+        "arguments_prefix": "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File",
+        "executable": "powershell.exe",
+        "script": "scripts/hermes_gateway_watchdog.ps1",
+    },
+    "enabled": True,
+    "multiple_instances": "IgnoreNew",
+    "restart_on_failure": {"count": 3, "interval": "PT5M"},
+    "run_only_if_network_available": True,
+    "start_when_available": True,
+    "task_name": "Hermes_Crypto_Lab_Watchdog",
+    "trigger": "logon plus every 15 minutes for one day",
+    "triggers": [
+        {"enabled": True, "type": "logon"},
+        {
+            "enabled": True,
+            "repetition_duration": "P1D",
+            "repetition_interval": "PT15M",
+            "type": "daily",
+        },
+    ],
+    "working_directory": "[PROJECT_ROOT]",
+}
 
 VOLATILE_DEPLOYMENT_FIELDS = {
     "installed",
@@ -48,6 +72,21 @@ def _all_keys(value) -> set[str]:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _strict_equal(actual, expected) -> bool:
+    if type(expected) is dict:
+        return (
+            type(actual) is dict
+            and set(actual) == set(expected)
+            and all(_strict_equal(actual[key], value) for key, value in expected.items())
+        )
+    if type(expected) is list:
+        return type(actual) is list and len(actual) == len(expected) and all(
+            _strict_equal(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected, strict=True)
+        )
+    return type(actual) is type(expected) and actual == expected
 
 
 def verify(project_root: Path = PROJECT_ROOT) -> dict:
@@ -88,9 +127,9 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict:
             raise ValueError(f"{key} wrapper hash mismatch")
         verified[key] = actual_hash
 
-    watchdog = payload.get("windows_task_scheduler_watchdog") or {}
-    if watchdog.get("working_directory") != "[PROJECT_ROOT]":
-        raise ValueError("watchdog contains a non-portable working directory")
+    watchdog = payload.get("windows_task_scheduler_watchdog")
+    if not _strict_equal(watchdog, EXPECTED_WATCHDOG):
+        raise ValueError("watchdog static contract mismatch")
 
     return {
         "valid": True,

@@ -85,6 +85,16 @@ def test_gitleaks_is_pinned_redacted_and_least_privilege():
     assert "pull-requests: read" in workflow
     assert "Path('results.sarif').unlink(missing_ok=True)" in workflow
     assert "gitleaks dir . --redact" in workflow
+    parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
+    steps = parsed["jobs"]["verify"]["steps"]
+    action_step = next(
+        step for step in steps if step.get("name") == "Scan secrets in pull request or push"
+    )
+    tree_scan_step = next(
+        step for step in steps if step.get("name") == "Scan checked-out repository contents"
+    )
+    assert action_step["if"] == "runner.os == 'Linux'"
+    assert tree_scan_step["if"] == "runner.os == 'Linux'"
 
 
 def test_weekly_assurance_workflow_runs_deep_security_and_mutation_gates():

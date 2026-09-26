@@ -32,7 +32,10 @@ tests/test_paper_config.py text eol=lf
 tests/test_paper_market.py text eol=lf
 tests/test_paper_trading.py text eol=lf
 tests/test_runner_safety.py text eol=lf
+tests/test_metrics.py text eol=lf
+tests/test_schedule.py text eol=lf
 tests/test_scheduler_contract.py text eol=lf
+tests/test_validate_data.py text eol=lf
 forward_experiment/**/*.json -text
 forward_experiment/**/*.sha256 -text
 forward_experiment/**/*.sql -text

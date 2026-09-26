@@ -131,16 +131,18 @@ def test_mutation_workspace_uses_matching_non_src_module_names(tmp_path):
     ).read_bytes()
 
 
-def test_mutation_workspace_uses_runner_or_hermes_scratch(monkeypatch):
+def test_mutation_workspace_uses_runner_or_hermes_scratch(monkeypatch, tmp_path):
     from scripts.prepare_mutation_assurance import mutation_temporary_root
 
     monkeypatch.delenv("RUNNER_TEMP", raising=False)
-    monkeypatch.setenv("TMPDIR", "C:/Users/example/AppData/Local/Temp")
-    monkeypatch.setenv("HERMES_HOME", "C:/Users/example/AppData/Local/hermes")
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "system-temp"))
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     assert mutation_temporary_root() == Path(
-        "C:/Users/example/AppData/Local/hermes/cache/scratch"
+        hermes_home / "cache" / "scratch"
     )
 
-    monkeypatch.setenv("RUNNER_TEMP", "C:/actions/runner-temp")
-    assert mutation_temporary_root() == Path("C:/actions/runner-temp")
+    runner_temp = tmp_path / "actions" / "runner-temp"
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    assert mutation_temporary_root() == runner_temp.resolve()

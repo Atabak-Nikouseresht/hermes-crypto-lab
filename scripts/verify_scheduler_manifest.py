@@ -99,6 +99,9 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     if payload.get("execution_protocol") != EXPECTED_PROTOCOL:
         raise ValueError("scheduler execution protocol mismatch")
+    gateway = payload.get("hermes_gateway")
+    if type(gateway) is not dict or gateway.get("timezone_config") != "UTC":
+        raise ValueError("Hermes gateway timezone contract must be UTC")
     leaked_fields = sorted(_all_keys(payload) & VOLATILE_DEPLOYMENT_FIELDS)
     if leaked_fields:
         raise ValueError(

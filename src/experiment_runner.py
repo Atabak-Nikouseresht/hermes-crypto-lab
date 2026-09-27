@@ -70,15 +70,12 @@ def benchmark_metrics_for_period(
 ) -> dict[str, dict[str, float | int]]:
     simulation = _simulation_prices(available_prices, period)
     results = run_benchmarks(simulation, backtest_config)
-    labels = {
-        "BTC Buy and Hold": "BTC Buy and Hold",
-        "Equal Weight": "Equal Weight",
-        "Cash": "Cash (USDT, zero modeled yield)",
-    }
+    labels = {"Cash": "Cash (USDT, zero modeled yield)"}
     return {
-        labels[name]: calculate_performance_metrics(result.equity_curve, result.fills)
+        labels.get(name, name): calculate_performance_metrics(
+            result.equity_curve, result.fills
+        )
         for name, result in results.items()
-        if name in labels
     }
 
 

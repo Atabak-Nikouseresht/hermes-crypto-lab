@@ -18,6 +18,15 @@ The matching engine recalculates the reference when an order enters its taker ph
 
 Batch H is implemented prospectively under `binance-execution-rules-price-range-v1`. For each governed Binance symbol, Hermes captures the public `executionRules` outcome, native symbol, exact raw Decimal multipliers, any supplied source timestamp, and receipt timestamp. It separately persists local PRICE_RANGE decisions with the simulated paper execution price, reference linkage, bounds, side, and rejection reason. Public PRICE_RANGE multipliers and reference prices retain their raw Decimal strings but must fit the prospective bounded-Decimal evidence envelope (finite, positive, absolute adjusted exponent at most 1,000) before persistence or arithmetic; values outside that envelope are malformed evidence, never rounded, overflowed, or underflowed into a decision. Offline reconciliation and backup/restore verification use only persisted evidence; they never query Binance or use the wall clock.
 
+The additive v2 freshness amendment preserves the v1 300-second inclusive
+source-age bound when `source_timestamp` is supplied. If it is absent, the UTC
+`acquired_at` receipt time itself must be no more than 300 seconds before
+admission; missing, naive, or future acquisition times fail closed. This closes
+the indefinite-validity gap without fabricating a Binance source timestamp.
+The rule is prospective and leaves historical market-rule evidence and fills
+unchanged. See `execution_rules_price_range_contract_v2.json` and
+`governance_amendment_v8_execution_rules_acquisition_freshness.json`.
+
 `PRICE_RANGE_PRESENT`, `PRICE_RANGE_ABSENT`, `RULE_NOT_APPLICABLE`, `TRANSPORT_FAILURE`, and `MALFORMED_RESPONSE` remain distinct. A missing individual multiplier removes only that bound. A missing rule or null/absent reference produces documented non-enforcement; malformed or transport evidence halts a governed run before fills. BUY uses bid multipliers and SELL uses ask multipliers. Boundaries are inclusive. A local outside-range result is recorded as `EXECUTION_RULE_PRICE_RANGE_EXCEEDED` and is not a statement that a REST observation proves matching-engine taker-phase fillability.
 
 The contract is additive and future-only. No historical order, fill, observation, market-rule evidence, or execution interpretation is backfilled or reinterpreted.

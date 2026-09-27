@@ -36,11 +36,21 @@ def test_candidate_evaluation_includes_costs_and_benchmark_comparisons():
     )
 
     assert evaluation.metrics["total_fees"] > 0
-    assert set(evaluation.benchmark_metrics) == {
+    generated_names = set(
+        experiment_runner.run_benchmarks(prices.loc[period.start : period.end], backtest)
+    )
+    expected_report_names = {
+        "Cash (USDT, zero modeled yield)" if name == "Cash" else name
+        for name in generated_names
+    }
+    assert expected_report_names == {
         "BTC Buy and Hold",
         "Equal Weight",
+        "50% BTC / 50% ETH",
         "Cash (USDT, zero modeled yield)",
     }
+    assert set(evaluation.benchmark_metrics) == expected_report_names
+    assert set(evaluation.comparisons) == expected_report_names
     assert "cagr_difference" in evaluation.comparisons["BTC Buy and Hold"]
     assert evaluation.result.cash.min() >= -1e-9
 

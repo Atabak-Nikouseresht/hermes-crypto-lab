@@ -119,6 +119,14 @@ This is evidence-integrity maintenance, not a strategy or economic-spec change.
 Current Binance `executionRules` are a material known limitation, explicitly
 [audited and deferred to Batch H](binance-execution-rules-audit.md).
 
+The additive [executionRules acquisition-freshness contract v2](../forward_experiment/execution_rules_price_range_contract_v2.json)
+and [governance amendment v8](../forward_experiment/governance_amendment_v8_execution_rules_acquisition_freshness.json)
+retain the v1 source-timestamp rule. When Binance
+omits `source_timestamp`, the recorded UTC acquisition time must be no more than
+300 seconds old at admission; exactly 300 seconds remains valid. Missing or
+future acquisition times fail closed. This stricter evidence-admission rule is
+prospective only and does not change strategy economics or historical records.
+
 Existing v2 orders and fills remain unchanged and retain their original protocol version, timestamps, identifiers, and state. Future fills use v3. The two protocols are never merged into an unversioned series.
 
 The tracked controlled-research run directories are preserved because they contain candidate locks, hash-chained ledgers, final-test records, and audit provenance. Apparent duplication is disclosed rather than deleted.

@@ -6,9 +6,11 @@ import hashlib
 import json
 import math
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tempfile
 from typing import Any
 
@@ -245,6 +247,91 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_link_or_reparse_point(info: os.stat_result, entry: os.DirEntry[str] | None = None) -> bool:
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    if entry is not None and getattr(entry, "is_junction", lambda: False)():
+        return True
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and getattr(info, "st_file_attributes", 0) & reparse_flag)
+
+
+def _reject_path_link_components(path: Path) -> None:
+    """Reject links in every existing component before resolving a source path."""
+    absolute = Path(path).expanduser().absolute()
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current = current / component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise ValueError(f"cannot safely inspect backup source path: {current}") from error
+        if _is_link_or_reparse_point(info):
+            raise ValueError(f"symlink or reparse point in backup source path: {current}")
+
+
+def _reject_source_tree_links(root: Path) -> None:
+    """Reject symlinks/junctions without following entries in a governed source tree."""
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ValueError(f"cannot inspect governed backup source: {root}") from error
+    if _is_link_or_reparse_point(root_info):
+        raise ValueError(f"symlink or reparse point in governed backup source: {root}")
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError(f"governed backup source is not a directory: {root}")
+
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    info = entry.stat(follow_symlinks=False)
+                    if _is_link_or_reparse_point(info, entry):
+                        raise ValueError(
+                            "symlink or reparse point in governed backup source: "
+                            f"{entry.path}"
+                        )
+                    if stat.S_ISDIR(info.st_mode):
+                        pending.append(Path(entry.path))
+        except OSError as error:
+            raise ValueError(
+                f"cannot safely inspect governed backup source: {directory}"
+            ) from error
+
+
+def _copy_regular_file_without_following_links(source: str, destination: str) -> str:
+    """Copy regular files only; copytree's symlink mode prevents target traversal."""
+    source_path = Path(source)
+    try:
+        info = source_path.lstat()
+    except OSError as error:
+        raise ValueError(f"governed backup source changed during copy: {source_path}") from error
+    if _is_link_or_reparse_point(info):
+        raise ValueError(f"symlink or reparse point in governed backup source: {source_path}")
+    return shutil.copy2(source_path, destination, follow_symlinks=False)
+
+
+def _backup_destination(output_root: Path, timestamp: str) -> Path:
+    """Resolve a strictly single-component backup name inside its output root."""
+    if (
+        type(timestamp) is not str
+        or re.fullmatch(r"[A-Za-z0-9._-]+", timestamp) is None
+        or timestamp in {".", ".."}
+    ):
+        raise ValueError("backup name must be a safe single path component")
+    root = Path(output_root).expanduser().resolve()
+    candidate = (root / timestamp).resolve()
+    if candidate.parent != root:
+        raise ValueError("backup name escapes the configured output root")
+    return candidate
+
+
 def _database_checks(
     database_path: Path, reconciliation_settings: dict[str, Any]
 ) -> dict[str, Any]:
@@ -325,7 +412,10 @@ def create_verified_backup(
     reconciliation_settings: dict[str, Any] | None = None,
 ) -> Path:
     project_root = Path(project_root).resolve()
-    database_path = Path(database_path).resolve()
+    backup_dir = _backup_destination(Path(output_root), timestamp)
+    raw_database_path = Path(database_path).expanduser().absolute()
+    _reject_path_link_components(raw_database_path)
+    database_path = raw_database_path.resolve()
     if not database_path.is_file():
         raise ValueError(f"backup source must be an existing regular file: {database_path}")
     PaperStore.assert_supported_schema(database_path)
@@ -333,11 +423,10 @@ def create_verified_backup(
     if authority is None:
         raise ValueError("New backup requires an active persisted forward experiment")
     reconciliation_settings = authority["reconciliation_settings"]
-    backup_dir = Path(output_root).resolve() / timestamp
-    if backup_dir.exists():
+    if os.path.lexists(backup_dir):
         raise FileExistsError(f"backup destination already exists: {backup_dir}")
     with InterProcessLock(lock_path, timeout_seconds=10, command_name="forward-backup"):
-        if backup_dir.exists():
+        if os.path.lexists(backup_dir):
             raise FileExistsError(f"backup destination already exists: {backup_dir}")
         try:
             current_provenance = capture_release_provenance(project_root)
@@ -350,6 +439,13 @@ def create_verified_backup(
             raise ValueError("Persisted backup authority changed while waiting for the writer lock")
         if current_provenance.execution_protocol_version != authority["execution_protocol_version"]:
             raise ValueError("Active execution protocol conflicts with persisted backup authority")
+        source_trees = []
+        for relative in ("forward_experiment", "reports/paper", "reports/forward_monthly"):
+            source = project_root / relative
+            _reject_path_link_components(source)
+            if os.path.lexists(source):
+                _reject_source_tree_links(source)
+                source_trees.append((relative, source))
         with duckdb.connect(str(database_path)) as connection:
             connection.execute("CHECKPOINT")
         backup_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -358,11 +454,16 @@ def create_verified_backup(
         with tempfile.TemporaryDirectory(prefix=".forward-backup-", dir=backup_dir.parent) as temporary:
             staging_dir = Path(temporary)
             copied_database = staging_dir / "paper_trading.duckdb"
-            shutil.copy2(database_path, copied_database)
-            for relative in ("forward_experiment", "reports/paper", "reports/forward_monthly"):
-                source = project_root / relative
-                if source.exists():
-                    shutil.copytree(source, staging_dir / relative, dirs_exist_ok=False)
+            shutil.copy2(database_path, copied_database, follow_symlinks=False)
+            for relative, source in source_trees:
+                shutil.copytree(
+                    source,
+                    staging_dir / relative,
+                    symlinks=True,
+                    copy_function=_copy_regular_file_without_following_links,
+                    dirs_exist_ok=False,
+                )
+            _reject_source_tree_links(staging_dir)
             checksums = {}
             for path in sorted(staging_dir.rglob("*")):
                 if path.is_file():

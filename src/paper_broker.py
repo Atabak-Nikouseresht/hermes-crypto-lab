@@ -188,15 +188,28 @@ def validate_price_range_evidence(
         return None
     if rule.acquired_at is None:
         return "Invalid data: executionRules acquisition timestamp missing"
+    current = pd.Timestamp(now)
+    if pd.isna(current) or current.tzinfo is None:
+        return "Invalid data: executionRules validation timestamp"
+    current = current.tz_convert("UTC")
     acquired = pd.Timestamp(rule.acquired_at)
-    if pd.isna(acquired) or acquired.tzinfo is None or acquired > now:
+    if pd.isna(acquired) or acquired.tzinfo is None:
         return "Invalid data: executionRules acquisition timestamp"
+    acquired = acquired.tz_convert("UTC")
+    if acquired > current:
+        return "Invalid data: executionRules acquisition timestamp"
+    max_age = pd.Timedelta(minutes=float(max_age_minutes))
     if rule.source_timestamp is None:
+        if current - acquired > max_age:
+            return "Stale data: executionRules acquisition timestamp"
         return None
     source = pd.Timestamp(rule.source_timestamp)
-    if pd.isna(source) or source.tzinfo is None or source > acquired or source > now:
+    if pd.isna(source) or source.tzinfo is None:
         return "Invalid data: executionRules source timestamp"
-    if now - source > pd.Timedelta(minutes=float(max_age_minutes)):
+    source = source.tz_convert("UTC")
+    if source > acquired or source > current:
+        return "Invalid data: executionRules source timestamp"
+    if current - source > max_age:
         return "Stale data: executionRules source timestamp"
     return None
 

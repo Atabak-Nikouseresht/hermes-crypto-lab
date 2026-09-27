@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from scripts.verify_scheduler_deployment import (
     export_hermes_readback,
     load_hermes_readback,
 )
+from src.scheduler_deployment import verify_hermes_timezone
 
 
 WATCHDOG_CONTRACT = {
@@ -45,7 +47,6 @@ WATCHDOG_CONTRACT = {
     ],
     "working_directory": "[PROJECT_ROOT]",
 }
-
 
 JOB_SPECS = {
     "weekly_job": (
@@ -80,6 +81,7 @@ def _write_jobs(project_root: Path) -> dict[str, dict[str, str]]:
             "wrapper_sha256": hashlib.sha256(wrapper.read_bytes()).hexdigest(),
             "workdir": "[PROJECT_ROOT]",
         }
+    contract["hermes_gateway"] = {"timezone_config": "UTC"}
     return contract
 
 
@@ -92,6 +94,7 @@ def _jobs_readback(project_root: Path) -> list[dict[str, object]]:
                 "id": f"job-{index}",
                 "name": name,
                 "schedule": {"kind": "cron", "expr": expression},
+                "next_run_timezone": "UTC",
                 "script": filename,
                 "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
                 "no_agent": True,
@@ -146,6 +149,7 @@ def test_hermes_cli_text_export_maps_only_observed_scheduler_fields(tmp_path):
         "  abc123def456 [active]\n"
         "    Name:      crypto-paper-forward-weekly\n"
         "    Schedule:  10 0 * * 1\n"
+        "    Next run:  2026-09-28T00:10:00+00:00\n"
         "    Script:    paper_forward_weekly.py\n"
         "    Mode:      no-agent (script stdout delivered directly)\n"
         f"    Workdir:   {tmp_path}\n"
@@ -162,6 +166,7 @@ def test_hermes_cli_text_export_maps_only_observed_scheduler_fields(tmp_path):
             "id": "abc123def456",
             "name": "crypto-paper-forward-weekly",
             "schedule": {"kind": "cron", "expr": "10 0 * * 1"},
+            "next_run_timezone": "UTC",
             "script": "paper_forward_weekly.py",
             "script_sha256": hashlib.sha256(
                 (tmp_path / "scripts" / "paper_forward_weekly.py").read_bytes()
@@ -180,6 +185,20 @@ def test_hermes_cli_text_export_maps_only_observed_scheduler_fields(tmp_path):
         "  abc123def456 [unknown]\n    Name: crypto-paper-forward-weekly\n",
         "  abc123def456 [active]\n    Name: crypto-paper-forward-weekly\n"
         "    Schedule: 10 0 * * 1\n    Script: ../paper_forward_weekly.py\n"
+        "    Mode: no-agent (script stdout delivered directly)\n"
+        "    Workdir: /project\n",
+        "  abc123def456 [active]\n"
+        "    Name: crypto-paper-forward-weekly\n"
+        "    Schedule: 10 0 * * 1\n"
+        "    Next run: 2026-09-28T02:10:00+02:00\n"
+        "    Script: paper_forward_weekly.py\n"
+        "    Mode: no-agent (script stdout delivered directly)\n"
+        "    Workdir: /project\n",
+        "  abc123def456 [active]\n"
+        "    Name: crypto-paper-forward-weekly\n"
+        "    Schedule: 10 0 * * 1\n"
+        "    Next run: not-a-timestamp\n"
+        "    Script: paper_forward_weekly.py\n"
         "    Mode: no-agent (script stdout delivered directly)\n"
         "    Workdir: /project\n",
     ],
@@ -209,6 +228,28 @@ def test_hermes_readback_verifies_exact_jobs_and_rejects_duplicates(tmp_path):
     duplicate.append(copy.deepcopy(jobs[0]))
     with pytest.raises(SchedulerDeploymentError):
         verify_hermes_jobs(duplicate, contract=contract, project_root=tmp_path)
+
+
+def test_hermes_effective_timezone_must_match_manifest_utc():
+    assert verify_hermes_timezone("UTC", required_timezone="UTC")["verified"] is True
+
+    for effective in ("Europe/Rome", None, "", "UT C", "UTC+0"):
+        with pytest.raises(SchedulerDeploymentError, match="timezone"):
+            verify_hermes_timezone(effective, required_timezone="UTC")
+
+
+def test_manifest_utc_does_not_override_non_utc_runtime_timezone():
+    with pytest.raises(SchedulerDeploymentError, match="effective Hermes timezone"):
+        verify_hermes_timezone("Europe/Rome", required_timezone="UTC")
+
+
+def test_hermes_job_rejects_non_utc_runtime_next_run_even_with_utc_manifest(tmp_path):
+    contract = _write_jobs(tmp_path)
+    jobs = _jobs_readback(tmp_path)
+    jobs[0]["next_run_timezone"] = "Europe/Rome"
+
+    with pytest.raises(SchedulerDeploymentError, match="effective Hermes timezone"):
+        verify_hermes_jobs(jobs, contract=contract, project_root=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -288,6 +329,7 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
             f"  job-{index} [active]\n"
             f"    Name: {name}\n"
             f"    Schedule: {expression}\n"
+            "    Next run: 2026-09-28T00:10:00+00:00\n"
             f"    Script: {filename}\n"
             "    Mode: no-agent (script stdout delivered directly)\n"
             f"    Workdir: {project_root}\n"
@@ -297,7 +339,12 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, cli_output, "")
+        stdout = (
+            "UTC\n"
+            if tuple(command) == ("hermes", "config", "get", "timezone")
+            else cli_output
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
 
     monkeypatch.setattr(deployment.subprocess, "run", fake_run)
     destination = tmp_path / "hermes-readback.json"
@@ -310,6 +357,48 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
     assert calls[0][0] == ("hermes", "cron", "list", "--all")
     assert calls[0][1]["capture_output"] is True
     assert calls[0][1]["text"] is True
+    assert calls[1][0] == ("hermes", "config", "get", "timezone")
+    exported_payload = json.loads(exported.read_text(encoding="utf-8"))
+    assert exported_payload["effective_timezone"] == "UTC"
+    assert exported_payload["timezone_source_command"] == "hermes config get timezone"
+
+
+def test_hermes_timezone_readback_command_failure_is_fatal(tmp_path, monkeypatch):
+    import subprocess
+
+    import scripts.verify_scheduler_deployment as deployment
+
+    project_root = tmp_path / "project"
+    contract = _write_jobs(project_root)
+    blocks = []
+    for index, (name, expression, filename) in enumerate(JOB_SPECS.values()):
+        blocks.append(
+            f"  job-{index} [active]\n"
+            f"    Name: {name}\n"
+            f"    Schedule: {expression}\n"
+            "    Next run: 2026-09-28T00:10:00+00:00\n"
+            f"    Script: {filename}\n"
+            "    Mode: no-agent (script stdout delivered directly)\n"
+            f"    Workdir: {project_root}\n"
+        )
+    cli_output = "Scheduled Jobs\n\n" + "\n".join(blocks)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(tuple(command))
+        is_timezone_readback = tuple(command) == (
+            "hermes", "config", "get", "timezone"
+        )
+        stdout = "" if is_timezone_readback else cli_output
+        status = 1 if is_timezone_readback else 0
+        return subprocess.CompletedProcess(command, status, stdout, "readback failed")
+
+    monkeypatch.setattr(deployment.subprocess, "run", fake_run)
+    destination = tmp_path / "hermes-readback.json"
+    with pytest.raises(DeploymentVerificationError, match="timezone"):
+        export_hermes_readback(destination, contract=contract, project_root=project_root)
+    assert calls == [("hermes", "cron", "list", "--all"), ("hermes", "config", "get", "timezone")]
+    assert not destination.exists()
 
 
 def test_deployment_export_and_json_loader_fail_closed(tmp_path):

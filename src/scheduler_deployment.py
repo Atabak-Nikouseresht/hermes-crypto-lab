@@ -5,19 +5,41 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from src.scheduler_contract import SchedulerContractError, verify_scheduler_job
 
 JOB_KEYS = ("weekly_job", "missed_audit_job", "monthly_job")
-_FIELD_PATTERN = re.compile(r"^ {4}(Name|Schedule|Script|Mode|Workdir):\s*(.*?)\s*$")
+_FIELD_PATTERN = re.compile(
+    r"^ {4}(Name|Schedule|Next run|Script|Mode|Workdir):\s*(.*?)\s*$"
+)
 _HEADER_PATTERN = re.compile(r"^ {2}([^\s\[]+)\s+\[([^\]]+)\]$")
 _NO_AGENT_MODE = "no-agent (script stdout delivered directly)"
 
 
 class SchedulerDeploymentError(ValueError):
     """Raised when an installed scheduler differs from its portable contract."""
+
+
+def verify_hermes_timezone(
+    effective_timezone: object, *, required_timezone: object
+) -> dict[str, object]:
+    """Require an explicit Hermes timezone read-back matching the UTC contract."""
+    if type(required_timezone) is not str or required_timezone != "UTC":
+        raise SchedulerDeploymentError("required Hermes timezone contract must be UTC")
+    if type(effective_timezone) is not str or not effective_timezone.strip():
+        raise SchedulerDeploymentError("effective Hermes timezone is missing or malformed")
+    if effective_timezone != required_timezone:
+        raise SchedulerDeploymentError(
+            "effective Hermes timezone differs from required UTC"
+        )
+    return {
+        "verified": True,
+        "required_timezone": required_timezone,
+        "effective_timezone": effective_timezone,
+    }
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -97,9 +119,19 @@ def parse_hermes_cron_list(
             raise SchedulerDeploymentError("Hermes cron list omitted a job name")
         if name not in expected_names:
             continue
-        required = ("Schedule", "Script", "Mode", "Workdir")
+        required = ("Schedule", "Next run", "Script", "Mode", "Workdir")
         if any(type(fields.get(key)) is not str or not fields[key] for key in required):
             raise SchedulerDeploymentError(f"Hermes job {name} has incomplete read-back")
+        try:
+            next_run = datetime.fromisoformat(fields["Next run"].replace("Z", "+00:00"))
+        except ValueError as error:
+            raise SchedulerDeploymentError(
+                f"Hermes job {name} has a malformed next-run timestamp"
+            ) from error
+        if next_run.tzinfo is None or next_run.utcoffset() != timedelta(0):
+            raise SchedulerDeploymentError(
+                f"Hermes job {name} next-run timestamp is not UTC"
+            )
         script_name = fields["Script"]
         if (
             Path(script_name).name != script_name
@@ -125,6 +157,7 @@ def parse_hermes_cron_list(
                 "id": block["id"],
                 "name": name,
                 "schedule": {"kind": "cron", "expr": fields["Schedule"]},
+                "next_run_timezone": "UTC",
                 "script": script_name,
                 "script_sha256": hashlib.sha256(script_path.read_bytes()).hexdigest(),
                 "no_agent": fields["Mode"] == _NO_AGENT_MODE,
@@ -157,6 +190,7 @@ def verify_hermes_jobs(
             "enabled",
             "id",
             "name",
+            "next_run_timezone",
             "no_agent",
             "schedule",
             "script",
@@ -180,6 +214,13 @@ def verify_hermes_jobs(
         names.add(name)
         identifiers.add(job_id)
         spec = expected[name]
+        gateway_contract = contract.get("hermes_gateway")
+        if type(gateway_contract) is not dict:
+            raise SchedulerDeploymentError("Hermes gateway timezone contract is malformed")
+        verify_hermes_timezone(
+            job.get("next_run_timezone"),
+            required_timezone=gateway_contract.get("timezone_config"),
+        )
         script = _string(spec.get("script"), f"{name}.script")
         try:
             result = verify_scheduler_job(

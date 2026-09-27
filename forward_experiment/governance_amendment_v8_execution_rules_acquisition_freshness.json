@@ -1,0 +1,21 @@
+{
+  "classification": "additive prospective operational evidence-admission amendment; no strategy or economic-spec change",
+  "effective_for_new_runs_only": true,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "execution_rules_price_range_contract_v2_sha256": "81c51489a927978a0d368e9d7b0218ad8df28c7d8b9403046a92cba4dc4163c5",
+  "historical_market_rule_evidence_rewritten": false,
+  "historical_orders_or_fills_rewritten": false,
+  "prior_execution_rules_price_range_contract_v1_sha256": "702186ebdce4bb8dbf8e31c50e3d2aca62b1d882ce4c6a2d023ddf5658b2daf1",
+  "prior_governance_amendment_v7_sha256": "db59f569afca46983cacdd0ce38b0ab50ef6becdddd5703210758ce437b5df86",
+  "rule": {
+    "acquisition_age_boundary_inclusive": true,
+    "acquisition_timestamp_required": true,
+    "future_timestamp_permitted": false,
+    "max_age_seconds_when_source_timestamp_missing": 300,
+    "source_timestamp_supplied_semantics_unchanged": true
+  },
+  "status": "active additive prospective freshness fallback for executionRules evidence without source_timestamp",
+  "strategy_reselection": false,
+  "parameter_retuning": false,
+  "version": "forward-governance-execution-rules-acquisition-freshness-amendment-v8"
+}

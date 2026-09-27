@@ -156,6 +156,44 @@ def test_price_range_evidence_validates_persisted_source_and_acquisition_clocks(
     assert (validate_price_range_evidence(rule, now=now, max_age_minutes=5) is None) is valid
 
 
+@pytest.mark.parametrize(
+    "acquired_at,valid",
+    [
+        (NOW, True),
+        (NOW - pd.Timedelta(minutes=5), True),
+        (NOW - pd.Timedelta(minutes=5, milliseconds=1), False),
+        (NOW + pd.Timedelta(milliseconds=1), False),
+        (None, False),
+    ],
+)
+def test_price_range_missing_source_timestamp_uses_acquisition_freshness(acquired_at, valid):
+    evidence = _rule(source_timestamp=None, acquired_at=acquired_at)
+
+    assert (validate_price_range_evidence(evidence, now=NOW, max_age_minutes=5) is None) is valid
+
+
+def test_execution_rules_acquisition_freshness_governance_chain_is_consistent():
+    from pathlib import Path
+    import hashlib
+
+    root = Path(__file__).resolve().parents[1] / "forward_experiment"
+    contract_path = root / "execution_rules_price_range_contract_v2.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    amendment = json.loads(
+        (root / "governance_amendment_v8_execution_rules_acquisition_freshness.json")
+        .read_text(encoding="utf-8")
+    )
+    contract_hash = hashlib.sha256(contract_path.read_bytes()).hexdigest()
+    previous_contract_hash = hashlib.sha256(
+        (root / "execution_rules_price_range_contract_v1.json").read_bytes()
+    ).hexdigest()
+
+    assert contract_hash == amendment["execution_rules_price_range_contract_v2_sha256"]
+    assert previous_contract_hash == contract["prior_contract_v1_sha256"]
+    assert contract["rule"]["max_age_seconds_when_source_timestamp_missing"] == 300
+    assert contract["rule"]["acquisition_age_boundary_inclusive"] is True
+
+
 @pytest.mark.parametrize("status", ["TRANSPORT_FAILURE", "MALFORMED_RESPONSE"])
 def test_price_range_failure_evidence_retains_receipt_without_becoming_documented_absence(status):
     evidence = _rule(

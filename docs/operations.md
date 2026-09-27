@@ -186,14 +186,28 @@ uv run python -m scripts.verify_scheduler_deployment --export-hermes-cli --verif
 
 The installed Hermes Agent v0.21.4 (2026.9.21) exposes the read-only
 `hermes cron list --all` command, but its local help has no JSON-output option.
-The verifier therefore runs that supported command, strictly parses its text
-read-back, writes a minimal schema-versioned JSON export to
+The verifier also runs the supported `hermes config get timezone` command and
+requires its resolved value to be exactly `UTC`; missing, malformed, failed, or
+non-UTC read-back fails closed. It checks every governed job's live `Next run`
+timestamp is timezone-aware with a zero UTC offset, independently of the static
+manifest. It then writes a minimal schema-versioned JSON export to
 `%LOCALAPPDATA%/hermes/cache/scratch/hermes-crypto-lab-scheduler-readback.json`,
 and consumes that explicit export against the static manifest. It checks all
 governed job identities, names, UTC cron expressions, wrapper paths and SHA-256
 hashes, workdirs, enabled state, and no-agent mode. A changed or incomplete CLI
 format fails closed; do not edit the governed manifest to make a mismatched
 deployment pass.
+
+The supported CLI does not expose the `ZoneInfo` object held by an already-
+running Gateway as a direct read-only field. The gate combines the resolved
+timezone for the selected CLI profile with actual cron `Next run` timestamps;
+either a non-UTC setting or a nonzero live offset fails. Hermes keeps timezone
+state per active profile, so run the gate with the profile that owns the
+governed jobs selected. If that profile's timezone setting changed after its
+Gateway started, restart the Gateway and rerun the gate. A stale timezone name
+that happens to produce a zero UTC offset on the observed next-run dates cannot
+be distinguished by this CLI read-back; exact cached-object introspection is
+not exposed. See [Hermes multi-profile gateways](https://hermes-agent.nousresearch.com/docs/user-guide/multi-profile-gateways).
 
 The same command reads `Hermes_Crypto_Lab_Watchdog` through PowerShell
 `Get-ScheduledTask` and verifies its enabled state, executable, arguments/script,

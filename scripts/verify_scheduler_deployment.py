@@ -16,6 +16,7 @@ from typing import Any
 from src.scheduler_deployment import (
     SchedulerDeploymentError,
     parse_hermes_cron_list,
+    verify_hermes_timezone,
     verify_hermes_jobs,
     verify_windows_watchdog,
 )
@@ -25,7 +26,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = PROJECT_ROOT / "forward_experiment" / "scheduler_manifest.json"
 WINDOWS_READBACK_SCRIPT = PROJECT_ROOT / "scripts" / "read_windows_task_scheduler.ps1"
 HERMES_COMMAND = ("hermes", "cron", "list", "--all")
-READBACK_SCHEMA_VERSION = 1
+HERMES_TIMEZONE_COMMAND = ("hermes", "config", "get", "timezone")
+READBACK_SCHEMA_VERSION = 2
 
 
 class DeploymentVerificationError(ValueError):
@@ -120,9 +122,43 @@ def export_hermes_readback(
             "Hermes cron list output did not match the supported read-back format"
         ) from error
 
+    try:
+        timezone_result = subprocess.run(
+            HERMES_TIMEZONE_COMMAND,
+            cwd=project_root,
+            capture_output=True,
+            check=False,
+            timeout=30,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise DeploymentVerificationError(
+            "could not execute the supported Hermes timezone read-back command"
+        ) from error
+    if timezone_result.returncode != 0:
+        raise DeploymentVerificationError(
+            "Hermes timezone read-back failed; raw command output was suppressed"
+        )
+    if type(timezone_result.stdout) is not str:
+        raise DeploymentVerificationError("Hermes timezone read-back was malformed")
+    timezone_lines = timezone_result.stdout.splitlines()
+    if (
+        len(timezone_lines) != 1
+        or not timezone_lines[0]
+        or timezone_lines[0].strip() != timezone_lines[0]
+    ):
+        raise DeploymentVerificationError(
+            "Hermes timezone read-back was missing or malformed"
+        )
+    effective_timezone = timezone_lines[0]
+
     payload = {
+        "effective_timezone": effective_timezone,
         "schema_version": READBACK_SCHEMA_VERSION,
         "source_command": "hermes cron list --all",
+        "timezone_source_command": "hermes config get timezone",
         "jobs": jobs,
     }
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +170,7 @@ def export_hermes_readback(
     return target
 
 
-def load_hermes_readback(path: Path) -> list[dict[str, Any]]:
+def _load_hermes_readback_payload(path: Path) -> dict[str, Any]:
     """Load only the explicit JSON schema emitted by the Hermes export adapter."""
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -144,14 +180,33 @@ def load_hermes_readback(path: Path) -> list[dict[str, Any]]:
         ) from error
     if (
         type(payload) is not dict
-        or set(payload) != {"schema_version", "source_command", "jobs"}
+        or set(payload)
+        != {
+            "schema_version",
+            "source_command",
+            "jobs",
+            "effective_timezone",
+            "timezone_source_command",
+        }
         or type(payload.get("schema_version")) is not int
         or payload["schema_version"] != READBACK_SCHEMA_VERSION
         or payload.get("source_command") != "hermes cron list --all"
+        or payload.get("timezone_source_command") != "hermes config get timezone"
         or type(payload.get("jobs")) is not list
+        or type(payload.get("effective_timezone")) is not str
     ):
         raise DeploymentVerificationError("Hermes read-back JSON schema is invalid")
-    return payload["jobs"]
+    return payload
+
+
+def load_hermes_readback(path: Path) -> list[dict[str, Any]]:
+    """Load governed Hermes jobs while preserving the established list API."""
+    return _load_hermes_readback_payload(path)["jobs"]
+
+
+def load_hermes_timezone_readback(path: Path) -> str:
+    """Load the resolved timezone captured by the supported Hermes CLI."""
+    return _load_hermes_readback_payload(path)["effective_timezone"]
 
 
 def read_windows_task_scheduler(
@@ -236,8 +291,22 @@ def main() -> int:
         if readback_file is not None:
             readback_file = _external_readback_path(readback_file, PROJECT_ROOT)
             jobs = load_hermes_readback(readback_file)
+            gateway_contract = contract.get("hermes_gateway")
+            if type(gateway_contract) is not dict:
+                raise DeploymentVerificationError("Hermes gateway contract is malformed")
+            try:
+                timezone_result = verify_hermes_timezone(
+                    load_hermes_timezone_readback(readback_file),
+                    required_timezone=gateway_contract.get("timezone_config"),
+                )
+            except SchedulerDeploymentError as error:
+                raise DeploymentVerificationError(str(error)) from error
             verified = verify_hermes_jobs(
                 jobs, contract=contract, project_root=PROJECT_ROOT
+            )
+            results.append(
+                "Hermes effective timezone: PASS "
+                f"({timezone_result['effective_timezone']})"
             )
             results.append(
                 f"Hermes scheduler read-back: PASS ({verified['job_count']} governed jobs)"

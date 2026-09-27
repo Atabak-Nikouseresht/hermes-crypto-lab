@@ -72,6 +72,207 @@ def test_corrupted_backup_is_detected(tmp_path):
         verify_backup(backup)
 
 
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "../escape",
+        "../../escape",
+        "/absolute",
+        r"C:\absolute",
+        "foo/bar",
+        r"foo\bar",
+        ".",
+        "..",
+        "",
+    ],
+)
+def test_backup_api_rejects_unsafe_destination_components_before_source_access(
+    tmp_path, timestamp
+):
+    with pytest.raises(ValueError, match="backup name"):
+        create_verified_backup(
+            project_root=tmp_path,
+            database_path=tmp_path / "missing.duckdb",
+            output_root=tmp_path / "backups",
+            lock_path=tmp_path / "writer.lock",
+            timestamp=timestamp,
+            commit_hash="a" * 40,
+        )
+
+
+@pytest.mark.parametrize("timestamp", [
+    "2026-09-27T192500Z",
+    "20260927T192500Z",
+    "backup_2026-09-27",
+])
+def test_backup_api_accepts_normal_single_component_names(tmp_path, timestamp):
+    from src.backup_restore import _backup_destination
+
+    root = tmp_path / "backups"
+    destination = _backup_destination(root, timestamp)
+
+    assert destination.parent == root.resolve()
+    assert destination.name == timestamp
+
+
+@pytest.mark.parametrize(
+    "kind", ["file", "directory", "nested", "broken", "governed_root"]
+)
+def test_backup_rejects_source_symlinks_before_copying_or_publishing(
+    tmp_path, monkeypatch, kind
+):
+    system, project = _verified_execution_system(tmp_path)
+    outside = tmp_path / "outside"
+    source = project / "reports" / "paper"
+    if kind == "governed_root":
+        outside.mkdir()
+        (outside / "paper").mkdir()
+        try:
+            (project / "reports").symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            pytest.skip(f"symlink creation unavailable: {error}")
+    else:
+        source.mkdir(parents=True)
+    if kind == "directory":
+        outside.mkdir()
+        (outside / "private.txt").write_text("external secret", encoding="utf-8")
+        link = source / "linked_directory"
+        target = outside
+        is_directory = True
+    elif kind == "nested":
+        outside.write_text("external secret", encoding="utf-8")
+        nested = source / "nested"
+        nested.mkdir()
+        link = nested / "linked_file.txt"
+        target = outside
+        is_directory = False
+    elif kind == "broken":
+        link = source / "broken.txt"
+        target = tmp_path / "missing-outside.txt"
+        is_directory = False
+    elif kind == "governed_root":
+        target = outside / "paper" / "external.txt"
+        target.write_text("external secret", encoding="utf-8")
+        link = source / "linked_file.txt"
+        is_directory = False
+    else:
+        outside.write_text("external secret", encoding="utf-8")
+        link = source / "linked_file.txt"
+        target = outside
+        is_directory = False
+    try:
+        link.symlink_to(target, target_is_directory=is_directory)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+
+    monkeypatch.setattr(
+        "src.backup_restore.shutil.copytree",
+        lambda *_args, **_kwargs: pytest.fail("source must be rejected before copying"),
+    )
+    output_root = tmp_path / "backups"
+    destination = output_root / "symlink-case"
+    with pytest.raises(ValueError, match="symlink"):
+        create_verified_backup(
+            project_root=project,
+            database_path=system.store.path,
+            output_root=output_root,
+            lock_path=project / "runtime" / "forward_writer.lock",
+            timestamp="symlink-case",
+            commit_hash="a" * 40,
+        )
+
+    assert not destination.exists()
+    if outside.is_file():
+        assert outside.read_text(encoding="utf-8") == "external secret"
+
+
+def test_backup_rejects_symlinked_database_source_before_database_access(tmp_path):
+    system, project = _verified_execution_system(tmp_path)
+    link = project / "database" / "external-paper-trading.duckdb"
+    try:
+        link.symlink_to(system.store.path)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+
+    with pytest.raises(ValueError, match="symlink or reparse point"):
+        create_verified_backup(
+            project_root=project,
+            database_path=link,
+            output_root=tmp_path / "backups",
+            lock_path=project / "runtime" / "forward_writer.lock",
+            timestamp="database-symlink",
+            commit_hash="a" * 40,
+        )
+
+    assert not (tmp_path / "backups" / "database-symlink").exists()
+
+
+def test_backup_tree_scanner_rejects_symlink_entries_without_platform_privileges(
+    tmp_path, monkeypatch
+):
+    import os
+    import stat
+
+    import src.backup_restore as backup_restore
+
+    root = tmp_path / "source"
+    root.mkdir()
+
+    class SymlinkEntry:
+        path = "source/external-link"
+
+        def is_symlink(self):
+            return True
+
+        def is_junction(self):
+            return False
+
+        def stat(self, *, follow_symlinks):
+            assert follow_symlinks is False
+            return os.stat_result(
+                (stat.S_IFLNK | 0o777, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            )
+
+    class Scanner:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            return iter([SymlinkEntry()])
+
+    monkeypatch.setattr(backup_restore.os, "scandir", lambda _path: Scanner())
+
+    with pytest.raises(ValueError, match="symlink or reparse point"):
+        backup_restore._reject_source_tree_links(root)
+
+
+def test_backup_source_path_scanner_rejects_symlinked_parent_without_platform_privileges(
+    tmp_path, monkeypatch
+):
+    import os
+    import stat
+
+    from src.backup_restore import _reject_path_link_components
+
+    project = tmp_path / "project"
+    project.mkdir()
+    reports = project / "reports"
+    target = reports / "paper"
+    symlink_stat = os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    original_lstat = Path.lstat
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda self: symlink_stat if self == reports else original_lstat(self),
+    )
+
+    with pytest.raises(ValueError, match="symlink or reparse point"):
+        _reject_path_link_components(target)
+
+
 def _verified_execution_system(tmp_path, *, v16=False, rejected=False) -> tuple[PaperTradingSystem, Path]:
     project = tmp_path / "project"
     (project / "database").mkdir(parents=True)

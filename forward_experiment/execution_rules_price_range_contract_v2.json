@@ -1,0 +1,20 @@
+{
+  "classification": "additive prospective extension of executionRules PRICE_RANGE evidence freshness; paper-only and not a matching-engine fillability claim",
+  "effective_for_new_runs_only": true,
+  "execution_protocol_version": "paper-exec-v3-ask-bid-minspread-utc0010",
+  "historical_evidence_fabricated": false,
+  "historical_executions_reinterpreted": false,
+  "prior_contract_v1_sha256": "702186ebdce4bb8dbf8e31c50e3d2aca62b1d882ce4c6a2d023ddf5658b2daf1",
+  "rule": {
+    "acquisition_age_boundary_inclusive": true,
+    "acquisition_timestamp_required": true,
+    "future_timestamp_permitted": false,
+    "max_age_seconds_when_source_timestamp_missing": 300,
+    "max_age_seconds_when_source_timestamp_supplied": 300,
+    "missing_source_timestamp_permitted": true,
+    "source_timestamp_order": "source_timestamp <= acquired_at <= admission"
+  },
+  "status": "prospective acquisition-age freshness fallback when executionRules omits source_timestamp",
+  "strategy_or_candidate_changed": false,
+  "version": "binance-execution-rules-price-range-v2-acquisition-freshness"
+}

@@ -18,7 +18,7 @@
     "safety": "Audit-only: no market fetch, signal generation, equity snapshot, execution, or backdated trade",
     "script": "paper_forward_audit.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "abb7fcb11405f4b6da5ab1da8b68df661000b20765ecb64895c00aa6fe4715b5"
+    "wrapper_sha256": "affd62acd6c7ce623553c8de9ee322f6048e7a58423f1900834665f0f8b7a484"
   },
   "monthly_job": {
     "deliver": "local",
@@ -29,10 +29,21 @@
     "permitted_window_utc": "Day 1 09:00-09:15",
     "script": "paper_forward_monthly.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "aba208a95e702b49f365bf1c4e2b2fda46decbe3cd514021ebbf2d8dc4e82495"
+    "wrapper_sha256": "cef6b677a586ff40bf800631db337fd9109be55b4c29053f2861a465f5bc2cc9"
+  },
+  "canary_job": {
+    "deliver": "local",
+    "enabled": true,
+    "hermes_trigger": "47 3 * * 0",
+    "name": "crypto-binance-public-api-canary",
+    "no_agent": true,
+    "safety": "Read-only public schema check for the exact referencePrice and executionRules endpoints; no database, credentials, private API, strategy, or orders",
+    "script": "binance_public_api_canary.py",
+    "workdir": "[PROJECT_ROOT]",
+    "wrapper_sha256": "d1972bdc0e870168ccd8c1a7ec54751ecb8e53890d2cbac73655dac2d15a4120"
   },
   "publication_note": "Portable static source contract; runtime deployment observations remain local. Historical scheduler-state changes remain visible in ordinary Git history, while sealed baseline hash commitments remain untouched.",
-  "scheduler_design": "All deterministic jobs are Hermes no-agent scripts. Weekly launches may retry inside Monday 00:05-00:20 UTC after transient or pre-execution failure; DB schedule idempotency and the global writer lock prevent duplicate committed trades. The 00:21 audit records missed windows without market access or trading. Wrapper paths and hashes are checked against installed copies. The laptop must be powered on and the interactive user session available; this is not high-availability infrastructure.",
+  "scheduler_design": "All deterministic jobs are Hermes no-agent scripts. The Sunday 03:47 UTC public Binance Canary validates only the two production schemas without opening the paper database or using trading capability. Weekly launches may retry inside Monday 00:05-00:20 UTC after transient or pre-execution failure; DB schedule idempotency and the global writer lock prevent duplicate committed trades. The 00:21 audit records missed windows without market access or trading. Wrapper paths and hashes are checked against installed copies. The laptop must be powered on and the interactive user session available; this is not high-availability infrastructure.",
   "weekly_job": {
     "deliver": "local",
     "enabled": true,
@@ -43,7 +54,7 @@
     "permitted_window_utc": "Monday 00:05-00:20",
     "script": "paper_forward_weekly.py",
     "workdir": "[PROJECT_ROOT]",
-    "wrapper_sha256": "83e0dc9f31a88a1939183ddc59e04f35808e21c06121fe28ef1c4f90ca9f37e1"
+    "wrapper_sha256": "d71d313f03b9784fce3e08e25cbe468d805862a592b86e38131cf253c8b7b958"
   },
   "windows_task_scheduler_watchdog": {
     "action": {

@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from src.scheduler_deployment import (
+    JOB_KEYS,
     SchedulerDeploymentError,
     parse_hermes_cron_list,
+    parse_hermes_config_path,
     parse_hermes_version_output,
     verify_hermes_timezone,
     verify_hermes_version,
@@ -29,8 +31,9 @@ MANIFEST_PATH = PROJECT_ROOT / "forward_experiment" / "scheduler_manifest.json"
 WINDOWS_READBACK_SCRIPT = PROJECT_ROOT / "scripts" / "read_windows_task_scheduler.ps1"
 HERMES_COMMAND = ("hermes", "cron", "list", "--all")
 HERMES_VERSION_COMMAND = ("hermes", "--version")
+HERMES_CONFIG_PATH_COMMAND = ("hermes", "config", "path")
 HERMES_TIMEZONE_COMMAND = ("hermes", "config", "get", "timezone")
-READBACK_SCHEMA_VERSION = 3
+READBACK_SCHEMA_VERSION = 4
 
 
 class DeploymentVerificationError(ValueError):
@@ -115,11 +118,42 @@ def export_hermes_readback(
         ) from error
 
     expected_names: set[str] = set()
-    for key in ("weekly_job", "missed_audit_job", "monthly_job"):
+    for key in JOB_KEYS:
         spec = contract.get(key)
         if type(spec) is not dict or type(spec.get("name")) is not str:
             raise DeploymentVerificationError(f"scheduler contract {key} is malformed")
         expected_names.add(spec["name"])
+
+    try:
+        config_path_result = subprocess.run(
+            HERMES_CONFIG_PATH_COMMAND,
+            cwd=project_root,
+            capture_output=True,
+            check=False,
+            timeout=30,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise DeploymentVerificationError(
+            "could not execute the supported Hermes config path command"
+        ) from error
+    if config_path_result.returncode != 0:
+        raise DeploymentVerificationError(
+            "Hermes config path command failed; raw command output was suppressed"
+        )
+    try:
+        config_path = parse_hermes_config_path(config_path_result.stdout)
+    except SchedulerDeploymentError as error:
+        raise DeploymentVerificationError(
+            "Hermes config path output was missing or malformed"
+        ) from error
+    scripts_root = config_path.parent / "scripts"
+    if not scripts_root.is_dir():
+        raise DeploymentVerificationError(
+            "installed Hermes scripts directory is missing"
+        )
 
     try:
         result = subprocess.run(
@@ -145,6 +179,7 @@ def export_hermes_readback(
             result.stdout,
             expected_names=expected_names,
             project_root=project_root,
+            scripts_root=scripts_root,
         )
     except SchedulerDeploymentError as error:
         raise DeploymentVerificationError(
@@ -190,6 +225,7 @@ def export_hermes_readback(
         "timezone_source_command": "hermes config get timezone",
         "installed_hermes_version": installed_hermes_version,
         "version_source_command": "hermes --version",
+        "scripts_root": str(scripts_root.resolve()),
         "jobs": jobs,
     }
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +256,7 @@ def _load_hermes_readback_payload(path: Path) -> dict[str, Any]:
             "timezone_source_command",
             "installed_hermes_version",
             "version_source_command",
+            "scripts_root",
         }
         or type(payload.get("schema_version")) is not int
         or payload["schema_version"] != READBACK_SCHEMA_VERSION
@@ -227,6 +264,8 @@ def _load_hermes_readback_payload(path: Path) -> dict[str, Any]:
         or payload.get("timezone_source_command") != "hermes config get timezone"
         or payload.get("version_source_command") != "hermes --version"
         or type(payload.get("installed_hermes_version")) is not str
+        or type(payload.get("scripts_root")) is not str
+        or not Path(payload["scripts_root"]).is_absolute()
         or type(payload.get("jobs")) is not list
         or type(payload.get("effective_timezone")) is not str
     ):
@@ -247,6 +286,11 @@ def load_hermes_timezone_readback(path: Path) -> str:
 def load_hermes_version_readback(path: Path) -> str:
     """Load the actual installed Hermes version captured by the CLI adapter."""
     return _load_hermes_readback_payload(path)["installed_hermes_version"]
+
+
+def load_hermes_scripts_root_readback(path: Path) -> Path:
+    """Load the installed Hermes script directory captured by the CLI adapter."""
+    return Path(_load_hermes_readback_payload(path)["scripts_root"])
 
 
 def read_windows_task_scheduler(
@@ -349,7 +393,10 @@ def main() -> int:
             except SchedulerDeploymentError as error:
                 raise DeploymentVerificationError(str(error)) from error
             verified = verify_hermes_jobs(
-                jobs, contract=contract, project_root=PROJECT_ROOT
+                jobs,
+                contract=contract,
+                project_root=PROJECT_ROOT,
+                scripts_root=load_hermes_scripts_root_readback(readback_file),
             )
             results.append(
                 "Hermes runtime version: PASS "

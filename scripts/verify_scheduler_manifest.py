@@ -26,7 +26,16 @@ JOBS = {
         "0 9 1 * *",
         "crypto-paper-forward-monthly",
     ),
+    "canary_job": (
+        "scripts/binance_public_api_canary.py",
+        "47 3 * * 0",
+        "crypto-binance-public-api-canary",
+    ),
 }
+CANARY_SAFETY = (
+    "Read-only public schema check for the exact referencePrice and executionRules "
+    "endpoints; no database, credentials, private API, strategy, or orders"
+)
 EXPECTED_WATCHDOG = {
     "action": {
         "arguments_prefix": "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File",
@@ -132,6 +141,9 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict:
             raise ValueError(f"{key} no_agent mismatch")
         if job.get("workdir") != "[PROJECT_ROOT]":
             raise ValueError(f"{key} contains a non-portable workdir")
+        if key == "canary_job":
+            if job.get("safety") != CANARY_SAFETY or job.get("deliver") != "local":
+                raise ValueError("canary safety/delivery contract mismatch")
         actual_hash = _sha256(wrapper)
         if job.get("wrapper_sha256") != actual_hash:
             raise ValueError(f"{key} wrapper hash mismatch")

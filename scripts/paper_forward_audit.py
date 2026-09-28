@@ -5,12 +5,17 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+PROJECT = Path.cwd().resolve()
+if not (PROJECT / "pyproject.toml").is_file() or not (PROJECT / "run_paper.py").is_file():
+    raise RuntimeError("Hermes audit wrapper requires the governed project workdir")
+if str(PROJECT) not in sys.path:
+    sys.path.insert(0, str(PROJECT))
+
 try:
     from scripts.interpreter import resolve_project_python
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from interpreter import resolve_project_python
 
-PROJECT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT / "run_paper.py"
 
 

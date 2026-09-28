@@ -204,16 +204,27 @@ deployment pass.
 
 ## Binance public API canary
 
-`.github/workflows/binance-public-api-canary.yml` runs weekly on Sunday at
-03:47 UTC and supports `workflow_dispatch`. It performs only bounded public
-GETs for the exact `/api/v3/referencePrice` and `/api/v3/executionRules` paths
-used by paper market data, then exercises the same production parsers. It
-requires no secrets, performs no authenticated request or order, and does not
-open or modify the paper database, research state, or notification system.
-HTTP/network unavailability is reported separately from incompatible HTTP
-responses, JSON, or parser schemas; requests are not retried by the canary.
-The endpoint allowlist also permits only the existing one-day `/api/v3/klines`
-query used by the independent read-only data cross-check.
+The authoritative live Canary runs on the deployment host as Hermes no-agent
+job `crypto-binance-public-api-canary` at Sunday 03:47 UTC. Its installed wrapper
+invokes the existing `python -m scripts.check_binance_public_api` entry point;
+only `PASS` after both `/api/v3/referencePrice` and `/api/v3/executionRules`
+are reached and parsed is a schema-health result. The job performs bounded,
+unauthenticated public GETs only; it does not open the paper database, use
+credentials/private endpoints, execute strategy, or create orders.
+
+GitHub-hosted access may be restricted and has returned HTTP 451. The separate
+GitHub live-probe workflow is useful for reporting that environment's result,
+but is not authoritative evidence of deployment-host schema health; core CI
+tests the deterministic offline Canary behavior. HTTP 451 is
+`API_ACCESS_RESTRICTED` (exit 4), not a schema or transient-availability result.
+The other CLI outcomes are `PASS` (0), `API_SCHEMA_INCOMPATIBLE` (2), and
+`API_TEMPORARILY_UNAVAILABLE` (3). Timeouts, DNS/transport failures, HTTP 418,
+429, and 5xx are temporary; expected-endpoint 404, malformed JSON, or rejected
+production parser payloads are schema-incompatible. The CLI emits concise JSON
+with status, exit code, and endpoint information and does not print raw response
+bodies. Requests are not retried. The endpoint allowlist also permits only the
+existing one-day `/api/v3/klines` query used by the independent read-only data
+cross-check.
 
 The paper snapshot gathers finalized OHLCV for all configured symbols, then
 all ticker quotes, then reference-price evidence, then execution-rule evidence.

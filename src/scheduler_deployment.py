@@ -11,7 +11,7 @@ from typing import Any
 
 from src.scheduler_contract import SchedulerContractError, verify_scheduler_job
 
-JOB_KEYS = ("weekly_job", "missed_audit_job", "monthly_job")
+JOB_KEYS = ("weekly_job", "missed_audit_job", "monthly_job", "canary_job")
 _FIELD_PATTERN = re.compile(
     r"^ {4}(Name|Schedule|Next run|Script|Mode|Workdir):\s*(.*?)\s*$"
 )
@@ -79,6 +79,22 @@ def verify_hermes_version(
     }
 
 
+def parse_hermes_config_path(output: object) -> Path:
+    """Resolve the active Hermes config location without opening its contents."""
+    if type(output) is not str or not output:
+        raise SchedulerDeploymentError("Hermes config path output is missing or malformed")
+    lines = output.splitlines()
+    if len(lines) != 1 or not lines[0] or lines[0].strip() != lines[0]:
+        raise SchedulerDeploymentError("Hermes config path output is missing or malformed")
+    path = Path(lines[0]).expanduser()
+    if not path.is_absolute() or path.name.casefold() != "config.yaml":
+        raise SchedulerDeploymentError("Hermes config path is not an absolute config.yaml path")
+    try:
+        return path.resolve()
+    except (OSError, ValueError) as error:
+        raise SchedulerDeploymentError("Hermes config path is malformed") from error
+
+
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
     if type(value) is not dict:
         raise SchedulerDeploymentError(f"{label} must be a JSON object")
@@ -114,6 +130,7 @@ def parse_hermes_cron_list(
     *,
     expected_names: set[str],
     project_root: Path,
+    scripts_root: Path | None = None,
 ) -> list[dict[str, object]]:
     """Normalize the text emitted by the installed `hermes cron list --all` CLI."""
     if type(output) is not str or not output.strip():
@@ -148,7 +165,7 @@ def parse_hermes_cron_list(
 
     jobs: list[dict[str, object]] = []
     project = Path(project_root).resolve()
-    scripts_root = (project / "scripts").resolve()
+    runtime_scripts_root = Path(scripts_root or project / "scripts").resolve()
     for block in blocks:
         fields = block["fields"]
         name = fields.get("Name")
@@ -177,12 +194,12 @@ def parse_hermes_cron_list(
             or script_name in {".", ".."}
         ):
             raise SchedulerDeploymentError(f"Hermes job {name} has a non-basename script")
-        script_path = (scripts_root / script_name).resolve()
+        script_path = (runtime_scripts_root / script_name).resolve()
         try:
-            script_path.relative_to(scripts_root)
+            script_path.relative_to(runtime_scripts_root)
         except ValueError as error:
             raise SchedulerDeploymentError(
-                f"Hermes job {name} script escapes the project scripts directory"
+                f"Hermes job {name} script escapes the installed Hermes scripts directory"
             ) from error
         if not script_path.is_file():
             raise SchedulerDeploymentError(f"Hermes job {name} wrapper is missing")
@@ -210,13 +227,14 @@ def verify_hermes_jobs(
     *,
     contract: Mapping[str, Any],
     project_root: Path,
+    scripts_root: Path | None = None,
 ) -> dict[str, object]:
     """Verify exactly one strictly typed read-back for each governed Hermes job."""
     if type(jobs) is not list:
         raise SchedulerDeploymentError("Hermes read-back jobs must be a JSON array")
     expected = _contract_jobs(contract)
     root = Path(project_root).resolve()
-    scripts_root = root / "scripts"
+    runtime_scripts_root = Path(scripts_root or root / "scripts").resolve()
     names: set[str] = set()
     identifiers: set[str] = set()
     verified: list[dict[str, Any]] = []
@@ -266,9 +284,9 @@ def verify_hermes_jobs(
                 expected_expression=_string(
                     spec.get("hermes_trigger"), f"{name}.hermes_trigger"
                 ),
-                expected_script=root / "scripts" / script,
+                expected_script=runtime_scripts_root / script,
                 expected_workdir=root,
-                scripts_root=scripts_root,
+                scripts_root=runtime_scripts_root,
                 expected_script_sha256=_string(
                     spec.get("wrapper_sha256"), f"{name}.wrapper_sha256"
                 ),

@@ -84,6 +84,7 @@ STATIC_CRITICAL_FILES = (
     "run_monthly_report.py",
     "run_paper.py",
     "scripts/backup_forward.py",
+    "scripts/binance_public_api_canary.py",
     "scripts/check_binance_public_api.py",
     "scripts/check_markdown_links.py",
     "scripts/data_cross_check.py",

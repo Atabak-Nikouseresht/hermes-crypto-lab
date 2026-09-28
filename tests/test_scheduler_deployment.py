@@ -9,6 +9,7 @@ import pytest
 
 from src.scheduler_deployment import (
     SchedulerDeploymentError,
+    parse_hermes_config_path,
     parse_hermes_cron_list,
     parse_hermes_version_output,
     verify_hermes_version,
@@ -19,6 +20,7 @@ from scripts.verify_scheduler_deployment import (
     DeploymentVerificationError,
     export_hermes_readback,
     load_hermes_readback,
+    load_hermes_scripts_root_readback,
     load_hermes_version_readback,
 )
 from src.scheduler_deployment import verify_hermes_timezone
@@ -67,6 +69,11 @@ JOB_SPECS = {
         "0 9 1 * *",
         "paper_forward_monthly.py",
     ),
+    "canary_job": (
+        "crypto-binance-public-api-canary",
+        "47 3 * * 0",
+        "binance_public_api_canary.py",
+    ),
 }
 
 
@@ -89,6 +96,18 @@ def _write_jobs(project_root: Path) -> dict[str, dict[str, str]]:
         "timezone_config": "UTC",
     }
     return contract
+
+
+def _write_hermes_home(tmp_path: Path, project_root: Path) -> Path:
+    hermes_home = tmp_path / "hermes-home"
+    scripts_root = hermes_home / "scripts"
+    scripts_root.mkdir(parents=True)
+    config_path = hermes_home / "config.yaml"
+    config_path.touch()
+    for _name, _expression, filename in JOB_SPECS.values():
+        source = project_root / "scripts" / filename
+        (scripts_root / filename).write_bytes(source.read_bytes())
+    return config_path
 
 
 def _jobs_readback(project_root: Path) -> list[dict[str, object]]:
@@ -228,12 +247,45 @@ def test_hermes_readback_verifies_exact_jobs_and_rejects_duplicates(tmp_path):
 
     verified = verify_hermes_jobs(jobs, contract=contract, project_root=tmp_path)
     assert verified["verified"] is True
-    assert verified["job_count"] == 3
+    assert verified["job_count"] == 4
 
     duplicate = copy.deepcopy(jobs)
     duplicate.append(copy.deepcopy(jobs[0]))
     with pytest.raises(SchedulerDeploymentError):
         verify_hermes_jobs(duplicate, contract=contract, project_root=tmp_path)
+
+
+def test_hermes_readback_verifies_installed_script_root_and_rejects_drift(tmp_path):
+    contract = _write_jobs(tmp_path)
+    installed_root = tmp_path / "hermes-home" / "scripts"
+    installed_root.mkdir(parents=True)
+    for _name, _expression, filename in JOB_SPECS.values():
+        source = tmp_path / "scripts" / filename
+        (installed_root / filename).write_bytes(source.read_bytes())
+
+    jobs = _jobs_readback(tmp_path)
+    verified = verify_hermes_jobs(
+        jobs,
+        contract=contract,
+        project_root=tmp_path,
+        scripts_root=installed_root,
+    )
+    assert verified["job_count"] == 4
+    assert all(
+        Path(job["script"]).parent == installed_root.resolve()
+        for job in verified["jobs"]
+    )
+
+    (installed_root / "binance_public_api_canary.py").write_text(
+        "drifted wrapper\n", encoding="utf-8"
+    )
+    with pytest.raises(SchedulerDeploymentError, match="bytes do not match"):
+        verify_hermes_jobs(
+            jobs,
+            contract=contract,
+            project_root=tmp_path,
+            scripts_root=installed_root,
+        )
 
 
 def test_hermes_effective_timezone_must_match_manifest_utc():
@@ -242,6 +294,17 @@ def test_hermes_effective_timezone_must_match_manifest_utc():
     for effective in ("Europe/Rome", None, "", "UT C", "UTC+0"):
         with pytest.raises(SchedulerDeploymentError, match="timezone"):
             verify_hermes_timezone(effective, required_timezone="UTC")
+
+
+def test_hermes_config_path_must_be_a_single_absolute_config_file(tmp_path):
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.touch()
+
+    assert parse_hermes_config_path(f"{config_path}\n") == config_path.resolve()
+    for output in ("", "relative/config.yaml\n", f"{config_path}\nextra\n"):
+        with pytest.raises(SchedulerDeploymentError, match="config path"):
+            parse_hermes_config_path(output)
 
 
 def test_hermes_runtime_version_requires_exact_supported_patch():
@@ -362,6 +425,7 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
 
     project_root = tmp_path / "project"
     contract = _write_jobs(project_root)
+    config_path = _write_hermes_home(tmp_path, project_root)
     blocks = []
     for index, (name, expression, filename) in enumerate(JOB_SPECS.values()):
         blocks.append(
@@ -381,6 +445,7 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
         command = tuple(command)
         stdout = {
             ("hermes", "--version"): "Hermes Agent v0.21.4 (2026.9.21) · upstream c80d12b9\n",
+            ("hermes", "config", "path"): f"{config_path}\n",
             ("hermes", "config", "get", "timezone"): "UTC\n",
         }.get(command, cli_output)
         return subprocess.CompletedProcess(command, 0, stdout, "")
@@ -395,6 +460,7 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
     assert len(jobs) == len(JOB_SPECS)
     assert [call[0] for call in calls] == [
         ("hermes", "--version"),
+        ("hermes", "config", "path"),
         ("hermes", "cron", "list", "--all"),
         ("hermes", "config", "get", "timezone"),
     ]
@@ -405,6 +471,9 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
     assert exported_payload["timezone_source_command"] == "hermes config get timezone"
     assert exported_payload["installed_hermes_version"] == "0.21.4"
     assert exported_payload["version_source_command"] == "hermes --version"
+    assert load_hermes_scripts_root_readback(exported) == (
+        config_path.parent / "scripts"
+    ).resolve()
     assert load_hermes_version_readback(exported) == "0.21.4"
 
 
@@ -415,6 +484,7 @@ def test_hermes_timezone_readback_command_failure_is_fatal(tmp_path, monkeypatch
 
     project_root = tmp_path / "project"
     contract = _write_jobs(project_root)
+    config_path = _write_hermes_home(tmp_path, project_root)
     blocks = []
     for index, (name, expression, filename) in enumerate(JOB_SPECS.values()):
         blocks.append(
@@ -433,6 +503,8 @@ def test_hermes_timezone_readback_command_failure_is_fatal(tmp_path, monkeypatch
         calls.append(tuple(command))
         if tuple(command) == ("hermes", "--version"):
             return subprocess.CompletedProcess(command, 0, "Hermes Agent v0.21.4\n", "")
+        if tuple(command) == ("hermes", "config", "path"):
+            return subprocess.CompletedProcess(command, 0, f"{config_path}\n", "")
         is_timezone_readback = tuple(command) == (
             "hermes", "config", "get", "timezone"
         )
@@ -446,6 +518,7 @@ def test_hermes_timezone_readback_command_failure_is_fatal(tmp_path, monkeypatch
         export_hermes_readback(destination, contract=contract, project_root=project_root)
     assert calls == [
         ("hermes", "--version"),
+        ("hermes", "config", "path"),
         ("hermes", "cron", "list", "--all"),
         ("hermes", "config", "get", "timezone"),
     ]
@@ -488,13 +561,14 @@ def test_deployment_readback_requires_and_verifies_installed_hermes_version(tmp_
 
     path = tmp_path / "readback.json"
     base = {
-        "schema_version": 3,
+        "schema_version": 4,
         "source_command": "hermes cron list --all",
         "jobs": [],
         "effective_timezone": "UTC",
         "timezone_source_command": "hermes config get timezone",
         "installed_hermes_version": "0.21.4",
         "version_source_command": "hermes --version",
+        "scripts_root": str(tmp_path / "scripts"),
     }
     path.write_text(json.dumps(base), encoding="utf-8")
     assert _load_hermes_readback_payload(path)["installed_hermes_version"] == "0.21.4"

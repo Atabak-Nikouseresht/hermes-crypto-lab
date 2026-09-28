@@ -10,6 +10,8 @@ import pytest
 from src.scheduler_deployment import (
     SchedulerDeploymentError,
     parse_hermes_cron_list,
+    parse_hermes_version_output,
+    verify_hermes_version,
     verify_hermes_jobs,
     verify_windows_watchdog,
 )
@@ -17,6 +19,7 @@ from scripts.verify_scheduler_deployment import (
     DeploymentVerificationError,
     export_hermes_readback,
     load_hermes_readback,
+    load_hermes_version_readback,
 )
 from src.scheduler_deployment import verify_hermes_timezone
 
@@ -81,7 +84,10 @@ def _write_jobs(project_root: Path) -> dict[str, dict[str, str]]:
             "wrapper_sha256": hashlib.sha256(wrapper.read_bytes()).hexdigest(),
             "workdir": "[PROJECT_ROOT]",
         }
-    contract["hermes_gateway"] = {"timezone_config": "UTC"}
+    contract["hermes_gateway"] = {
+        "required_version": "0.21.4",
+        "timezone_config": "UTC",
+    }
     return contract
 
 
@@ -238,6 +244,39 @@ def test_hermes_effective_timezone_must_match_manifest_utc():
             verify_hermes_timezone(effective, required_timezone="UTC")
 
 
+def test_hermes_runtime_version_requires_exact_supported_patch():
+    version_output = (
+        "Hermes Agent v0.21.4 (2026.9.21) · upstream c80d12b9\n"
+        "Install method: git\n"
+    )
+    assert parse_hermes_version_output(version_output) == "0.21.4"
+    assert verify_hermes_version("0.21.4", required_version="0.21.4")["verified"]
+    for unsupported in ("0.21.5", "0.22.0"):
+        with pytest.raises(SchedulerDeploymentError, match="differs"):
+            verify_hermes_version(unsupported, required_version="0.21.4")
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        None,
+        "",
+        "0.21.4",
+        "Hermes Agent 0.21.4",
+        "Hermes Agent v0.21.4-beta",
+        "Hermes Agent v00.21.4",
+    ],
+)
+def test_hermes_runtime_version_output_must_be_present_and_well_formed(output):
+    with pytest.raises(SchedulerDeploymentError, match="version"):
+        parse_hermes_version_output(output)
+
+
+def test_hermes_runtime_version_contract_must_be_exact_semver():
+    with pytest.raises(SchedulerDeploymentError, match="required Hermes version"):
+        verify_hermes_version("0.21.4", required_version=">=0.21.4,<0.22")
+
+
 def test_manifest_utc_does_not_override_non_utc_runtime_timezone():
     with pytest.raises(SchedulerDeploymentError, match="effective Hermes timezone"):
         verify_hermes_timezone("Europe/Rome", required_timezone="UTC")
@@ -339,11 +378,11 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        stdout = (
-            "UTC\n"
-            if tuple(command) == ("hermes", "config", "get", "timezone")
-            else cli_output
-        )
+        command = tuple(command)
+        stdout = {
+            ("hermes", "--version"): "Hermes Agent v0.21.4 (2026.9.21) · upstream c80d12b9\n",
+            ("hermes", "config", "get", "timezone"): "UTC\n",
+        }.get(command, cli_output)
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
     monkeypatch.setattr(deployment.subprocess, "run", fake_run)
@@ -354,13 +393,19 @@ def test_deployment_export_uses_supported_cli_and_round_trips_json(
 
     jobs = load_hermes_readback(exported)
     assert len(jobs) == len(JOB_SPECS)
-    assert calls[0][0] == ("hermes", "cron", "list", "--all")
-    assert calls[0][1]["capture_output"] is True
-    assert calls[0][1]["text"] is True
-    assert calls[1][0] == ("hermes", "config", "get", "timezone")
+    assert [call[0] for call in calls] == [
+        ("hermes", "--version"),
+        ("hermes", "cron", "list", "--all"),
+        ("hermes", "config", "get", "timezone"),
+    ]
+    assert calls[1][1]["capture_output"] is True
+    assert calls[1][1]["text"] is True
     exported_payload = json.loads(exported.read_text(encoding="utf-8"))
     assert exported_payload["effective_timezone"] == "UTC"
     assert exported_payload["timezone_source_command"] == "hermes config get timezone"
+    assert exported_payload["installed_hermes_version"] == "0.21.4"
+    assert exported_payload["version_source_command"] == "hermes --version"
+    assert load_hermes_version_readback(exported) == "0.21.4"
 
 
 def test_hermes_timezone_readback_command_failure_is_fatal(tmp_path, monkeypatch):
@@ -386,6 +431,8 @@ def test_hermes_timezone_readback_command_failure_is_fatal(tmp_path, monkeypatch
 
     def fake_run(command, **kwargs):
         calls.append(tuple(command))
+        if tuple(command) == ("hermes", "--version"):
+            return subprocess.CompletedProcess(command, 0, "Hermes Agent v0.21.4\n", "")
         is_timezone_readback = tuple(command) == (
             "hermes", "config", "get", "timezone"
         )
@@ -397,8 +444,73 @@ def test_hermes_timezone_readback_command_failure_is_fatal(tmp_path, monkeypatch
     destination = tmp_path / "hermes-readback.json"
     with pytest.raises(DeploymentVerificationError, match="timezone"):
         export_hermes_readback(destination, contract=contract, project_root=project_root)
-    assert calls == [("hermes", "cron", "list", "--all"), ("hermes", "config", "get", "timezone")]
+    assert calls == [
+        ("hermes", "--version"),
+        ("hermes", "cron", "list", "--all"),
+        ("hermes", "config", "get", "timezone"),
+    ]
     assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "message"),
+    [
+        (1, "", "version command"),
+        (0, "", "version"),
+        (0, "Hermes Agent v0.21.4-beta\n", "version"),
+    ],
+)
+def test_deployment_export_rejects_failed_missing_or_malformed_hermes_version(
+    tmp_path, monkeypatch, returncode, stdout, message
+):
+    import subprocess
+
+    import scripts.verify_scheduler_deployment as deployment
+
+    project_root = tmp_path / "project"
+    contract = _write_jobs(project_root)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(tuple(command))
+        return subprocess.CompletedProcess(command, returncode, stdout, "failure")
+
+    monkeypatch.setattr(deployment.subprocess, "run", fake_run)
+    destination = tmp_path / "hermes-readback.json"
+    with pytest.raises(DeploymentVerificationError, match=message):
+        export_hermes_readback(destination, contract=contract, project_root=project_root)
+    assert calls == [("hermes", "--version")]
+    assert not destination.exists()
+
+
+def test_deployment_readback_requires_and_verifies_installed_hermes_version(tmp_path):
+    from scripts.verify_scheduler_deployment import _load_hermes_readback_payload
+
+    path = tmp_path / "readback.json"
+    base = {
+        "schema_version": 3,
+        "source_command": "hermes cron list --all",
+        "jobs": [],
+        "effective_timezone": "UTC",
+        "timezone_source_command": "hermes config get timezone",
+        "installed_hermes_version": "0.21.4",
+        "version_source_command": "hermes --version",
+    }
+    path.write_text(json.dumps(base), encoding="utf-8")
+    assert _load_hermes_readback_payload(path)["installed_hermes_version"] == "0.21.4"
+
+    missing = dict(base)
+    missing.pop("installed_hermes_version")
+    path.write_text(json.dumps(missing), encoding="utf-8")
+    with pytest.raises(DeploymentVerificationError, match="schema"):
+        load_hermes_version_readback(path)
+
+    base["installed_hermes_version"] = "0.22.0"
+    path.write_text(json.dumps(base), encoding="utf-8")
+    with pytest.raises(SchedulerDeploymentError, match="differs"):
+        verify_hermes_version(
+            load_hermes_version_readback(path), required_version="0.21.4"
+        )
 
 
 def test_deployment_export_and_json_loader_fail_closed(tmp_path):

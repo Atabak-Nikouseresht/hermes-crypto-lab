@@ -56,6 +56,10 @@ class ReconciliationResult:
     message: str
 
 
+class ExecutionOutcomeConflict(ValueError):
+    """Raised when a committed paper outcome is assigned a different result."""
+
+
 def resolve_persisted_quantity_tolerance(
     specification_raw: Any, *, legacy_tolerance: float
 ) -> tuple[float, str, bool]:
@@ -2602,9 +2606,20 @@ class PaperStore:
         completed_at: datetime,
     ) -> None:
         connection.execute(
-            "INSERT OR REPLACE INTO paper_execution_outcomes VALUES (?, ?, ?)",
+            "INSERT INTO paper_execution_outcomes VALUES (?, ?, ?) "
+            "ON CONFLICT (run_id) DO NOTHING",
             [run_id, execution_outcome, completed_at],
         )
+        existing = connection.execute(
+            "SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id=?",
+            [run_id],
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("execution outcome insert did not persist a row")
+        if existing[0] != execution_outcome:
+            raise ExecutionOutcomeConflict(
+                "committed paper execution outcome is immutable"
+            )
 
 
 def asdict_reconciliation(result: ReconciliationResult) -> dict[str, Any]:

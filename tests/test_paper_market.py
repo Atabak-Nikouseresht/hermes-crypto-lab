@@ -693,3 +693,183 @@ def test_public_snapshot_fetched_at_is_after_all_network_calls():
     )
 
     assert snapshot.fetched_at >= exchange.completed_at
+
+
+def test_public_snapshot_acquires_all_symbols_in_phases_and_is_order_invariant():
+    now = datetime(2026, 9, 28, 0, 10, tzinfo=timezone.utc)
+    now_ms = int(pd.Timestamp(now).timestamp() * 1000)
+    dates = pd.date_range(end=pd.Timestamp(now).normalize() - pd.Timedelta(days=1), periods=160, freq="D", tz="UTC")
+    rows = [
+        [int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0]
+        for timestamp in dates
+    ]
+
+    class PhasedExchange(FakePublicExchange):
+        def fetch_ohlcv(self, symbol, timeframe, since, limit):
+            base_rows = super().fetch_ohlcv(symbol, timeframe, since, limit)
+            slope = {"BTC/USDT": 0.4, "ETH/USDT": 0.15, "BNB/USDT": 0.3}[symbol]
+            scaled = []
+            for index, row in enumerate(base_rows):
+                close = 100.0 + index * slope
+                scaled.append(
+                    [row[0], close, close * 1.002, close * 0.998, close, row[5]]
+                )
+            return scaled
+
+        def fetch_execution_rules(self, symbol):
+            self.calls.append(("fetch_execution_rules", symbol))
+            return {
+                "symbolRules": [
+                    {
+                        "symbol": symbol.replace("/", ""),
+                        "rules": [
+                            {
+                                "ruleType": "PRICE_RANGE",
+                                "bidLimitMultUp": "1.2",
+                                "bidLimitMultDown": "0.8",
+                                "askLimitMultUp": "1.2",
+                                "askLimitMultDown": "0.8",
+                            }
+                        ],
+                    }
+                ],
+                "timestamp": now_ms,
+            }
+
+    assets = ("BTC/USDT", "ETH/USDT", "BNB/USDT")
+    config = replace(
+        PaperConfig(assets=assets),
+        require_exchange_rules=True,
+        require_execution_rule_evidence=True,
+    )
+    exchange = PhasedExchange(rows, now_ms)
+    snapshot = fetch_public_market_snapshot(
+        config,
+        exchange=exchange,
+        now=now,
+        acquisition_clock=lambda: now,
+        lookback_days=200,
+        max_retries=0,
+    )
+
+    assert exchange.calls == [
+        ("load_markets", ""),
+        *(('fetch_ohlcv', symbol) for symbol in assets),
+        *(('fetch_ticker', symbol) for symbol in assets),
+        *(('fetch_reference_price', symbol) for symbol in assets),
+        *(('fetch_execution_rules', symbol) for symbol in assets),
+    ]
+    assert set(snapshot.price_range_rules) == set(assets)
+    assert all(
+        item.status == "PRICE_RANGE_PRESENT"
+        for item in snapshot.price_range_rules.values()
+    )
+
+    reversed_assets = tuple(reversed(assets))
+    reversed_config = replace(config, assets=reversed_assets)
+    reversed_snapshot = fetch_public_market_snapshot(
+        reversed_config,
+        exchange=PhasedExchange(rows, now_ms),
+        now=now,
+        acquisition_clock=lambda: now,
+        lookback_days=200,
+        max_retries=0,
+    )
+    pd.testing.assert_frame_equal(
+        snapshot.closes.sort_index(axis=1),
+        reversed_snapshot.closes.sort_index(axis=1),
+    )
+    assert snapshot.quotes == reversed_snapshot.quotes
+    assert snapshot.symbol_rules == reversed_snapshot.symbol_rules
+    assert snapshot.rule_reference_prices == reversed_snapshot.rule_reference_prices
+    assert snapshot.price_range_rules == reversed_snapshot.price_range_rules
+    assert set(snapshot.ohlcv) == set(reversed_snapshot.ohlcv)
+    for symbol in assets:
+        pd.testing.assert_frame_equal(
+            snapshot.ohlcv[symbol], reversed_snapshot.ohlcv[symbol]
+        )
+
+    from src.strategy import generate_signal
+
+    signal = generate_signal(
+        snapshot.closes,
+        as_of=snapshot.closes.index[-1],
+        config=config.strategy_config,
+    )
+    reversed_signal = generate_signal(
+        reversed_snapshot.closes,
+        as_of=reversed_snapshot.closes.index[-1],
+        config=reversed_config.strategy_config,
+    )
+    assert signal.ranked_assets
+    assert signal.target_weights
+    assert signal.ranked_assets == reversed_signal.ranked_assets
+    assert signal.target_weights == reversed_signal.target_weights
+    assert signal.momentum_short == reversed_signal.momentum_short
+    assert signal.momentum_long_ex_skip == reversed_signal.momentum_long_ex_skip
+    assert signal.realized_volatility == reversed_signal.realized_volatility
+
+
+def test_null_reference_payload_keeps_last_price_fallback_without_native_id():
+    now = datetime(2026, 9, 28, 0, 10, tzinfo=timezone.utc)
+    now_ms = int(pd.Timestamp(now).timestamp() * 1000)
+    dates = pd.date_range(
+        end=pd.Timestamp(now).normalize() - pd.Timedelta(days=1),
+        periods=160,
+        freq="D",
+        tz="UTC",
+    )
+    rows = [
+        [int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0]
+        for timestamp in dates
+    ]
+
+    class MissingNativeIdExchange(FakePublicExchange):
+        def market(self, symbol):
+            info = dict(super().market(symbol))
+            info.pop("id")
+            return info
+
+        def fetch_reference_price(self, symbol):
+            self.calls.append(("fetch_reference_price", symbol))
+            return None
+
+    snapshot = fetch_public_market_snapshot(
+        PaperConfig(assets=("BTC/USDT",)),
+        exchange=MissingNativeIdExchange(rows, now_ms),
+        now=now,
+        acquisition_clock=lambda: now,
+        lookback_days=200,
+        max_retries=0,
+    )
+
+    assert snapshot.rule_reference_prices["BTC/USDT"].source == "LAST_FALLBACK"
+
+
+def test_public_snapshot_phase_failure_remains_fail_closed():
+    now = datetime(2026, 9, 28, 0, 10, tzinfo=timezone.utc)
+    now_ms = int(pd.Timestamp(now).timestamp() * 1000)
+    dates = pd.date_range(end=pd.Timestamp(now).normalize() - pd.Timedelta(days=1), periods=160, freq="D", tz="UTC")
+    rows = [
+        [int(timestamp.timestamp() * 1000), 100.0, 101.0, 99.0, 100.0, 10.0]
+        for timestamp in dates
+    ]
+
+    class FailedTickerExchange(FakePublicExchange):
+        def fetch_ticker(self, symbol):
+            self.calls.append(("fetch_ticker", symbol))
+            if symbol == "ETH/USDT":
+                raise ValueError("fixture ticker failure")
+            return super().fetch_ticker(symbol)
+
+    exchange = FailedTickerExchange(rows, now_ms)
+    with pytest.raises(ValueError, match="fixture ticker failure"):
+        fetch_public_market_snapshot(
+            PaperConfig(assets=("BTC/USDT", "ETH/USDT")),
+            exchange=exchange,
+            now=now,
+            acquisition_clock=lambda: now,
+            lookback_days=200,
+            max_retries=0,
+        )
+    assert not any(name == "fetch_reference_price" for name, _ in exchange.calls)

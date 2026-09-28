@@ -56,7 +56,8 @@ audited operator process rather than assigning a hash to historical bytes.
 This is ambiguity-safe at-least-once delivery, not exactly-once delivery.
 
 `forward_experiment/scheduler_manifest.json` is the portable static contract:
-job names, UTC triggers, safety settings, wrapper paths, and wrapper hashes.
+the exact Hermes runtime version, job names, UTC triggers, safety settings,
+wrapper paths, and wrapper hashes.
 Volatile deployment observations—including local job IDs, installation status,
 last/next run times, and live state—remain local runtime metadata and are not
 source-controlled.
@@ -185,18 +186,45 @@ uv run python -m scripts.verify_scheduler_deployment --export-hermes-cli --verif
 ```
 
 The installed Hermes Agent v0.21.4 (2026.9.21) exposes the read-only
-`hermes cron list --all` command, but its local help has no JSON-output option.
-The verifier also runs the supported `hermes config get timezone` command and
-requires its resolved value to be exactly `UTC`; missing, malformed, failed, or
-non-UTC read-back fails closed. It checks every governed job's live `Next run`
-timestamp is timezone-aware with a zero UTC offset, independently of the static
-manifest. It then writes a minimal schema-versioned JSON export to
+`hermes --version` and `hermes cron list --all` commands, but its local help has
+no JSON-output option. The verifier captures the version from the CLI and
+requires an exact match to `hermes_gateway.required_version`; missing,
+malformed, failed, or unsupported versions fail closed. It also runs the
+supported `hermes config get timezone` command and requires its resolved value
+to be exactly `UTC`; missing, malformed, failed, or non-UTC read-back fails
+closed. It checks every governed job's live `Next run` timestamp is
+timezone-aware with a zero UTC offset, independently of the static manifest.
+It then writes a minimal schema-versioned JSON export to
 `%LOCALAPPDATA%/hermes/cache/scratch/hermes-crypto-lab-scheduler-readback.json`,
 and consumes that explicit export against the static manifest. It checks all
 governed job identities, names, UTC cron expressions, wrapper paths and SHA-256
 hashes, workdirs, enabled state, and no-agent mode. A changed or incomplete CLI
 format fails closed; do not edit the governed manifest to make a mismatched
 deployment pass.
+
+## Binance public API canary
+
+`.github/workflows/binance-public-api-canary.yml` runs weekly on Sunday at
+03:47 UTC and supports `workflow_dispatch`. It performs only bounded public
+GETs for the exact `/api/v3/referencePrice` and `/api/v3/executionRules` paths
+used by paper market data, then exercises the same production parsers. It
+requires no secrets, performs no authenticated request or order, and does not
+open or modify the paper database, research state, or notification system.
+HTTP/network unavailability is reported separately from incompatible HTTP
+responses, JSON, or parser schemas; requests are not retried by the canary.
+The endpoint allowlist also permits only the existing one-day `/api/v3/klines`
+query used by the independent read-only data cross-check.
+
+The paper snapshot gathers finalized OHLCV for all configured symbols, then
+all ticker quotes, then reference-price evidence, then execution-rule evidence.
+These phases remain sequential; no concurrent CCXT calls or Binance batching is
+introduced. Quote-source timestamps and the governed cross-asset skew threshold
+are unchanged.
+
+Committed `paper_execution_outcomes` rows are immutable. A retry with the same
+outcome is a no-op that retains the original recorded timestamp; a conflicting
+outcome aborts the enclosing transaction instead of replacing the committed
+row.
 
 The supported CLI does not expose the `ZoneInfo` object held by an already-
 running Gateway as a direct read-only field. The gate combines the resolved

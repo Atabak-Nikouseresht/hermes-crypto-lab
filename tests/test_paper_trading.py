@@ -2446,6 +2446,11 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
         equity_count_before = connection.execute(
             "SELECT COUNT(*) FROM equity_snapshots WHERE run_id=?", [run_id]
         ).fetchone()[0]
+        execution_outcome_before = connection.execute(
+            "SELECT execution_outcome, recorded_at_utc FROM paper_execution_outcomes "
+            "WHERE run_id=?",
+            [run_id],
+        ).fetchone()
     monkeypatch.setattr(system.store, "finish_run", original_finish)
 
     restarted = PaperTradingSystem(database, _config())
@@ -2466,10 +2471,11 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
         outcome = connection.execute(
             "SELECT outcome FROM paper_run_diagnostics WHERE run_id=?", [run_id]
         ).fetchone()[0]
-        execution_outcome = connection.execute(
-            "SELECT execution_outcome FROM paper_execution_outcomes WHERE run_id=?",
+        execution_outcome_after = connection.execute(
+            "SELECT execution_outcome, recorded_at_utc FROM paper_execution_outcomes "
+            "WHERE run_id=?",
             [run_id],
-        ).fetchone()[0]
+        ).fetchone()
         window = connection.execute(
             "SELECT schedule_key, scheduled_for_utc, run_id, outcome FROM forward_schedule_windows"
         ).fetchone()
@@ -2487,7 +2493,8 @@ def test_restart_recovers_committed_run_without_replaying_fills(tmp_path, monkey
     assert fill_ids_after == fill_ids_before
     assert equity_count_before == equity_count_after == 1
     assert outcome == "PAPER_TRADE_COMPLETED"
-    assert execution_outcome == "FULL_EXECUTION"
+    assert execution_outcome_before == execution_outcome_after
+    assert execution_outcome_after[0] == "FULL_EXECUTION"
     assert window == (
         "2024-08-05T09:05Z", now, run_id, "PAPER_TRADE_COMPLETED"
     )

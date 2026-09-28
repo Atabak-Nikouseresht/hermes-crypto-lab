@@ -1400,9 +1400,8 @@ class PaperTradingSystem:
                 executed_count,
                 len(self._last_rejections),
             )
-            connection.execute(
-                "INSERT INTO paper_execution_outcomes VALUES (?, ?, ?)",
-                [run_id, execution_outcome, now],
+            self.store._write_execution_outcome(
+                connection, run_id, execution_outcome, now
             )
             connection.execute("COMMIT")
         return equity

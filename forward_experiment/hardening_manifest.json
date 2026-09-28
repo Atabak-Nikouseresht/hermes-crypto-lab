@@ -59,7 +59,7 @@
     "run_monthly_report.py": "9d4143bdcd146f7fab3a5b312aa5b28ef1c5dbbe1ca537c076de86591e20b037",
     "run_paper.py": "27ab938d45824aec08468484b82aa69cb0a18fbe2959fa2cdc7b710bea64dcb2",
     "scripts/backup_forward.py": "b23c1502188293a94f61f02f7d08944d30c90c675839bb926c56351fef39aa78",
-    "scripts/check_binance_public_api.py": "cd1df6a1d2405b3e1e3c6bdc2855ce2f247fc1d8e1924ee2dfce341f9c3386cf",
+    "scripts/check_binance_public_api.py": "0882783699c87f11c496646461e2ecf80083d260f6b1e74a74aa3bbe56be04bb",
     "scripts/check_markdown_links.py": "2ae389ad79e85596a005d3d2890b5334be791490133d26beb4fda5ab7713379a",
     "scripts/data_cross_check.py": "5a542be464f4f7e15db664f70388530825b4e52a7704daa050d97786e04db4e5",
     "scripts/generate_hardening_manifest.py": "2050e41a2c3dcb4c7cad4a9d19c5abc6f90e20cab07905cf9865afc0ac1dd570",
@@ -122,7 +122,7 @@
     "tests/test_backup_restore.py": "25be1fb75a672d82fc6fa942a861d52ce7059458c3950d525a020a7d05b4647e",
     "tests/test_benchmarks.py": "339694b9ab8665f9139fd09b36060615787598e0fcb7c75f56e04fe3e1ba801c",
     "tests/test_binance_public_api.py": "2cbba90efa03806dc3b3f6c77b6122a8b7df5f69c8f614e404c61e0787b296eb",
-    "tests/test_binance_public_api_canary.py": "9a04bc49c0f76a33c0536b81c82f4fb41b6d49b21a9ffecff27765ab3a5e2677",
+    "tests/test_binance_public_api_canary.py": "3946abdd3ce8be575413d9cbe3f143e1e2c25c7f2a1c5196f29afbfcb6d6e149",
     "tests/test_ci_quality.py": "7ca1ab7bf78a08ee4e461a0e3b1f4f68b260162c52d2261b33b53fb26a807229",
     "tests/test_config.py": "49cf96f12a5c312cae8d06fb128366b5c47e73ca8e401b84cf4e6a4d254b2e76",
     "tests/test_config_validation.py": "1e1759479a24622265af887741962df24d0f60a6f8e70b5a5f5a4d3856f072dd",
@@ -150,7 +150,7 @@
     "tests/test_validate_data.py": "da64110625effa64f8cde2efe3b79e3045cd5a5cccb0252688f355d5c71c72f1"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-28T10:47:39.982779+00:00",
+  "generated_at_utc": "2026-09-28T11:44:57.460226+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

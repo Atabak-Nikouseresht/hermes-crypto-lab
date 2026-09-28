@@ -55,7 +55,8 @@ def _request_json(
         with open_public_binance_url(url, timeout=timeout) as response:
             body = response.read()
     except HTTPError as error:
-        if error.code in {418, 429} or error.code >= 500:
+        # A 451 denies access; it does not indicate a changed response schema.
+        if error.code in {418, 429, 451} or error.code >= 500:
             raise BinanceAPIUnavailableError(
                 f"API_UNAVAILABLE: Binance returned HTTP {error.code}"
             ) from error

@@ -169,6 +169,19 @@ def test_canary_network_unavailable_and_incompatible_errors_are_distinct(monkeyp
         _request_json("/api/v3/referencePrice", {"symbol": SYMBOL}, timeout=1)
 
 
+def test_canary_classifies_http_451_as_access_unavailable(monkeypatch):
+    import scripts.check_binance_public_api as canary
+
+    def access_denied(*_args, **_kwargs):
+        raise HTTPError(
+            "https://api.binance.com", 451, "Unavailable For Legal Reasons", {}, BytesIO(b"")
+        )
+
+    monkeypatch.setattr(canary, "open_public_binance_url", access_denied)
+    with pytest.raises(BinanceAPIUnavailableError, match="API_UNAVAILABLE.*451"):
+        _request_json("/api/v3/referencePrice", {"symbol": SYMBOL}, timeout=1)
+
+
 def test_canary_classifies_malformed_json_as_api_incompatible(monkeypatch):
     import scripts.check_binance_public_api as canary
 

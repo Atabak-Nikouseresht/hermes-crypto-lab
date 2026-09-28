@@ -2,7 +2,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.paper_store import PaperStore, ReconciliationResult
+from src.paper_store import (
+    ExecutionOutcomeConflict,
+    PaperStore,
+    ReconciliationResult,
+)
 
 
 def _store(tmp_path) -> PaperStore:
@@ -110,3 +114,82 @@ def test_finish_run_without_outcome_remains_valid_terminal_path(tmp_path):
         ).fetchone()
     assert run == ("EXECUTED",)
     assert outcomes == (0,)
+
+
+def test_execution_outcome_identical_retry_is_a_noop(tmp_path):
+    store = _store(tmp_path)
+    first_recorded_at = datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc)
+    retry_recorded_at = datetime(2026, 8, 25, 9, 10, tzinfo=timezone.utc)
+
+    with store.connect() as connection:
+        connection.execute("BEGIN TRANSACTION")
+        store._write_execution_outcome(
+            connection, "run-1", "FULL_EXECUTION", first_recorded_at
+        )
+        connection.execute("COMMIT")
+    with store.connect() as connection:
+        connection.execute("BEGIN TRANSACTION")
+        store._write_execution_outcome(
+            connection, "run-1", "FULL_EXECUTION", retry_recorded_at
+        )
+        connection.execute("COMMIT")
+
+    with store.connect(read_only=True) as connection:
+        outcome = connection.execute(
+            "SELECT execution_outcome, recorded_at_utc "
+            "FROM paper_execution_outcomes WHERE run_id='run-1'"
+        ).fetchone()
+    assert outcome == ("FULL_EXECUTION", first_recorded_at)
+
+
+def test_conflicting_execution_outcome_retry_fails_and_rolls_back_run_update(tmp_path):
+    store = _store(tmp_path)
+    _finish(store, "FULL_EXECUTION")
+    conflicting_time = datetime(2026, 8, 25, 9, 10, tzinfo=timezone.utc)
+
+    with pytest.raises(ExecutionOutcomeConflict, match="immutable"):
+        store.finish_run(
+            run_id="run-1",
+            status="REVISED",
+            completed_at=conflicting_time,
+            message="must roll back",
+            reconciliation=ReconciliationResult(True, "valid"),
+            execution_outcome="NO_REBALANCE_REQUIRED",
+        )
+
+    with store.connect(read_only=True) as connection:
+        run = connection.execute(
+            "SELECT status, completed_at_utc, message FROM paper_runs WHERE run_id='run-1'"
+        ).fetchone()
+        outcome = connection.execute(
+            "SELECT execution_outcome, recorded_at_utc "
+            "FROM paper_execution_outcomes WHERE run_id='run-1'"
+        ).fetchone()
+    assert run == (
+        "EXECUTED",
+        datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc),
+        "terminal",
+    )
+    assert outcome == (
+        "FULL_EXECUTION",
+        datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc),
+    )
+
+
+def test_execution_outcome_insert_rolls_back_with_enclosing_execution_transaction(tmp_path):
+    store = _store(tmp_path)
+    with store.connect() as connection:
+        connection.execute("BEGIN TRANSACTION")
+        store._write_execution_outcome(
+            connection,
+            "run-1",
+            "FULL_EXECUTION",
+            datetime(2026, 8, 24, 9, 10, tzinfo=timezone.utc),
+        )
+        connection.execute("ROLLBACK")
+
+    with store.connect(read_only=True) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM paper_execution_outcomes WHERE run_id='run-1'"
+        ).fetchone()[0]
+    assert count == 0

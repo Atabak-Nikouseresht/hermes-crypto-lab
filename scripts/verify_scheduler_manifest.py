@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -102,6 +103,12 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict:
     gateway = payload.get("hermes_gateway")
     if type(gateway) is not dict or gateway.get("timezone_config") != "UTC":
         raise ValueError("Hermes gateway timezone contract must be UTC")
+    required_version = gateway.get("required_version")
+    if type(required_version) is not str or re.fullmatch(
+        r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
+        required_version,
+    ) is None:
+        raise ValueError("Hermes gateway required_version must be an exact semantic version")
     leaked_fields = sorted(_all_keys(payload) & VOLATILE_DEPLOYMENT_FIELDS)
     if leaked_fields:
         raise ValueError(

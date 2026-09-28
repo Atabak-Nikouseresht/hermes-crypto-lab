@@ -1,4 +1,5 @@
 from pathlib import Path
+import ast
 import re
 import tomllib
 
@@ -167,4 +168,54 @@ def test_workflow_yaml_parses_and_allows_manual_assurance_on_feature_branches():
     assert assurance["on"]["schedule"][0]["cron"] == "30 6 * * 1"
     assert assurance["jobs"]["assurance"]["if"] == (
         "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'"
+    )
+
+
+def test_binance_public_canary_workflow_is_scheduled_manual_and_least_privilege():
+    workflow_path = ROOT / ".github" / "workflows" / "binance-public-api-canary.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.load(workflow_text, Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["live-schema"]
+
+    assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}
+    assert workflow["on"]["schedule"][0]["cron"] == "47 3 * * 0"
+    assert workflow["permissions"] == {"contents": "read"}
+    assert job["timeout-minutes"] == "5"
+    assert "python -m scripts.check_binance_public_api" in "\n".join(
+        step.get("run", "") for step in job["steps"]
+    )
+    assert "secrets." not in workflow_text
+    assert "GITHUB_TOKEN" not in workflow_text
+    revisions = re.findall(r"uses:\s+[^\s@]+@([^\s]+)", workflow_text)
+    assert revisions and all(re.fullmatch(r"[0-9a-f]{40}", item) for item in revisions)
+
+
+def test_binance_canary_entrypoint_has_no_mutating_or_authenticated_calls():
+    path = ROOT / "scripts" / "check_binance_public_api.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    forbidden_imports = {
+        "duckdb",
+        "sqlite3",
+        "os",
+        "subprocess",
+        "run_paper",
+        "src.paper_store",
+        "src.paper_forward",
+        "src.paper_notifications",
+        "src.strategy",
+    }
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+    assert imported.isdisjoint(forbidden_imports)
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert calls.isdisjoint(
+        {"create_order", "fetch_balance", "withdraw", "transfer", "send_message", "execute"}
     )

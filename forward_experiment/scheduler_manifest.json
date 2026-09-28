@@ -2,6 +2,7 @@
   "execution_protocol": "paper-exec-v3-ask-bid-minspread-utc0010",
   "hermes_gateway": {
     "auto_start": true,
+    "required_version": "0.21.4",
     "restart_on_failure": {
       "count": 999,
       "interval": "PT1M"

@@ -16,6 +16,13 @@ _FIELD_PATTERN = re.compile(
     r"^ {4}(Name|Schedule|Next run|Script|Mode|Workdir):\s*(.*?)\s*$"
 )
 _HEADER_PATTERN = re.compile(r"^ {2}([^\s\[]+)\s+\[([^\]]+)\]$")
+_HERMES_VERSION_LINE = re.compile(
+    r"^Hermes Agent v(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*))(?:\s.*)?$"
+)
+_SEMVER = re.compile(
+    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$"
+)
 _NO_AGENT_MODE = "no-agent (script stdout delivered directly)"
 
 
@@ -39,6 +46,36 @@ def verify_hermes_timezone(
         "verified": True,
         "required_timezone": required_timezone,
         "effective_timezone": effective_timezone,
+    }
+
+
+def parse_hermes_version_output(output: object) -> str:
+    """Parse the installed Hermes CLI's stable first-line version marker."""
+    if type(output) is not str or not output.strip():
+        raise SchedulerDeploymentError("Hermes version output is missing or malformed")
+    first_line = output.splitlines()[0]
+    match = _HERMES_VERSION_LINE.fullmatch(first_line)
+    if match is None:
+        raise SchedulerDeploymentError("Hermes version output is missing or malformed")
+    return match.group("version")
+
+
+def verify_hermes_version(
+    installed_version: object, *, required_version: object
+) -> dict[str, object]:
+    """Require the exact, explicitly governed Hermes runtime version."""
+    if type(required_version) is not str or _SEMVER.fullmatch(required_version) is None:
+        raise SchedulerDeploymentError("required Hermes version is missing or malformed")
+    if type(installed_version) is not str or _SEMVER.fullmatch(installed_version) is None:
+        raise SchedulerDeploymentError("installed Hermes version is missing or malformed")
+    if installed_version != required_version:
+        raise SchedulerDeploymentError(
+            "installed Hermes version differs from the required runtime version"
+        )
+    return {
+        "verified": True,
+        "required_version": required_version,
+        "installed_version": installed_version,
     }
 
 

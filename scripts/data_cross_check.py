@@ -9,18 +9,28 @@ import json
 import math
 from pathlib import Path
 import urllib.request
+from urllib.parse import urlsplit
 import zipfile
 
 import pandas as pd
 import yaml
 
 from src.research_data import resolve_canonical_dataset
+from src.binance_public_api import open_public_binance_url
 
 SAMPLES = ("2019-04-07", "2023-04-09", "2025-11-02")
 
 
 
 def _get(url: str) -> bytes:
+    host = urlsplit(url).hostname
+    if host is not None and "binance.com" in host.casefold():
+        with open_public_binance_url(
+            url,
+            timeout=30,
+            headers={"User-Agent": "hermes-crypto-lab-audit/1"},
+        ) as response:
+            return response.read()
     request = urllib.request.Request(url, headers={"User-Agent": "hermes-crypto-lab-audit/1"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read()

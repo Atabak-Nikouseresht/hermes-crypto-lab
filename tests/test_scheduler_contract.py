@@ -420,5 +420,6 @@ def test_canonical_scheduler_contract_excludes_runtime_deployment_observations()
         return set()
 
     assert keys(manifest).isdisjoint(volatile)
+    assert manifest["hermes_gateway"]["required_version"] == "0.21.4"
     assert manifest["publication_note"].startswith("Portable static source contract")
     assert "Exact frozen deployment snapshot" not in manifest["publication_note"]

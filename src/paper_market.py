@@ -9,12 +9,14 @@ import logging
 import math
 from typing import Any, Callable, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import urlopen
 
 import ccxt
 import pandas as pd
 
+from src.binance_public_api import (
+    build_binance_public_url,
+    open_public_binance_url as urlopen,
+)
 from src.download_data import RETRYABLE_ERRORS, call_with_retry, create_exchange
 from src.execution_rule_decimal import is_bounded_execution_rule_decimal
 from src.paper_broker import (
@@ -72,8 +74,8 @@ class PublicMarketClient:
         market_id = market.get("id") if isinstance(market, dict) else None
         if not isinstance(market_id, str) or not market_id:
             raise ValueError(f"Binance market id missing for {symbol}")
-        url = "https://api.binance.com/api/v3/referencePrice?" + urlencode(
-            {"symbol": market_id}
+        url = build_binance_public_url(
+            "/api/v3/referencePrice", {"symbol": market_id}
         )
         try:
             with urlopen(url, timeout=self._client.timeout / 1000) as response:  # noqa: S310
@@ -110,7 +112,9 @@ class PublicMarketClient:
         market_id = market.get("id") if isinstance(market, dict) else None
         if not isinstance(market_id, str) or not market_id:
             raise ValueError(f"Binance market id missing for {symbol}")
-        url = "https://api.binance.com/api/v3/executionRules?" + urlencode({"symbol": market_id})
+        url = build_binance_public_url(
+            "/api/v3/executionRules", {"symbol": market_id}
+        )
         try:
             with urlopen(url, timeout=self._client.timeout / 1000) as response:  # noqa: S310
                 payload = json.loads(response.read().decode("utf-8"))
@@ -169,6 +173,45 @@ def create_public_market_client(exchange_id: str, timeout_ms: int) -> PublicMark
     return PublicMarketClient(create_exchange(exchange_id, timeout_ms))
 
 
+def parse_binance_reference_price(
+    *,
+    symbol: str,
+    native_symbol: str | None,
+    payload: object,
+    acquired_at: pd.Timestamp,
+) -> RuleReferencePrice:
+    """Parse the exact public referencePrice schema used by live paper runs."""
+    if payload is None:
+        return RuleReferencePrice(None, "LAST_FALLBACK")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Malformed Binance reference price for {symbol}")
+    if not isinstance(native_symbol, str) or payload.get("symbol") != native_symbol:
+        raise ValueError(f"Mismatched Binance reference price symbol for {symbol}")
+    if "referencePrice" not in payload:
+        raise ValueError(f"Malformed Binance reference price for {symbol}")
+    raw_reference = payload["referencePrice"]
+    if raw_reference is None:
+        return RuleReferencePrice(None, "LAST_FALLBACK")
+    if not isinstance(raw_reference, str):
+        raise ValueError(f"Malformed Binance reference price for {symbol}")
+    try:
+        reference = Decimal(raw_reference)
+    except InvalidOperation as error:
+        raise ValueError(f"Malformed Binance reference price for {symbol}") from error
+    if not is_bounded_execution_rule_decimal(reference):
+        raise ValueError(f"Invalid Binance reference price for {symbol}")
+    raw_timestamp = payload.get("timestamp")
+    if type(raw_timestamp) is not int or raw_timestamp < 0:
+        raise ValueError(f"Malformed Binance reference price timestamp for {symbol}")
+    reference_timestamp = pd.to_datetime(raw_timestamp, unit="ms", utc=True)
+    return RuleReferencePrice(
+        reference,
+        "REFERENCE_PRICE",
+        reference_timestamp,
+        acquired_at,
+    )
+
+
 def _raw_decimal(filter_data: dict[str, Any], field: str) -> Decimal | None:
     """Parse Binance's string representation without a float round trip."""
     if field not in filter_data:
@@ -207,6 +250,8 @@ def parse_binance_price_range_execution_rule(
     *, symbol: str, native_symbol: str, payload: dict[str, Any], acquired_at: pd.Timestamp
 ) -> PriceRangeRuleEvidence:
     """Parse one native-symbol executionRules payload without float conversion."""
+    if not isinstance(payload, dict):
+        raise ValueError(f"Malformed Binance execution rules for {symbol}")
     symbol_rules = payload.get("symbolRules")
     if not isinstance(symbol_rules, list) or len(symbol_rules) != 1:
         raise ValueError(f"Malformed Binance execution rules for {symbol}")
@@ -402,12 +447,15 @@ def fetch_public_market_snapshot(
     price_range_rules: dict[str, PriceRangeRuleEvidence] = {}
     rules: dict[str, SymbolRules] = {}
     ohlcv: dict[str, pd.DataFrame] = {}
+    market_infos: dict[str, dict[str, Any]] = {}
     try:
         call_with_retry(
             lambda: market.load_markets(),
             max_retries=max_retries,
             backoff_base_seconds=backoff_base_seconds,
         )
+
+        # Phase A: finish finalized daily history for every symbol first.
         for symbol in config.assets:
             rows = call_with_retry(
                 lambda symbol=symbol: market.fetch_ohlcv(
@@ -428,6 +476,9 @@ def fetch_public_market_snapshot(
                     name=symbol,
                 )
             )
+
+        # Phase B: keep the executable quote requests adjacent across symbols.
+        for symbol in config.assets:
             ticker = call_with_retry(
                 lambda symbol=symbol: market.fetch_ticker(symbol),
                 max_retries=max_retries,
@@ -451,6 +502,9 @@ def fetch_public_market_snapshot(
                 raise ValueError(f"Quote timestamp missing for {symbol}")
             quote_time = pd.to_datetime(ticker_ms, unit="ms", utc=True)
             quotes[symbol] = Quote(bid=bid, ask=ask, last=last, timestamp=quote_time)
+
+        # Phase C: acquire and validate reference-price evidence after all quotes.
+        for symbol in config.assets:
             reference_payload = call_with_retry(
                 lambda symbol=symbol: market.fetch_reference_price(symbol),
                 max_retries=max_retries,
@@ -461,54 +515,32 @@ def fetch_public_market_snapshot(
                 acquisition_clock() if acquisition_clock is not None else datetime.now(timezone.utc)
             ).tz_convert("UTC")
             market_info = market.market(symbol)
-            if reference_payload is None:
-                rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
-            elif isinstance(reference_payload, dict):
-                expected_symbol = market_info.get("id") if isinstance(market_info, dict) else None
-                if (
-                    not isinstance(expected_symbol, str)
-                    or reference_payload.get("symbol") != expected_symbol
-                ):
-                    raise ValueError(f"Mismatched Binance reference price symbol for {symbol}")
-                if "referencePrice" not in reference_payload:
-                    raise ValueError(f"Malformed Binance reference price for {symbol}")
-                raw_reference = reference_payload["referencePrice"]
-                if raw_reference is None:
-                    rule_reference_prices[symbol] = RuleReferencePrice(None, "LAST_FALLBACK")
-                elif isinstance(raw_reference, str):
-                    try:
-                        reference = Decimal(raw_reference)
-                    except InvalidOperation as error:
-                        raise ValueError(f"Malformed Binance reference price for {symbol}") from error
-                    if not is_bounded_execution_rule_decimal(reference):
-                        raise ValueError(f"Invalid Binance reference price for {symbol}")
-                    raw_timestamp = reference_payload.get("timestamp")
-                    if type(raw_timestamp) is not int or raw_timestamp < 0:
-                        raise ValueError(f"Malformed Binance reference price timestamp for {symbol}")
-                    reference_timestamp = pd.to_datetime(raw_timestamp, unit="ms", utc=True)
-                    evidence = RuleReferencePrice(
-                        reference,
-                        "REFERENCE_PRICE",
-                        reference_timestamp,
-                        acquired_at,
-                    )
-                    # Binance documents referencePrice as continually changing,
-                    # but publishes no fixed REST update interval.  The governed
-                    # future-only evidence contract reuses quote freshness.
-                    evidence_error = validate_reference_price_evidence(
-                        evidence,
-                        now=acquired_at,
-                        max_age_minutes=config.max_quote_staleness_minutes,
-                    )
-                    if evidence_error is not None:
-                        raise ValueError(f"{evidence_error} for {symbol}")
-                    rule_reference_prices[symbol] = evidence
-                else:
-                    raise ValueError(f"Malformed Binance reference price for {symbol}")
-            else:
-                raise ValueError(f"Malformed Binance reference price for {symbol}")
-            rules[symbol] = parse_binance_spot_symbol_rules(market_info)
             expected_symbol = market_info.get("id") if isinstance(market_info, dict) else None
+            if reference_payload is not None and not isinstance(expected_symbol, str):
+                raise ValueError(f"Mismatched Binance reference price symbol for {symbol}")
+            evidence = parse_binance_reference_price(
+                symbol=symbol,
+                native_symbol=expected_symbol if isinstance(expected_symbol, str) else None,
+                payload=reference_payload,
+                acquired_at=acquired_at,
+            )
+            if evidence.source == "REFERENCE_PRICE":
+                # The governed future-only evidence contract reuses quote freshness.
+                evidence_error = validate_reference_price_evidence(
+                    evidence,
+                    now=acquired_at,
+                    max_age_minutes=config.max_quote_staleness_minutes,
+                )
+                if evidence_error is not None:
+                    raise ValueError(f"{evidence_error} for {symbol}")
+            rule_reference_prices[symbol] = evidence
+            market_infos[symbol] = market_info
+            rules[symbol] = parse_binance_spot_symbol_rules(market_info)
+
+        # Phase D: collect prospective executionRules evidence for every symbol.
+        for symbol in config.assets:
+            market_info = market_infos[symbol]
+            expected_symbol = market_info.get("id")
             execution_rules_method = getattr(market, "fetch_execution_rules", None)
             if not config.require_execution_rule_evidence or config.exchange_id != "binance":
                 price_range_rules[symbol] = PriceRangeRuleEvidence(

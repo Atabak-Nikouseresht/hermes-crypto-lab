@@ -12,7 +12,7 @@
     ".gitleaks.toml": "dd4e2f59f8f715aefa13600c6777fd3bcdec3088b3cc1fb54ba495af9b920b40",
     ".python-version": "03520ee77719f14d31fd23cdbe29ea0e6dc6e7f181f8d8f99ef053500c192223",
     "CONTRIBUTING.md": "a8cb86c87bb7a368522840572150f0ae8a5013a03786950544e5774f4fa89cd1",
-    "README.md": "81528c861693ecdbc3f9f8edc11d8e1d82f7b041d34ed6831e7d34bddaf40e8d",
+    "README.md": "cf2bc356b926fb7ac9b62a5e573db2beedf18c161efb5c7d0636296f54204c71",
     "SECURITY.md": "89a38b4f7b4cf9bcd6287157897a3c0f5a92833b368756291bfd652f5d0ad6e8",
     "audits/README.md": "4c753f98c9a595cd1dcf5126bc51a5267a3046be16cd19da178d2220a6b72236",
     "config/assets.yaml": "5fa14abbed5257ce0083c291779735e212b308f35e7405036303a55a7b4309f8",
@@ -51,8 +51,8 @@
     "pyproject.toml": "d105ff496b02023ddc29dfb02cfcc42ea37963db74983131013b63deec782c77",
     "requirements-quality.in": "a1d8f2ddb2759a29724b7d588660a76eb9a5ec49ff84c74134935cc258b2e76e",
     "requirements-quality.lock": "9fa60d631c7d404c2a1cb68e66781d8b75c3def0f2cf5a72a3801cd01f64347e",
-    "requirements.lock": "1b734b5f8e56322c13ff683a7f1668400af3ba65cb45497e5ae21d4493f8ae4d",
-    "requirements.txt": "d454f103c9fbbfc4b632c1e11a13abafd37344acbe0f68d2f68b09c237611494",
+    "requirements.lock": "6da347e3e4d2b0eb10dbe4b6e7d5edbb1b04a9080861f2c4163519a2516ff0b5",
+    "requirements.txt": "1575ee74c4a179419fc3751d14999288ad2f8c92a38fb383af343436b621e402",
     "run_backtest.py": "d2831ffdf5fb7bb6fd490bac9fec7067cd7fee34e042e23cd30ba8e81c08df38",
     "run_data_pipeline.py": "871cdcce7e2730a5110b7241f64fe64b61d66694bf244370bf3cb3a4075ae4da",
     "run_experiments.py": "114966c7493509b9cdb072449752f3fadab9114bc139b423a9dca47fbf0e7a8c",
@@ -151,7 +151,7 @@
     "tests/test_validate_data.py": "da64110625effa64f8cde2efe3b79e3045cd5a5cccb0252688f355d5c71c72f1"
   },
   "frozen_forward_baseline_commit": "ebeac389b1c309f1ef8f5a9056e96c3b28e08e01",
-  "generated_at_utc": "2026-09-28T19:57:25.495189+00:00",
+  "generated_at_utc": "2026-10-02T13:10:40.480529+00:00",
   "locked_strategy_sha256": "29451632091c5cf6d33cd58a03a2bd5a1bf52297a21375b9ae5e5b6fbbbac2d6",
   "preserved_protocol_records": [
     "paper-exec-v2-ask-bid-utc0010"

@@ -153,9 +153,9 @@ cachecontrol==0.14.4 \
     --hash=sha256:b7ac014ff72ee199b5f8af1de29d60239954f223e948196fa3d84adaffc71d2b \
     --hash=sha256:e6220afafa4c22a47dd0badb319f84475d79108100d04e26e8542ef7d3ab05a1
     # via pip-audit
-ccxt==4.5.75 \
-    --hash=sha256:05815e6e7fdf8c8e28602150d7d6f8a9a98050dac3fc133ffff182444e4e6545 \
-    --hash=sha256:5509c2659e4bfad6f4f5a9cea5c15ad244121263b423ae92f7ccbc4c04cfd8d9
+ccxt==4.5.85 \
+    --hash=sha256:da6b2cce40530d471bc8ecf716a3e7d709f597fca8a4a84e40e7422b31f164c0 \
+    --hash=sha256:e2e57064675779b16d174c4bb87856d4c84e237075c6240e4c0d99db931bd02b
     # via -r requirements.txt
 certifi==2026.6.17 \
     --hash=sha256:024c88eeec92ca068db80f02b8b07c9cef7b9fe261d1d535abfd5abd6f6af432 \
@@ -1979,10 +1979,11 @@ tzdata==2026.3 \
     --hash=sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415 \
     --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931
     # via pandas
-urllib3==2.7.0 \
-    --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
-    --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
+    --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63
     # via
+    #   -r requirements.txt
     #   ccxt
     #   requests
 uvloop==0.22.1 ; implementation_name == 'cpython' and sys_platform != 'win32' \
